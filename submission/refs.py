@@ -1,4 +1,4 @@
-# Shared reference database for NHSJS standard + online citation formats.
+# Shared reference database for standard + online citation formats.
 # Order = order of first appearance in the manuscript.
 
 REFS = [

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build NHSJS submission artifacts: standard LaTeX/PDF/DOCX and online-citation DOCX."""
+"""Build submission artifacts: standard LaTeX/PDF/DOCX and online-citation DOCX."""
 from __future__ import annotations
 
 import re
@@ -19,7 +19,7 @@ TITLE = (
 STEM = TITLE
 
 # Unicode raised comma U+2E34 — no official superscript comma in Unicode;
-# this is the recommended substitute for NHSJS multi-cite separators.
+# this is the recommended substitute for multi-cite separators.
 RAISED_COMMA = "\u2e34"
 
 
@@ -380,8 +380,8 @@ def body_to_latex_sections(text: str) -> str:
     if para:
         out.append("\n\n".join(flush_paras(para)))
 
-    # Detect NHSJS section headers (unnumbered) and numbered sections
-    nhsjs_secs = {"Introduction", "Methods", "Results", "Discussion", "Acknowledgments"}
+    # Detect known section headers (unnumbered) and numbered sections
+    section_names = {"Introduction", "Methods", "Results", "Discussion", "Acknowledgments"}
     sec_re = re.compile(r"^(\d+)\.\s+(.+)$")
     sub_re = re.compile(r"^(\d+\.\d+)\s+(.+)$")
     buf: list[str] = []
@@ -394,7 +394,7 @@ def body_to_latex_sections(text: str) -> str:
             continue
         msub = sub_re.match(stripped)
         msec = sec_re.match(stripped)
-        if stripped in nhsjs_secs:
+        if stripped in section_names:
             if buf:
                 out.extend(emit_block(buf))
                 buf = []
@@ -674,7 +674,7 @@ def main() -> int:
 
     readme = ROOT / "README.md"
     readme.write_text(
-        f"""# NHSJS Submission Package
+        f"""# Submission Package
 
 Manuscript title:
 
@@ -690,14 +690,14 @@ Manuscript title:
 | `{STEM} - Online Citations.docx` | **Word version 2** — full citations in double parentheses at each cite site |
 | `{STEM} - Online Citations.md` | Source for the online Word file |
 
-## NHSJS checklist
+## Checklist
 
 - [x] No author names, affiliations, or acknowledgements in submission files
 - [x] 12 pt, single spacing (LaTeX `article` 12pt + `setspace`)
 - [x] Standard citations: superscript numbers before punctuation
 - [x] References: numbered list, initials + surname, sentence-case titles, journal format
 - [x] Online citations: complete citation in `((...))` with leading space; multi-cites as `((A)), ((B))`
-- [ ] **After opening the Online Citations.docx in Word:** Find `)), ((` and replace the comma with a **superscript** comma (NHSJS required step)
+- [ ] **After opening the Online Citations.docx in Word:** Find `)), ((` and replace the comma with a **superscript** comma (required step)
 - [ ] Confirm PDF ≤ 20 pages (see build log `Pages:`)
 
 ## Rebuild
