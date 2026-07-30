@@ -6,19 +6,19 @@
 
 Abstract
 
-\\textbf{Background/Objective}
+\\textbf{{Background/Objective}}
 
 Modern Mixture-of-Experts transformer inference and high-performance scientific computing have collided with the Memory Wall{c(1)}. Packaging constraints on advanced interposers artificially cap both memory capacity and thermal dissipation, while conventional Von Neumann instruction-fetching overhead consumes enormous energy and time merely to orchestrate data movement rather than perform useful compute{c(6)}. This work aims to bypass the HBM capacity and cost wall through a distributed Processing-Near-Memory architecture using commodity memory modules and mature-node ASICs.
 
-\\textbf{Methods}
+\\textbf{{Methods}}
 
 We propose a distributed spatial Processing-Near-Memory (PNM) architecture that replaces centralized High-Bandwidth Memory (HBM){c(15)} with commodity LPCAMM2 LPDDR6 modules{c(16,17)}, each paired with a mature-node 14 nm or 28 nm DUV MAC ASIC on a rigid X/Y motherboard grid. A deterministic single-spine tree routing fabric---built from stateless Hardware Flit Repeater wormhole switches, dimension-order on-board routing, and combinational Z-axis ingress nodes---eliminates runtime operating-system scheduling, cache coherency protocols, and multi-path routing ambiguity{c(13,14)}. Routing is pure coordinate arithmetic: an $O(1)$ function of a flit's [Layer ID | Module ID] header, with worst-case latency bounded in closed form at compile time. By compiling high-level intermediate representations ahead-of-time onto a physical topology schema exported directly from hardware discovery, the system maps Mixture-of-Experts transformer inference, FP64 stencil computations, and functional data-based workflows directly onto silicon{c(3,4)}.
 
-\\textbf{Results}
+\\textbf{{Results}}
 
 A 512-node reference chassis provides 64 TB of attached memory and 87 TB/s of aggregate local bandwidth at roughly \\$4 per gigabyte---two orders of magnitude below HBM monoliths per byte---while a roofline analysis shows the target workloads are firmly bandwidth-bound and therefore fully served by mature-node logic{c(5)}.
 
-\\textbf{Conclusions}
+\\textbf{{Conclusions}}
 
 The architecture yields a spatial computer that executes immutable dataflow graphs in hardware with full determinism, provable deadlock freedom, and strict functional correctness, at a fraction of the thermal envelope and economic cost of monolithic GPU accelerators.
 
@@ -214,8 +214,8 @@ Conclusion
 
 This paper has specified a distributed spatial Processing-Near-Memory architecture that bypasses the HBM capacity wall through commodity LPDDR6, mature-node DUV logic, and deterministic wormhole routing{c(13,15,17)}. By treating the physical motherboard as an immutable dataflow graph and exporting its topography as a bespoke ISA, the system eliminates runtime scheduling, cache coherency, and operating-system overhead. Routing is coordinate arithmetic on a single-spine tree with dimension-order on-board paths; deadlock freedom follows from monotonically ordered virtual-channel classes; the hardened doorbell mechanism makes activation atomic as well as idle-free; and the isothermal parallel manifold sustains thermal viability with enforced flow balance. The reference chassis---64 TB, 87 TB/s aggregate local bandwidth, approximately 131 TFLOPS FP64, approximately \\$4/GB---demonstrates that the economics of memory capacity favor radical simplicity by roughly two orders of magnitude per byte. Target workloads---MoE transformer inference, FP64 stencil computation, and functional data-based evaluation---sit in the bandwidth-bound regime where mature-node silicon is already sufficient{c(3,4,5)}, and they inherit bit-exact replay and compile-time latency bounds that no cache-coherent machine can offer.
 
-All hardware schematics, topology specifications, and PCB layouts described herein are intended for release under the CERN Open Hardware Licence Version 2 Strongly Reciprocal (CERN-OHL-S){c(20)}.
+The full repository, including Verilog HDL sources, build scripts, and this manuscript, is available at https://github.com/im-BowenGu/PNM-Arch. All hardware schematics, topology specifications, and PCB layouts described herein are intended for release under the CERN Open Hardware Licence Version 2 Strongly Reciprocal (CERN-OHL-S){c(20)}.
 
 Acknowledgments
 
-The author thanks their research mentor for guidance throughout this project, the anonymous referees for their constructive feedback, and the open-source hardware community for developing the tools and ethos that made this work possible.
+The author thanks their research mentor for guidance throughout this project, the anonymous referees for their constructive feedback, and the open-source community for developing the tools and ethos that made this work possible.
