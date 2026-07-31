@@ -2,7 +2,7 @@
 
 // =============================================================================
 // xy_turn — X→Y dimension-order turn gate (one per column on the X-lane)
-// Paper Section 4.2
+// Paper §2.2
 //
 // On the MODULE_ID head byte of an on-board stream, compares the X nibble
 // against LOCAL_X. Matching packets turn into the Y-lane (column bus);

@@ -2,7 +2,7 @@
 
 // =============================================================================
 // z_ingress — Z-axis Ingress ASIC (one per motherboard layer)
-// Paper Section 4.1
+// Paper §2.1
 //
 // Compares the LAYER_ID header byte against the local hardware ID bitmask
 // and gates matching packets onto the local X/Y NoB. Non-matching packets

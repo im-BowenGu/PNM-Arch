@@ -2,11 +2,11 @@
 
 // =============================================================================
 // hfr — Hardware Flit Repeater
-// Paper Section 3 (Unix philosophy) / Section 4 (NoB fabric)
+// Paper §1.4 (Unix philosophy) / §2.2 (NoB fabric)
 //
 // Does exactly one thing: forward a flit byte to the next hop, one clock later.
 // No payload inspection, no routing state, no decisions — a pure pipe stage.
-// Depth-1 elastic buffer also underpins the consumption guarantee (Section 11).
+// Depth-1 elastic buffer also underpins the consumption guarantee (§4.3).
 // Chain N instances for deeper elastic buffering.
 // =============================================================================
 module hfr (

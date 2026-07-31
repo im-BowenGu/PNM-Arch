@@ -2,7 +2,7 @@
 
 // =============================================================================
 // flit_gate — universal combinational-match wormhole demux
-// Paper Section 4.1 (Z-axis Ingress) / 4.2 (dimension-order NoB)
+// Paper §2.1 (Z-axis ingress) / §2.2 (dimension-order NoB)
 //
 // On the head byte of a packet (sop), a combinational XOR/AND tree compares
 // the incoming byte against MATCH_VALUE under MATCH_MASK

@@ -1,0 +1,15 @@
+This paper presents a distributed Processing-Near-Memory (PNM) architecture that replaces
+centralised High-Bandwidth Memory (HBM) with commodity LPCAMM2 LPDDR6 modules paired
+with mature-node 14 nm / 28 nm DUV MAC ASICs on a rigid motherboard grid. A deterministic
+single-spine tree routing fabric built from stateless Hardware Flit Repeater wormhole switches,
+dimension-order on-board routing, and combinational Z-axis ingress nodes eliminates runtime
+OS scheduling, cache coherency protocols, and multipath routing ambiguity.
+
+A 512-node reference chassis delivers 64 TB of attached memory and 87 TB/s of aggregate
+local bandwidth at roughly $4/GB—two orders of magnitude below HBM—while a roofline
+analysis confirms that MoE transformer inference and FP64 stencil workloads are firmly
+bandwidth-bound and fully served by mature-node logic. By compiling high-level intermediate
+representations ahead-of-time onto a hardware-discovered topology, the system maps
+Mixture-of-Experts inference, stencil computation, and functional dataflow directly onto
+silicon, achieving bit-exact replay, provable deadlock freedom, and compile-time-bounded
+latency at a fraction of the cost and power of monolithic GPU accelerators.

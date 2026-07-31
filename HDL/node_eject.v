@@ -2,7 +2,7 @@
 
 // =============================================================================
 // node_eject — Y-lane → node DMA ejection gate (one per CAMM socket)
-// Paper Section 4.2 / 4.4 / 6.3
+// Paper §2.2 (dimension-order routing) / §2.9 (doorbell)
 //
 // Compares full MODULE_ID against LOCAL_MODULE. Matching packets eject into
 // the node DMA path (doorbell WATCH loop arms on the resulting stream).

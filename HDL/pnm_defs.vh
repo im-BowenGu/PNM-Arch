@@ -1,5 +1,6 @@
 // pnm_defs.vh — shared constants for the PNM fabric HDL sketch
-// Paper: Bypassing the HBM Wall (Sections 4, 6, 11)
+// Paper: Bypassing the HBM Wall (§2.1–2.2 routing fabric, §2.9 doorbell,
+// §4.3 virtual-channel classes)
 //
 // Byte-wide wormhole links. Packet layout on the wire:
 //   byte 0 : LAYER_ID  [7:0]
@@ -24,7 +25,7 @@
 `define OP_COMPUTE 2'b00
 `define OP_FORWARD 2'b01
 
-// CTRL.vc_class — deadlock-freedom classes (paper Section 11)
+// CTRL.vc_class — deadlock-freedom classes (paper §4.3)
 // Parallel physical instances of each link carry one class each.
 `define VC_BOARD_EGRESS  2'b00
 `define VC_SPINE         2'b01

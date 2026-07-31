@@ -9,14 +9,12 @@ pkgs.mkShell {
     pandoc
     # PDF metadata (page count check)
     poppler-utils
+    # Verilog simulation (proves no dropped packets under backpressure)
+    iverilog
+    # Verilog static lint
+    verilator
+    # CPython for the co-sim harness (stdlib only: stimulus generation,
+    # virtual execution units, delivery verification)
+    python3
   ];
-
-  shellHook = ''
-    echo "Paper build environment"
-    echo "  pdflatex: $(command -v pdflatex)"
-    echo "  pandoc:   $(command -v pandoc)"
-    echo "  pdfinfo:  $(command -v pdfinfo)"
-    echo ""
-    echo "Build: cd submission && python3 build_manuscripts.py"
-  '';
 }
