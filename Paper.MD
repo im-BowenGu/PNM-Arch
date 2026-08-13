@@ -2,7 +2,7 @@
 
 **Author:** Bowen Gu
 **Date:** July 30, 2026
-**Copyright & Disclaimer:** © 2026 Bowen Gu. This document and the hardware designs described herein are provided "as is," without warranty of any kind, express or implied. All hardware schematics, topology specifications, and PCB layouts described herein are released under the CERN Open Hardware Licence Version 2 — Strongly Reciprocal (CERN-OHL-S); see Section 13. All other rights reserved.
+**Copyright & Disclaimer:** © 2026 Bowen Gu. This manuscript is licensed under the Creative Commons Attribution-ShareAlike 4.0 International License (CC BY-SA 4.0). The hardware designs described herein (the Verilog HDL sources in the companion repository) remain under the CERN Open Hardware Licence Version 2 — Strongly Reciprocal (CERN-OHL-S), and the build and simulation code under AGPL-3.0-or-later. All material is provided "as is," without warranty of any kind, express or implied.
 
 Abstract
 
@@ -233,7 +233,7 @@ Conclusion
 
 This paper has specified a distributed spatial Processing-Near-Memory architecture that bypasses the HBM capacity wall through commodity 192-bit LPDDR6 CAMM2 memory, mature-node DUV logic, and deterministic wormhole routing{c(13,15,17)}. By treating the physical motherboard as an immutable dataflow graph and exporting its topography as a bespoke ISA, the system eliminates runtime scheduling, cache coherency, and operating-system overhead. Routing is coordinate arithmetic on a single-spine tree with dimension-order on-board paths; deadlock freedom follows from four monotonically ordered virtual-channel classes with credited per-class buffers at the two state points in the design; the hardened doorbell makes activation atomic, idle-free, and loss-observable through a single ACK wire; and the isothermal parallel manifold sustains thermal viability with enforced flow balance. The reference chassis---64 TB, 131 TB/s aggregate node-local bandwidth, approximately 197 TFLOPS FP64, approximately \\$4/GB---demonstrates that the economics of memory capacity favour radical simplicity by roughly two orders of magnitude per byte. Target workloads---MoE transformer inference, FP64 stencil computation, and functional data-based evaluation---sit in the bandwidth-bound regime on the precision they actually run, where mature-node silicon is already sufficient{c(3,4,5)}, and they inherit deterministic fabric replay, compile-time latency bounds, and an honest availability model with a single swappable router as the only point of state.
 
-The full repository, including Verilog HDL sources, build scripts, and this manuscript, is available at https://github.com/im-BowenGu/PNM-Arch. All hardware schematics, topology specifications, and PCB layouts described herein are intended for release under the CERN Open Hardware Licence Version 2 Strongly Reciprocal (CERN-OHL-S){c(20)}.
+The full repository, including Verilog HDL sources, build scripts, and this manuscript, is available at https://github.com/im-BowenGu/PNM-Arch. The hardware designs (the Verilog HDL sources) are released under the CERN Open Hardware Licence Version 2 Strongly Reciprocal (CERN-OHL-S){c(20)}, the build and simulation code under AGPL-3.0-or-later, and this manuscript under CC BY-SA 4.0.
 
 Acknowledgments
 

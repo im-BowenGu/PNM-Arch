@@ -303,5 +303,7 @@ above.
 
 ## License
 
-HDL and build code: [CERN-OHL-S](LICENSE). Manuscript text © Bowen Gu; see
-`Paper.MD` header.
+Three-way split, detailed in [LICENSE](LICENSE): the manuscript and paper artifacts
+(`Paper.MD`, `submission/*`) are [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/);
+the HDL under [`HDL/`](HDL/) is [CERN-OHL-S v2](LICENSE); build and simulation code plus
+this README are [AGPL-3.0-or-later](LICENSE).

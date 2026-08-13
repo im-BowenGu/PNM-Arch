@@ -1,16 +1,26 @@
 License
 =======
 
-This repository contains two categories of work, each under a different
+This repository contains three categories of work, each under a different
 license.
 
 ---
 
-## Paper manuscript and Verilog HDL sources
+## Paper manuscript and paper artifacts
 
-The manuscript text (Paper.MD, submission/*.md, submission/*.tex,
-submission/*.pdf, submission/*.docx, and the body text within
-build_manuscripts.py) and all files under HDL/ are licensed under:
+The manuscript text and derived artifacts — Paper.MD, submission/*.tex,
+submission/*.pdf, submission/*.docx — are licensed under:
+
+**Creative Commons Attribution-ShareAlike 4.0 International (CC BY-SA 4.0)**
+Copyright © 2026 Bowen Gu
+
+See https://creativecommons.org/licenses/by-sa/4.0/ for the full legal text.
+
+---
+
+## Verilog HDL sources
+
+All files under HDL/ are licensed under:
 
 **CERN Open Hardware Licence Version 2 — Strongly Reciprocal
 (CERN-OHL-S)**
@@ -24,8 +34,8 @@ for the full legal text.
 ## All other files
 
 All other files in this repository not covered above — including but not
-limited to build_manuscripts.py, refs.py, shell.nix, README.md,
-.gitignore, and any other scripts or configuration — are licensed under:
+limited to build.py, shell.nix, sim/, README.md, and .gitignore — are
+licensed under:
 
 **GNU Affero General Public License v3.0 or later (AGPL-3.0-or-later)**
 Copyright © 2026 Bowen Gu
