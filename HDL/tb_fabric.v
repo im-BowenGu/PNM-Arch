@@ -2,7 +2,7 @@
 `include "pnm_defs.vh"
 
 // =============================================================================
-// tb_fabric — self-checking test of z_ingress, hfr, xy_turn, node_eject
+// tb_fabric — self-checking test of xyz_repeater, hfr, xy_turn, node_eject
 // =============================================================================
 
 module byte_sink #(
@@ -62,7 +62,7 @@ module tb_fabric;
     wire [7:0]  n1_first, n2_first, pass_first;
     wire [7:0]  n1_second, n2_second, pass_second;
 
-    z_ingress #(.LOCAL_LAYER(8'h01)) ing1 (
+    xyz_repeater #(.LOCAL_LAYER(8'h01)) rpt1 (
         .clk(clk), .rst_n(rst_n),
         .spin_data(s_data), .spin_valid(s_valid), .spin_sop(s_sop),
         .spin_eop(s_eop), .spin_ready(s_ready),
@@ -80,7 +80,7 @@ module tb_fabric;
         .out_eop(h1_eop), .out_ready(h1_ready)
     );
 
-    z_ingress #(.LOCAL_LAYER(8'h02)) ing2 (
+    xyz_repeater #(.LOCAL_LAYER(8'h02)) rpt2 (
         .clk(clk), .rst_n(rst_n),
         .spin_data(h1_data), .spin_valid(h1_valid), .spin_sop(h1_sop),
         .spin_eop(h1_eop), .spin_ready(h1_ready),
@@ -329,7 +329,8 @@ module tb_fabric;
         check_hex("spine pass_first (LAYER)", pass_first, 8'h03);
 
         $display("=== BOARD TEST ===");
-        // Packet C: module 0x25 (X=2,Y=5) -> turn2 -> eject25 -> node (6 bytes, first=CTRL)
+        // Packet C: module 0x25 (X=2,Y=5) -> turn2 -> eject25 -> node
+        // (7 bytes, first=MODULE forwarded as DEST, Paper §2.10)
         send_board_pkt(8'h25, 8'h80, 8'h5A);
         // Packet D: module 0x53 (X=5,Y=3) -> pass turn2 -> turn5 -> y5 (7 bytes, first=MODULE)
         send_board_pkt(8'h53, 8'h80, 8'h6B);
@@ -337,10 +338,11 @@ module tb_fabric;
         // drain (toggle-ready sink needs extra cycles)
         repeat (60) @(negedge clk);
 
-        check_eq("board node_count", node_count, 6);
+        check_eq("board node_count", node_count, 7);
         check_eq("board y5_count", y5_count, 7);
         check_eq("board x_count", x_count, 0);
-        check_hex("board node_first (CTRL)", node_first, 8'h80);
+        check_hex("board node_first (MODULE)", node_first, 8'h25);
+        check_hex("board node_second (CTRL)", node_second, 8'h80);
         check_hex("board y5_first (MODULE)", y5_first, 8'h53);
 
         if (errors == 0)

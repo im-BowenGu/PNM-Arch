@@ -59,7 +59,7 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 HDL = ROOT / "HDL"
 
-FABRIC = ["flit_gate.v", "hfr.v", "z_ingress.v", "xy_turn.v", "node_eject.v"]
+FABRIC = ["flit_gate.v", "hfr.v", "xyz_repeater.v", "xy_turn.v", "node_eject.v"]
 
 # CTRL field: {vc_class[7:6], op[5:4], rsvd[3:0]}  (HDL/pnm_defs.vh)
 CTRL_COMPUTE_SPINE = 0x40   # VC_SPINE | OP_COMPUTE
@@ -76,18 +76,20 @@ def flit(layer: int, mod: int, ctrl: int, payload: list,
 
     Wire layout (HDL/pnm_defs.vh):
         LAYER_ID | MODULE_ID | CTRL | LEN_LO | LEN_HI | payload | CRC_HI | CRC_LO
-    The CRC is CRC-16/CCITT over [CTRL, LEN_LO, LEN_HI, payload] -- the
-    message body the destination DMA sees after header stripping.
+    The CRC is CRC-16/CCITT over [MODULE_ID, CTRL, LEN_LO, LEN_HI, payload]:
+    the eject forwards MODULE_ID as the DEST byte instead of stripping it, so
+    the destination field is inside the end-to-end CRC coverage and the
+    doorbell rejects a misdelivered message (Paper.MD section 2.4/2.10).
 
     corrupt=True flips a payload byte *after* the CRC is computed: delivery
     still happens (the fabric is pure transport), but the destination
     doorbell must refuse to fire (Paper.MD section 2.9).
     """
-    body = [ctrl, len(payload) & 0xFF, (len(payload) >> 8) & 0xFF, *payload]
+    body = [mod, ctrl, len(payload) & 0xFF, (len(payload) >> 8) & 0xFF, *payload]
     hi, lo = crc_bytes(body)
     if corrupt and payload:
-        body[2 + (len(payload) + 1) // 2] ^= 0xFF   # mid-payload, post-CRC
-    wire = [layer, mod, *body, hi, lo]
+        body[4 + len(payload) // 2] ^= 0xFF   # mid-payload, post-CRC
+    wire = [layer, *body, hi, lo]
     return [(b, i == 0, i == len(wire) - 1) for i, b in enumerate(wire)]
 
 
@@ -145,7 +147,7 @@ class Program:
         wf = flit(l + 1, (x << 4) | y, ctrl, payload, corrupt=corrupt)
         self.stream += wf
         entry = {"idx": self.n_injected, "wire_len": len(wf),
-                 "dma": [b for b, _, _ in wf[2:]], "corrupt": corrupt,
+                 "dma": [b for b, _, _ in wf[1:]], "corrupt": corrupt,
                  "golden": None}
         if not corrupt:
             m = self.manifest[node]
@@ -358,16 +360,17 @@ def verify(delivered: dict, prog: Program, nodes: list,
                       f"{n_routed + n_tail}")
 
     # byte conservation: every injected byte delivered exactly once or
-    # stripped as a source-routing header byte (LAYER at ingress, MODULE
-    # at eject -- 2 per routed packet, corrupt or not)
+    # stripped as a source-routing header byte (LAYER at the xyz_repeater --
+    # the MODULE_ID is forwarded to the DMA as the CRC-protected DEST field,
+    # so exactly 1 byte per routed packet is stripped)
     total_delivered = (
         sum(len(v) for v in delivered["nodes"].values())
         + len(delivered["tail"])
         + sum(len(v) for v in delivered["xres"].values())
         + sum(len(v) for v in delivered["yres"].values()))
-    if len(delivered["inject"]) != total_delivered + 2 * n_routed:
+    if len(delivered["inject"]) != total_delivered + 1 * n_routed:
         errors.append(f"byte conservation: {len(delivered['inject'])} injected, "
-                      f"{total_delivered} delivered + {2 * n_routed} stripped")
+                      f"{total_delivered} delivered + {1 * n_routed} stripped")
 
     # per-node: byte-exact delivery, then doorbell + resident kernel
     for n in nodes:

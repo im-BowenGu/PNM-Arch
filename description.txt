@@ -1,15 +1,19 @@
 This paper presents a distributed Processing-Near-Memory (PNM) architecture that replaces
-centralised High-Bandwidth Memory (HBM) with commodity LPCAMM2 LPDDR6 modules paired
+centralised High-Bandwidth Memory (HBM) with commodity 192-bit LPDDR6 CAMM2 modules paired
 with mature-node 14 nm / 28 nm DUV MAC ASICs on a rigid motherboard grid. A deterministic
 single-spine tree routing fabric built from stateless Hardware Flit Repeater wormhole switches,
-dimension-order on-board routing, and combinational Z-axis ingress nodes eliminates runtime
-OS scheduling, cache coherency protocols, and multipath routing ambiguity.
+dimension-order on-board routing, and combinational xyz_repeater nodes eliminates runtime
+OS scheduling, cache coherency protocols, and multipath routing ambiguity. The system
+reduces to four kinds of hardware—DRAM, MACs, repeaters, and one central router chip that
+handles MoE routing, POST discovery, PCIe, and coordinate mapping—with everything on the
+data path kept as pure, stateless transport.
 
-A 512-node reference chassis delivers 64 TB of attached memory and 87 TB/s of aggregate
-local bandwidth at roughly $4/GB—two orders of magnitude below HBM—while a roofline
+A 512-node reference chassis delivers 64 TB of attached memory and 131 TB/s of aggregate
+node-local bandwidth at roughly $4/GB—two orders of magnitude below HBM—while a roofline
 analysis confirms that MoE transformer inference and FP64 stencil workloads are firmly
-bandwidth-bound and fully served by mature-node logic. By compiling high-level intermediate
-representations ahead-of-time onto a hardware-discovered topology, the system maps
-Mixture-of-Experts inference, stencil computation, and functional dataflow directly onto
+bandwidth-bound and fully served by mature-node logic. Each node runs a 192-bit LPDDR6
+CAMM2 at ~256 GB/s and hangs off the spine over 16 GB/s links. By compiling high-level
+intermediate representations ahead-of-time onto a hardware-discovered topology, the system
+maps Mixture-of-Experts inference, stencil computation, and functional dataflow directly onto
 silicon, achieving bit-exact replay, provable deadlock freedom, and compile-time-bounded
 latency at a fraction of the cost and power of monolithic GPU accelerators.

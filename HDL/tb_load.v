@@ -93,7 +93,7 @@ module tb_load;
     wire [7:0] i2p_d; wire i2p_v, i2p_s, i2p_e, i2p_r;
     wire [7:0] n2_d;  wire n2_v,  n2_s,  n2_e,  n2_r;
 
-    z_ingress #(.LOCAL_LAYER(8'h01)) ing1 (
+    xyz_repeater #(.LOCAL_LAYER(8'h01)) rpt1 (
         .clk(clk), .rst_n(rst_n),
         .spin_data(inj_data), .spin_valid(inj_valid), .spin_sop(inj_sop),
         .spin_eop(inj_eop), .spin_ready(inj_ready),
@@ -111,7 +111,7 @@ module tb_load;
         .out_eop(h1_e), .out_ready(h1_r)
     );
 
-    z_ingress #(.LOCAL_LAYER(8'h02)) ing2 (
+    xyz_repeater #(.LOCAL_LAYER(8'h02)) rpt2 (
         .clk(clk), .rst_n(rst_n),
         .spin_data(h1_d), .spin_valid(h1_v), .spin_sop(h1_s),
         .spin_eop(h1_e), .spin_ready(h1_r),
@@ -342,10 +342,26 @@ module tb_load;
     reg [15:0] len_b;
     reg [31:0] exp_l1_25, exp_l1_53, exp_l2_25, exp_l2_53, exp_pass;
     reg [31:0] exp_ck_l1_25, exp_ck_l1_53, exp_ck_l2_25, exp_ck_l2_53, exp_ck_pass;
-    // node stream = CTRL + LEN_LO + LEN_HI + payload + CRC_LO + CRC_HI  (no MODULE)
-    // pass stream  = LAYER + MODULE + CTRL + LEN + payload + CRC          (full)
-    // node bytes per pkt = 3 + pay_len + 2 = pay_len + 5
-    // pass bytes per pkt = 5 + pay_len + 2 = pay_len + 7
+    // node stream = DEST(=MODULE) + CTRL + LEN_LO + LEN_HI + payload +
+    //               CRC_HI + CRC_LO                     (MODULE forwarded, §2.10)
+    // pass stream  = LAYER + MODULE + CTRL + LEN + payload + CRC  (full wire)
+    // node bytes per pkt = 1 + 3 + pay_len + 2 = pay_len + 6
+    // pass bytes per pkt = 2 + 3 + pay_len + 2 = pay_len + 7
+
+    // CRC-16/CCITT-FALSE over the DMA body the doorbell validates:
+    // [MODULE_ID, CTRL, LEN_LO, LEN_HI, payload]  (matches doorbell.v/crc16.v)
+    function [15:0] crc_update;
+        input [15:0] crc;
+        input [7:0]  b;
+        integer j;
+        reg [15:0] c;
+        begin
+            c = crc ^ (b << 8);
+            for (j = 0; j < 8; j = j + 1)
+                c = (c & 16'h8000) ? ((c << 1) ^ 16'h1021) : (c << 1);
+            crc_update = c;
+        end
+    endfunction
 
     task inject_byte;
         input [7:0] d;
@@ -387,41 +403,49 @@ module tb_load;
         reg [7:0] pb;
         reg [31:0] node_ck_add;
         reg [31:0] pass_ck_add;
+        reg [15:0] crc;
         begin
             node_ck_add = 32'd0;
             pass_ck_add = 32'd0;
+            crc = 16'hFFFF;
 
             // LAYER (pass path only)
             inject_byte(layer, 1'b1, 1'b0);
             pass_ck_add = pass_ck_add + {24'd0, layer};
 
-            // MODULE (stripped before node; counted on pass only)
+            // MODULE (forwarded to the node DMA as DEST; counted both paths)
             inject_byte(mod_id, 1'b0, 1'b0);
             pass_ck_add = pass_ck_add + {24'd0, mod_id};
+            node_ck_add = node_ck_add + {24'd0, mod_id};
+            crc = crc_update(crc, mod_id);
 
             // CTRL
             inject_byte(ctrl, 1'b0, 1'b0);
             pass_ck_add = pass_ck_add + {24'd0, ctrl};
             node_ck_add = node_ck_add + {24'd0, ctrl};
+            crc = crc_update(crc, ctrl);
 
             // LEN
             inject_byte(plen[7:0], 1'b0, 1'b0);
             inject_byte(8'h00, 1'b0, 1'b0);
             pass_ck_add = pass_ck_add + {24'd0, plen[7:0]} + 32'd0;
             node_ck_add = node_ck_add + {24'd0, plen[7:0]} + 32'd0;
+            crc = crc_update(crc, plen[7:0]);
+            crc = crc_update(crc, 8'h00);
 
             for (k = 0; k < plen; k = k + 1) begin
                 pb = seed + k[7:0];
                 inject_byte(pb, 1'b0, 1'b0);
                 pass_ck_add = pass_ck_add + {24'd0, pb};
                 node_ck_add = node_ck_add + {24'd0, pb};
+                crc = crc_update(crc, pb);
             end
 
-            // CRC (fixed dummy)
-            inject_byte(8'hA5, 1'b0, 1'b0);
-            inject_byte(8'h5A, 1'b0, 1'b1);
-            pass_ck_add = pass_ck_add + 32'h00A5 + 32'h005A;
-            node_ck_add = node_ck_add + 32'h00A5 + 32'h005A;
+            // CRC-16/CCITT-FALSE over [MODULE, CTRL, LEN, payload], big-endian
+            inject_byte(crc[15:8], 1'b0, 1'b0);
+            inject_byte(crc[7:0], 1'b0, 1'b1);
+            pass_ck_add = pass_ck_add + {24'd0, crc[15:8]} + {24'd0, crc[7:0]};
+            node_ck_add = node_ck_add + {24'd0, crc[15:8]} + {24'd0, crc[7:0]};
 
             inj_pkts = inj_pkts + 1;
 

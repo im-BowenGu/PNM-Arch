@@ -1,7 +1,7 @@
 `include "pnm_defs.vh"
 
 // =============================================================================
-// z_ingress — Z-axis Ingress ASIC (one per motherboard layer)
+// xyz_repeater — Z-axis repeater (one per motherboard layer)
 // Paper §2.1
 //
 // Compares the LAYER_ID header byte against the local hardware ID bitmask
@@ -13,7 +13,7 @@
 //
 // Up-spine traffic uses a mirrored instance (same module, reverse wiring).
 // =============================================================================
-module z_ingress #(
+module xyz_repeater #(
     parameter [7:0] LOCAL_LAYER = 8'h00,
     parameter [7:0] LAYER_MASK  = 8'hFF
 )(

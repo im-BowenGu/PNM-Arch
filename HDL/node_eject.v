@@ -8,7 +8,11 @@
 // the node DMA path (doorbell WATCH loop arms on the resulting stream).
 // Non-matching packets continue along the Y-lane.
 //
-// MODULE_ID is stripped on the match path so the DMA stream starts at CTRL.
+// MODULE_ID is NOT stripped on the match path: it is forwarded as the DEST
+// byte of the DMA stream so that the end-to-end CRC (doorbell.v, Paper §2.10)
+// covers the destination field, letting the doorbell reject a misdelivered
+// message even when the routing fabric erred.  DMA stream layout:
+//   DEST | CTRL | LEN_LO | LEN_HI | payload | CRC_HI | CRC_LO
 // =============================================================================
 module node_eject #(
     parameter [7:0] LOCAL_MODULE = 8'h00
@@ -41,7 +45,7 @@ module node_eject #(
     flit_gate #(
         .MATCH_VALUE   (LOCAL_MODULE),
         .MATCH_MASK    (8'hFF),
-        .STRIP_ON_MATCH(1)
+        .STRIP_ON_MATCH(0)
     ) gate (
         .clk        (clk),
         .rst_n      (rst_n),

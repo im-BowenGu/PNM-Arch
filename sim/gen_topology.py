@@ -3,9 +3,9 @@
 
 Mirrors Paper.MD §2.1–2.2:
 
-  * a single vertical spine of z_ingress gates (LAYER_ID compare), each
+  * a single vertical spine of xyz_repeater gates (LAYER_ID compare), each
     stage HFR-repeatered
-  * a thin X/Y board per layer, hung off the spine via the ingress NoB port
+  * a thin X/Y board per layer, hung off the spine via the repeater NoB port
   * dimension-order on-board routing: an X-lane of xy_turn gates; every
     column drops onto a Y-lane of node_eject gates
   * every (layer, x, y) node DMA port is exposed so Python virtual execution
@@ -103,7 +103,7 @@ def gen(layer_ids: list, bx: int, by: int) -> str:
     a(f"// layers={layer_ids}  board_x={bx}  board_y={by}  nodes={nodes}")
     a("//")
     a("// Architecture (Paper.MD §2.1–2.2):")
-    a("//   single-spine tree fabric: z_ingress (LAYER_ID compare) repeatered by HFR")
+    a("//   single-spine tree fabric: xyz_repeater (LAYER_ID compare) repeatered by HFR")
     a("//   on-board dimension-order: X-lane of xy_turn gates -> Y-lanes of node_eject")
     a("//   every (layer, x, y) ejects to a node DMA / virtual execution unit port")
     a("module pnm_top (")
@@ -111,7 +111,7 @@ def gen(layer_ids: list, bx: int, by: int) -> str:
     a(");")
     a("")
     a("    // ================= spine =================================")
-    a("    // each stage: ingress compares LAYER_ID; HFR repeats the pass path")
+    a("    // each stage: xyz_repeater compares LAYER_ID; HFR repeats the pass path")
 
     for l in layer_ids:
         a(f"    wire [7:0] sp_{l}_data;  wire sp_{l}_valid, sp_{l}_sop, sp_{l}_eop, sp_{l}_ready;")
@@ -121,8 +121,8 @@ def gen(layer_ids: list, bx: int, by: int) -> str:
 
     for pos, l in enumerate(layer_ids):
         spin = "inject" if pos == 0 else f"q_{layer_ids[pos-1]}"
-        a(f"    // -- layer {l} ingress (strips LAYER_ID on match) -----------")
-        a(f"    z_ingress #(.LOCAL_LAYER(8'h{l+1:02x})) u_ing_{l} (")
+        a(f"    // -- layer {l} repeater (strips LAYER_ID on match) -----------")
+        a(f"    xyz_repeater #(.LOCAL_LAYER(8'h{l+1:02x})) u_rpt_{l} (")
         a("        .clk(clk), .rst_n(rst_n),")
         a(f"        .spin_data({spin}_data), .spin_valid({spin}_valid), .spin_sop({spin}_sop),")
         a(f"        .spin_eop({spin}_eop), .spin_ready({spin}_ready),")

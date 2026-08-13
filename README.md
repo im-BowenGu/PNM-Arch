@@ -1,7 +1,7 @@
 # Bypassing the HBM Wall
 
 > A distributed spatial Processing-Near-Memory (PNM) architecture built from commodity
-> LPCAMM2 LPDDR6 modules, mature-node DUV MAC ASICs, and a deterministic single-spine
+> 192-bit LPDDR6 CAMM2 modules, mature-node DUV MAC ASICs, and a deterministic single-spine
 > wormhole routing fabric.
 
 **Paper:** [*Bypassing the HBM Wall: A Distributed Spatial Processing-Near-Memory Architecture using DUV ASICs and Deterministic Routing*](Paper.MD)
@@ -21,25 +21,36 @@ Modern GPU/HBM monoliths hit a physical and economic wall:
 
 This architecture turns the problem around:
 
-- Replace centralised HBM with **commodity LPCAMM2 LPDDR6** (≈\$4/GB).
+- Replace centralised HBM with **commodity 192-bit LPDDR6 CAMM2** (≈\$4/GB).
 - Pair each module with a **mature-node 14/28 nm DUV MAC ASIC** — bandwidth-bound
   workloads never need the EUV cost curve.
 - Replace OS/cache scheduling with a **deterministic single-spine wormhole fabric**:
   routing is pure coordinate arithmetic, latency is bounded at compile time, and the
   machine is a physical dataflow graph (no mutable state, no coherency protocols).
 
-A 512-node reference chassis delivers **64 TB** attached memory at **87 TB/s** aggregate
-local bandwidth.
+The whole system is four kinds of hardware: **DRAM, MACs, repeaters, and one central
+router chip** that handles the MoE router, POST discovery, PCIe, and coordinate mapping.
+Everything on the data path is pure transport; everything with state lives in that one
+chip at the spine root.
+
+A 512-node reference chassis delivers **64 TB** attached memory at **131 TB/s** aggregate
+node-local bandwidth (**≈197 TFLOPS FP64**).
 
 ## Architecture
 
 ### System topology
 
-Boards are thin X/Y grids stacked vertically; a single spine runs through the stack and
-each board hangs off the spine through a Z-axis ingress node.
+Boards are thin X/Y grids stacked vertically; a single spine runs through the stack,
+each board hangs off the spine through an `xyz_repeater`, and a central router chip at
+the spine root owns MoE routing, POST, PCIe, and mapping.
 
 ```mermaid
 flowchart LR
+    subgraph chip["Central Router Chip"]
+        direction LR
+        cr[("MoE routing · POST · PCIe · mapping")]
+    end
+
     subgraph spine["Single-Spine Routing Fabric (vertical)"]
         direction LR
         r1((Repeater))
@@ -51,25 +62,26 @@ flowchart LR
 
     subgraph b1["Board 1"]
         direction TB
-        g1[Z-axis Ingress] --> n1["MAC ASIC + LPCAMM2"]
+        x1[xyz_repeater] --> n1["MAC ASIC + LPDDR6 CAMM2"]
     end
     subgraph b2["Board 2"]
         direction TB
-        g2[Z-axis Ingress] --> n2["MAC ASIC + LPCAMM2"]
+        x2[xyz_repeater] --> n2["MAC ASIC + LPDDR6 CAMM2"]
     end
     subgraph b3["Board 3"]
         direction TB
-        g3[Z-axis Ingress] --> n3["MAC ASIC + LPCAMM2"]
+        x3[xyz_repeater] --> n3["MAC ASIC + LPDDR6 CAMM2"]
     end
     subgraph b4["Board 4"]
         direction TB
-        g4[Z-axis Ingress] --> n4["MAC ASIC + LPCAMM2"]
+        x4[xyz_repeater] --> n4["MAC ASIC + LPDDR6 CAMM2"]
     end
 
-    r1 --> g1
-    r2 --> g2
-    r3 --> g3
-    r4 --> g4
+    cr --> r1
+    r1 --> x1
+    r2 --> x2
+    r3 --> x3
+    r4 --> x4
 ```
 
 ### Routing: source-routed wormhole with dimension-order turns
@@ -79,47 +91,51 @@ so routing is an `O(1)` coordinate function of `[Layer ID | Module ID]`.
 
 ```mermaid
 flowchart LR
-    inj[Compiler / scheduler emits flit] --> ingress[Z-axis Ingress]
-    ingress -->|strips LAYER_ID| xgate[XY Turn Gate @ X-dest]
+    inj[Compiler / central router chip emits flit] --> rpt[xyz_repeater]
+    rpt -->|strips LAYER_ID| xgate[XY Turn Gate @ X-dest]
     xgate -->|X-dimension, then turn| ygate[Y-lane @ destination X]
     ygate -->|Y-dimension| eject[Node Eject]
-    eject -->|strips MODULE_ID| node[MAC ASIC + LPCAMM2 + local LPDDR6]
+    eject -->|forwards MODULE_ID as DEST| node[MAC ASIC + LPDDR6 CAMM2 + local LPDDR6]
     node --> dma[(DDR6 bank)]
 ```
 
-Flit wire format (byte-wide links):
+Flit wire format (byte-wide links, CRC-protected destination):
 
 | Byte | Field | Role |
 |------|-------|------|
-| 0 | `LAYER_ID` | stripped by Z-axis ingress |
-| 1 | `MODULE_ID` = `{X[3:0], Y[3:0]}` | stripped by node eject |
+| 0 | `LAYER_ID` | stripped by `xyz_repeater` |
+| 1 | `MODULE_ID` = `{X[3:0], Y[3:0]}` | forwarded to DMA as the CRC-protected DEST |
 | 2 | `CTRL` = `{vc_class, op, rsvd}` | VC class for deadlock freedom |
 | 3–4 | `LEN_LO/HI` | payload length |
 | 5… | payload | streamed bytes |
-| last 2 | CRC-16 | checked at destination DMA |
+| last 2 | CRC-16 | checked at destination doorbell |
+
+The CRC-16 (CCITT-FALSE, init `0xFFFF`, poly `0x1021`) covers `[MODULE_ID, CTRL,
+LEN_LO, LEN_HI, payload]` — everything except `LAYER_ID` (consumed at the repeater)
+and the two trailing CRC bytes.
 
 ### Verilog fabric sketch (the HDL/ directory)
 
 The HDL is a byte-wide, Verilog-2005 model of the routing fabric: stateless Hardware
-Flit Repeaters (HFRs), the Z-axis ingress gate, X→Y dimension-order turn gates, and node
-eject gates. The `HDL/` testbenches exercise a hand-wired 2-board slice; the `sim/`
-harness *generates* the full paper topology at any scale (default 3×4×4 = 48 nodes, up to
-the 8×8×8 = 512-node reference chassis) from the same gates. It is what the *"lossless
-under backpressure"* claim is checked against.
+Flit Repeaters (HFRs), the `xyz_repeater` layer gate, X→Y dimension-order turn gates,
+and node eject gates. The `HDL/` testbenches exercise a hand-wired 2-board slice; the
+`sim/` harness *generates* the full paper topology at any scale (default 3×4×4 = 48
+nodes, up to the 8×8×8 = 512-node reference chassis) from the same gates. It is what
+the *"lossless under backpressure"* claim is checked against.
 
 ```mermaid
 flowchart LR
-    inj[Injector 500 pkts] --> i1["ingress L1"]
-    i1 --> hsp["HFR (spine)"]
-    hsp --> i2["ingress L2"]
-    i2 --> pass[pass-through sink]
+    inj[Injector 500 pkts] --> r1["xyz_repeater L1"]
+    r1 --> hsp["HFR (spine)"]
+    hsp --> r2["xyz_repeater L2"]
+    r2 --> pass[pass-through sink]
 
-    i1 --> t2["turn @ X=2"]
+    r1 --> t2["turn @ X=2"]
     t2 --> ej25["eject 0x25"] --> s25[["sink 0x25 50% ready"]]
     t2 --> hx1["HFR"] --> t5["turn @ X=5"]
     t5 --> ej53["eject 0x53"] --> s53[["sink 0x53 25% ready"]]
 
-    i2 --> t22["turn @ X=2"]
+    r2 --> t22["turn @ X=2"]
     t22 --> ej225["eject 0x25"] --> s225[["sink 0x25 100% ready"]]
     t22 --> hx2["HFR"] --> t25["turn @ X=5"]
     t25 --> ej253["eject 0x53"] --> s253[["sink 0x53 50% ready"]]
@@ -131,7 +147,7 @@ flowchart LR
 |------|----------|
 | `Paper.MD` | Manuscript source (master copy, Markdown) |
 | `build.py` | Build pipeline → single submission DOCX |
-| `HDL/` | Verilog fabric: HFR, ingress, XY turn, eject + testbenches |
+| `HDL/` | Verilog fabric: HFR, `xyz_repeater`, XY turn, eject, CRC-16 + doorbell DMA + testbenches |
 | `sim/` | Co-simulation harness: topology/tb generators, virtual execution units |
 | `submission/` | Generated build artifacts (**gitignored**) |
 | `shell.nix` | Reproducible build + simulation environment |
@@ -174,16 +190,24 @@ cd HDL
 
 # functional smoke test
 iverilog -g2005 -o tb_fabric.out \
-  hfr.v flit_gate.v z_ingress.v xy_turn.v node_eject.v tb_fabric.v && vvp tb_fabric.out
+  hfr.v flit_gate.v xyz_repeater.v xy_turn.v node_eject.v tb_fabric.v && vvp tb_fabric.out
 
 # 500-packet load test with 100/50/25% sink backpressure + checksums
 iverilog -g2005 -o tb_load.out \
-  hfr.v flit_gate.v z_ingress.v xy_turn.v node_eject.v tb_load.v && vvp tb_load.out
+  hfr.v flit_gate.v xyz_repeater.v xy_turn.v node_eject.v tb_load.v && vvp tb_load.out
+
+# doorbell DMA: end-to-end CRC-16 + hardened fire conditions (tb_doorbell.v)
+iverilog -g2005 -o tb_doorbell.out \
+  tb_doorbell.v pe_tile_stub.v doorbell.v crc16.v && vvp tb_doorbell.out
 ```
 
 The load test scoreboards every packet end-to-end: destination packet counts, SOP/EOP
 integrity, payload checksums, and misroute guards on the X-lane (must be zero). Expect
-`*** LOAD TEST PASSED (500 packets) ***`.
+`*** LOAD TEST PASSED (500 packets) ***`. The doorbell test drives four valid
+activations (bytes == `LEN+6`, CRC valid, DEST == own coordinate) and four rejections
+(broken CRC, truncated message, wrong DEST) through a `pe_tile_stub` (AXI-Stream,
+`MULT_LATENCY=2`) and checks that `DOORBELL_TRIG`/`DOORBELL_ACK` fire together only on
+valid messages and `NODE_ERR` alone otherwise.
 
 ### 4. Co-simulation: virtual execution units over the real fabric
 
@@ -206,10 +230,12 @@ flowchart LR
 ```
 
 1. `gen_topology.py` wires the paper topology from the `HDL/` gates
-   (`z_ingress` spine + HFR repeaters → `xy_turn` X-lanes → `node_eject` Y-lanes).
+   (`xyz_repeater` spine + HFR repeaters → `xy_turn` X-lanes → `node_eject` Y-lanes).
 2. `run.py` writes the injection program, the Python-side manifest — every
-   flit, its destination, the node's resident kernel + weights, payload, a
-   real CRC-16, and golden results — plus a per-node backpressure schedule.
+   flit, its destination (`MODULE_ID` forwarded by eject as the DEST byte), the
+   node's resident kernel + weights, payload, a real CRC-16 (CCITT-FALSE over
+   `[MODULE_ID, CTRL, LEN_LO, LEN_HI, payload]`), and golden results — plus a
+   per-node backpressure schedule.
 3. The chassis is partitioned into contiguous layer slices (default one per
    CPU core; spine stages upstream of a destination layer are transparent
    pass-through, so slicing is byte-exact vs. the monolith). Each slice gets
@@ -218,11 +244,14 @@ flowchart LR
    (§2.8: one routing decision per clock) and logs every delivered byte,
    cycle-stamped.
 4. Python runs each node's **doorbell discipline** (§2.9): the resident
-   kernel fires only when the landed byte count equals the length field and
-   the end-to-end CRC validates. Kernels (`echo`, `sum`, `accum`, and `dot`
-   — a MAC-array dot product against resident weights, §2.9 COMPUTE) execute
-   on what the hardware actually delivered and are checked against the
-   golden manifest.
+   kernel fires only when all three conditions hold — the landed byte count
+   equals `LEN+6`, the end-to-end CRC validates, and the DEST byte equals the
+   node's own coordinate; refusals are logged (`NODE_ERR`) and never fire the
+   kernel. Kernels (`echo`, `sum`, `accum`, and `dot` — a MAC-array dot
+   product against resident weights, §2.9 COMPUTE) execute on what the
+   hardware actually delivered and are checked against the golden manifest.
+   The same three-condition fire logic is implemented in hardware as
+   `HDL/doorbell.v` (with `crc16.v`), exercised by `HDL/tb_doorbell.v`.
 
 Scenarios:
 
@@ -241,7 +270,7 @@ per-packet latency min/mean/max for each scenario.
 
 ```bash
 verilator --lint-only -Wno-MULTITOP \
-  hfr.v flit_gate.v z_ingress.v xy_turn.v node_eject.v
+  hfr.v flit_gate.v xyz_repeater.v xy_turn.v node_eject.v
 ```
 
 ## Verification claims
@@ -259,6 +288,9 @@ verilator --lint-only -Wno-MULTITOP \
 - **The doorbell never fires on corrupt messages** (§2.9) — `stress` injects ~3%
   messages with a deliberately broken CRC; delivery still happens (the fabric is pure
   transport), but every one is rejected at the destination DMA and its kernel never runs.
+  The same three-condition fire logic (`LEN+6` bytes, CRC valid, DEST == own coordinate)
+  is proven in RTL by `HDL/tb_doorbell.v`, which also checks that `DOORBELL_ACK` never
+  asserts without `DOORBELL_TRIG` and that a rejected frame never re-fires.
 - **Bit-exact replay** (§2.10/§4.3) — `replay` runs an identical stress load twice;
   the cycle-stamped delivery logs must be bit-identical.
 

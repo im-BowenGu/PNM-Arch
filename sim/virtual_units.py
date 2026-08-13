@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Virtual execution units — the node's MAC ASIC + LPCAMM2 socket, in Python.
+"""Virtual execution units — the node's MAC ASIC + LPDDR6 CAMM2 socket, in Python.
 
 Each (layer, x, y) node in the generated topology owns a VirtualUnit. The
 unit receives the DMA stream that *actually came through the Verilog fabric*
@@ -20,11 +20,14 @@ This models the paper's per-node contract:
 """
 from __future__ import annotations
 
-# ── end-to-end message CRC (checked by the doorbell, Paper.MD §2.9) ──────
+# ── end-to-end message CRC (checked by the doorbell, Paper.MD §2.9/§2.10) ──
 #
-# CRC-16/CCITT-FALSE over the message body the node DMA actually sees:
-# [CTRL, LEN_LO, LEN_HI, payload...].  The two header bytes (LAYER_ID,
-# MODULE_ID) are source-routing bytes stripped in flight and are not covered.
+# CRC-16/CCITT-FALSE over the DMA body the node doorbell validates:
+# [MODULE_ID(=DEST), CTRL, LEN_LO, LEN_HI, payload...].  The eject forwards
+# MODULE_ID as the DEST byte instead of stripping it, so the destination
+# field is inside the CRC coverage; the doorbell rejects a message whose DEST
+# is not the node's own coordinate even if the routing fabric misdelivered it.
+# Only LAYER_ID is stripped in flight (at the xyz_repeater) and is not covered.
 
 def crc16(data) -> int:
     crc = 0xFFFF
@@ -80,16 +83,18 @@ KERNELS = {"echo": k_echo, "sum": k_sum, "accum": k_accum, "dot": k_dot}
 
 
 def decode(byte_list: list) -> dict:
-    """Decode a node DMA stream: CTRL, LEN_LO, LEN_HI, payload..., CRC_HI, CRC_LO."""
-    ctrl = byte_list[0]
-    length = byte_list[1] | (byte_list[2] << 8)
-    payload = byte_list[3:3 + length]
+    """Decode a node DMA stream:
+    DEST, CTRL, LEN_LO, LEN_HI, payload..., CRC_HI, CRC_LO."""
+    dest = byte_list[0]
+    ctrl = byte_list[1]
+    length = byte_list[2] | (byte_list[3] << 8)
+    payload = byte_list[4:4 + length]
     crc = (byte_list[-2], byte_list[-1])
-    return dict(ctrl=ctrl, length=length, payload=payload, crc=crc)
+    return dict(dest=dest, ctrl=ctrl, length=length, payload=payload, crc=crc)
 
 
 class VirtualUnit:
-    """A node's MAC ASIC + LPCAMM2 socket running the doorbell discipline.
+    """A node's MAC ASIC + LPDDR6 CAMM2 socket running the doorbell discipline.
 
     consume() is the DMA engine + doorbell (Paper.MD §2.9): it only fires
     the resident kernel when the landed message is complete (byte count ==
@@ -111,19 +116,28 @@ class VirtualUnit:
     def consume(self, byte_list: list) -> dict | None:
         """Consume one hardware-delivered DMA packet; fire the doorbell.
 
-        Returns the decoded packet if the doorbell fired, else None.
+        Fires only when all three conditions of Paper.MD §2.4 hold:
+        (a) byte-count equality, (b) end-to-end CRC, (c) DEST == own
+        coordinate.  Returns the decoded packet if the doorbell fired.
         """
         p = decode(byte_list)
         # (a) byte-count equality: complete delivery test (§2.9)
-        if len(byte_list) != p["length"] + 5:
+        if len(byte_list) != p["length"] + 6:
             self.rejections += 1
             self.reject_reasons.append(
-                f"count {len(byte_list)} != len {p['length']} + 5")
+                f"count {len(byte_list)} != len {p['length']} + 6")
             return None
-        # (b) end-to-end CRC over [CTRL, LEN_LO, LEN_HI, payload]
+        # (b) end-to-end CRC over [DEST, CTRL, LEN_LO, LEN_HI, payload]
         if (p["crc"][0] << 8 | p["crc"][1]) != crc16(byte_list[:-2]):
             self.rejections += 1
             self.reject_reasons.append("CRC mismatch")
+            return None
+        # (c) CRC-protected DEST field == this node's own coordinate
+        own = (self.node[1] << 4) | self.node[2]
+        if p["dest"] != own:
+            self.rejections += 1
+            self.reject_reasons.append(
+                f"DEST {p['dest']:#04x} != own {own:#04x}")
             return None
         # doorbell fires: DISPATCH the resident kernel
         self.packets.append(p)
