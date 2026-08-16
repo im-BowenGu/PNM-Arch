@@ -7,7 +7,7 @@
 **Paper:** [*Bypassing the HBM Wall: A Distributed Spatial Processing-Near-Memory Architecture using DUV ASICs and Deterministic Routing*](Paper.MD)
 
 This repository is the working project behind the paper: the manuscript source, the build
-pipeline that produces the single DOCX submission, and a **Python ↔ Verilog co-simulation
+pipeline that produces the single DOCX submission, and a **Go ↔ Verilog co-simulation
 harness** that pumps real flits through the routing fabric into virtual execution units,
 proving the topology delivers packets losslessly under backpressure.
 
@@ -21,7 +21,8 @@ Modern GPU/HBM monoliths hit a physical and economic wall:
 
 This architecture turns the problem around:
 
-- Replace centralised HBM with **commodity 192-bit LPDDR6 CAMM2** (≈\$4/GB).
+- Replace centralised HBM with **commodity 192-bit LPDDR6 CAMM2** (≈\$16/GB at
+  2025–26 DRAM prices, ~24× cheaper than HBM per byte).
 - Pair each module with a **mature-node 14/28 nm DUV MAC ASIC** — bandwidth-bound
   workloads never need the EUV cost curve.
 - Replace OS/cache scheduling with a **deterministic single-spine wormhole fabric**:
@@ -162,8 +163,9 @@ Requires [Nix](https://nixos.org) with flakes-style `nix-shell` support.
 nix-shell
 ```
 
-This provides `pdflatex`, `pandoc`, `pdfinfo`, `iverilog`/`vvp`, `verilator`, and
-`python3` (the co-simulation harness is standard-library only).
+This provides `pdflatex`, `pandoc`, `pdfinfo`, `iverilog`/`vvp`, `verilator`, `go`, and
+`python3` (the latter only for the gitignored `build.py` pipeline; the co-simulation
+harness is Go standard-library only).
 
 ### 2. Build the paper (single DOCX)
 
@@ -203,35 +205,39 @@ iverilog -g2005 -o tb_doorbell.out \
 
 The load test scoreboards every packet end-to-end: destination packet counts, SOP/EOP
 integrity, payload checksums, and misroute guards on the X-lane (must be zero). Expect
-`*** LOAD TEST PASSED (500 packets) ***`. The doorbell test drives four valid
-activations (bytes == `LEN+6`, CRC valid, DEST == own coordinate) and four rejections
-(broken CRC, truncated message, wrong DEST) through a `pe_tile_stub` (AXI-Stream,
-`MULT_LATENCY=2`) and checks that `DOORBELL_TRIG`/`DOORBELL_ACK` fire together only on
-valid messages and `NODE_ERR` alone otherwise.
+`*** LOAD TEST PASSED (500 packets) ***`. The doorbell test drives eight packets
+through a `pe_tile_stub` (AXI-Stream, `MULT_LATENCY=2`) and checks that
+`DOORBELL_TRIG`/`DOORBELL_ACK` fire together only on valid messages and `NODE_ERR`
+alone otherwise: 6 activations (p0–p3, p6, p7), 2 rejections (truncated message,
+wrong DEST), and 2 `corrupt_out` pulses (p2, p3 — stub-detected incoming-CRC
+failures, the hardware doorbell verdict the co-sim accounts for).
 
 ### 4. Co-simulation: virtual execution units over the real fabric
 
 ```bash
 cd sim
-python3 run.py                 # 3x4x4 = 48 nodes, all scenarios, parallel slices
-python3 run.py -l 8 -x 8 -y 8  # the 512-node reference chassis
-python3 run.py --groups 1      # force a single monolithic vvp process
+go run ./cmd/pnm                 # 3x4x4 = 48 nodes, all scenarios, parallel slices
+go run ./cmd/pnm -l 8 -x 8 -y 8  # the 512-node reference chassis
+go run ./cmd/pnm --groups 1      # force a single monolithic vvp process
+go run ./cmd/pnmc examples/bias_add.pnm -l 8 -x 8 -y 8   # compile + run a program
 ```
+
+No external Go modules; `go test ./internal/pnm/` pins the RNG to CPython output.
 
 The pipeline mirrors the paper's dataflow (Paper.MD §2.1–2.2 routing, §2.9
 doorbell activation):
 
 ```mermaid
 flowchart LR
-    p1["python stimulus"] --> p2["verilog fabric (pnm_top.v)"]
-    p2 --> p3["python virtual execution units"]
+    p1["go stimulus"] --> p2["verilog fabric (pnm_top.v)"]
+    p2 --> p3["go virtual execution units"]
     p1 -->|"manifest: dest, kernel, weights, payload, CRC, golden"| p4["oracle: byte-exact compare"]
     p3 --> p4
 ```
 
-1. `gen_topology.py` wires the paper topology from the `HDL/` gates
+1. `internal/pnm/gen_topology.go` wires the paper topology from the `HDL/` gates
    (`xyz_repeater` spine + HFR repeaters → `xy_turn` X-lanes → `node_eject` Y-lanes).
-2. `run.py` writes the injection program, the Python-side manifest — every
+2. The harness writes the injection program, the Go-side manifest — every
    flit, its destination (`MODULE_ID` forwarded by eject as the DEST byte), the
    node's resident kernel + weights, payload, a real CRC-16 (CCITT-FALSE over
    `[MODULE_ID, CTRL, LEN_LO, LEN_HI, payload]`), and golden results — plus a
@@ -239,11 +245,11 @@ flowchart LR
 3. The chassis is partitioned into contiguous layer slices (default one per
    CPU core; spine stages upstream of a destination layer are transparent
    pass-through, so slicing is byte-exact vs. the monolith). Each slice gets
-   its own topology, stimulus, and `gen_tb.py` harness, and its own `vvp`
+   its own topology, stimulus, and `gen_tb.go` harness, and its own `vvp`
    process — all run in parallel. The harness streams at up to 1 byte/cycle
    (§2.8: one routing decision per clock) and logs every delivered byte,
    cycle-stamped.
-4. Python runs each node's **doorbell discipline** (§2.9): the resident
+4. Go runs each node's **doorbell discipline** (§2.9): the resident
    kernel fires only when all three conditions hold — the landed byte count
    equals `LEN+6`, the end-to-end CRC validates, and the DEST byte equals the
    node's own coordinate; refusals are logged (`NODE_ERR`) and never fire the

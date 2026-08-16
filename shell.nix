@@ -13,8 +13,10 @@ pkgs.mkShell {
     iverilog
     # Verilog static lint
     verilator
-    # CPython for the co-sim harness (stdlib only: stimulus generation,
-    # virtual execution units, delivery verification)
+    # CPython for the gitignored paper build pipeline (build.py, stdlib only)
     python3
+    # Go for the co-sim harness (sim/cmd/* + sim/internal/*: stimulus generation,
+    # virtual execution units, delivery verification; stdlib only, no runtime deps)
+    go
   ];
 }
