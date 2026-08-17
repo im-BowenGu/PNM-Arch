@@ -48,7 +48,7 @@ func runRTLSlice(t *testing.T, prog *Program, lids []int, bx, by int) *Delivery 
 	for _, n := range gnodes {
 		biases[n] = prog.Manifest[n].Bias
 	}
-	os.WriteFile(filepath.Join(simDir, nm.Top), []byte(GenTopology(lids, bx, by, biases)), 0o644)
+	os.WriteFile(filepath.Join(simDir, nm.Top), []byte(GenTopology(lids, bx, by, biases, false)), 0o644)
 	os.WriteFile(filepath.Join(simDir, nm.TB), []byte(GenTB(lids, bx, by, prog.BP, nbytes, nm.Stim, nm.Log)), 0o644)
 	for _, f := range []string{nm.Top, nm.TB, nm.Stim, nm.Log, nm.Out} {
 		t.Cleanup(func() { os.Remove(filepath.Join(simDir, f)) })

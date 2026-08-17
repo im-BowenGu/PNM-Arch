@@ -6,7 +6,7 @@
 // The hardware fabric decouples transport from computation: the deterministic
 // repeater network connects to a modular PE interface via standard AXI-Stream /
 // Ready-Valid handshaking, so the underlying execution block (systolic array,
-// FP16 MAC array, or ALU) can be swapped independently of the routing fabric.
+// BF16 MAC array, or ALU) can be swapped independently of the routing fabric.
 // This stub *is* that interface contract, in Verilog.
 //
 // It consumes one flit byte per clock on its slave port (s_axis_*), holds it
@@ -15,15 +15,28 @@
 // (m_axis_*).  It owns exactly two handshake flags: s_axis_tready (the pipe
 // can accept a byte) and m_axis_tvalid (a result byte is present).
 //
-// Computation (this revision): the stub performs the node's resident kernel —
-// an element-wise bias add, KERNEL_CONST — on the payload of every message,
-// and it runs the CRC half of the doorbell discipline in hardware (Paper §2.9):
+// Computation modes (selected by USE_FMA parameter):
 //
+//   USE_FMA=0 (default): element-wise bias-add, KERNEL_CONST — on the payload
+//     of every message.  With KERNEL_CONST=0 the recomputed CRC equals the
+//     incoming CRC, so every byte is reproduced exactly and the default
+//     behaviour is a byte-exact pipe: existing testbenches observe no change.
+//
+//   USE_FMA=1: BF16 Fused Multiply-Accumulate — payload bytes are accumulated
+//     into 16-bit BF16 words and fed through the instantiated bf16_fma unit
+//     (Paper §2.9).  Each BF16 word w is computed as: FMA(w, FMA_WEIGHT, 0),
+//     producing an element-wise multiply by the compile-time constant
+//     FMA_WEIGHT (BF16 encoded).  This replaces the integer bias-add with a
+//     floating-point weight-stationary multiply, matching the paper's systolic
+//     MAC array architecture.  The FMA's 3-cycle pipeline is absorbed into the
+//     elastic pipe via a byte-pair accumulator and a 4-stage output shift
+//     register that re-serializes the BF16 result back to the byte stream.
+//
+// Both modes run the CRC half of the doorbell discipline in hardware:
 //   * DEST, CTRL, LEN bytes pass through untouched
-//   * payload byte i becomes (payload[i] + KERNEL_CONST) mod 256
 //   * the trailing CRC bytes are replaced by CRC-16/CCITT-FALSE over
 //     [DEST, CTRL, LEN_LO, LEN_HI, payload'] (computed in flight via crc16.v,
-//     the hardware twin of sim/virtual_units.py crc16())
+//     the hardware twin of sim/internal/pnm/crc.go crc16())
 //   * the *incoming* CRC (over the unmodified body) is validated as it
 //     streams; on failure, corrupt_out pulses for one cycle on the last CRC
 //     byte — the hardware doorbell verdict, which the co-sim records as a
@@ -35,10 +48,6 @@
 //     class 0 (board egress, paper §4.3), return flag cleared, CRC recomputed
 //     over the new body.  While the echo emits, the forward pipe is stalled:
 //     a single DMA engine serializes egress.
-//
-// With KERNEL_CONST=0 the recomputed CRC equals the incoming CRC, so every
-// byte is reproduced exactly and the default behaviour is a byte-exact pipe:
-// existing testbenches observe no change.
 //
 // MULT_LATENCY: 1 or 2 clock cycles (the paper's approximate MAC latency,
 // Section 2.9).  Default 2.
@@ -55,9 +64,11 @@
 // =============================================================================
 module pe_tile_stub #(
     parameter integer MULT_LATENCY = 2,    // 1 or 2 cycles of multiply latency
-    parameter [7:0]   KERNEL_CONST  = 8'h00, // resident bias-add constant
+    parameter [7:0]   KERNEL_CONST  = 8'h00, // resident bias-add constant (USE_FMA=0)
     parameter integer TX_BUF        = 2048,  // max payload captured for the TX echo
-    parameter [7:0]   REQ_MODULE    = 8'hEE  // AOT-fixed requester (spine root)
+    parameter [7:0]   REQ_MODULE    = 8'hEE, // AOT-fixed requester (spine root)
+    parameter integer USE_FMA       = 0,     // 0=bias-add, 1=BF16 FMA
+    parameter [15:0]  FMA_WEIGHT    = 16'h3C00 // BF16 weight (1.0 when USE_FMA=1)
 )(
     input  wire        clk,
     input  wire        rst_n,
@@ -190,6 +201,55 @@ module pe_tile_stub #(
         end
     end
 
+    // -- BF16 FMA compute path (USE_FMA=1) --------------------------------
+    // When USE_FMA=1, payload bytes are accumulated into 16-bit BF16 words
+    // and fed through the bf16_fma unit.  The FMA computes:
+    //   result = (word * FMA_WEIGHT) + 0
+    // This replaces the integer bias-add with a floating-point
+    // weight-stationary multiply, matching the paper's systolic MAC array.
+    //
+    // Byte-pair accumulator: latches even byte, combines with odd byte to
+    // form a 16-bit BF16 word, fires the FMA, and re-serializes the result.
+    reg        fma_acc_lo;           // 0 = expecting low byte, 1 = high byte
+    reg [7:0]  fma_acc_byte;        // latched low byte
+    reg [15:0] fma_word_in;         // assembled BF16 word
+    reg        fma_valid_d;         // delayed valid for the FMA
+    wire [15:0] fma_result_w;       // FMA output word
+    wire        fma_valid_out_w;    // FMA output valid
+    // 4-stage output shift register: re-serializes the BF16 result
+    reg [7:0]  fma_out_sr [0:3];
+    reg [2:0]  fma_out_cnt;         // 0=idle, 1..4=outputting bytes
+    reg        fma_out_pending;     // a result is waiting in the SR
+
+    bf16_fma u_fma (
+        .clk       (clk),
+        .rst_n     (rst_n),
+        .a         (fma_word_in),
+        .b         (FMA_WEIGHT),
+        .c         (16'h0000),
+        .valid_in  (fma_valid_d),
+        .result    (fma_result_w),
+        .valid_out (fma_valid_out_w)
+    );
+
+    // FMA output capture: latch the result into the shift register
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            fma_out_pending <= 1'b0;
+            fma_out_cnt     <= 3'd0;
+        end else if (fma_valid_out_w && !fma_out_pending) begin
+            fma_out_sr[0] <= fma_result_w[7:0];
+            fma_out_sr[1] <= fma_result_w[15:8];
+            fma_out_sr[2] <= 8'h00;
+            fma_out_sr[3] <= 8'h00;
+            fma_out_pending <= 1'b1;
+            fma_out_cnt     <= 3'd2;  // 2 bytes to emit
+        end else if (fma_out_pending && fma_out_cnt != 0) begin
+            fma_out_cnt <= fma_out_cnt - 1;
+            if (fma_out_cnt == 1) fma_out_pending <= 1'b0;
+        end
+    end
+
     // -- compute + CRC tracking at the pipe output -------------------------
     // The DMA body is [DEST, CTRL, LEN_LO, LEN_HI, payload(len), CRC_HI,
     // CRC_LO]; 'pos' counts delivered body bytes, 'plen' is the payload
@@ -200,9 +260,11 @@ module pe_tile_stub #(
     reg [15:0] crc_out_acc;    // CRC over the *transformed* body (recomputed)
     reg        crc_mismatch_q; // incoming CRC_HI/LO comparison latch
 
-    // the computed result byte: bias-add on payload, recomputed CRC on tail
+    // the computed result byte: FMA path or bias-add on payload, recomputed CRC on tail
+    wire [7:0] fma_out_byte = fma_out_sr[fma_out_cnt[1:0]];
     wire [7:0] out_byte =
-        (pos >= 4 && pos < 4 + plen) ? (s1_data + KERNEL_CONST)
+        (USE_FMA && fma_out_pending)   ? fma_out_byte
+      : (pos >= 4 && pos < 4 + plen && !USE_FMA) ? (s1_data + KERNEL_CONST)
       : (pos == 4 + plen)            ? crc_out_acc[15:8]
       : (pos == 4 + plen + 1)        ? crc_out_acc[7:0]
       :                                s1_data;
@@ -251,6 +313,21 @@ module pe_tile_stub #(
                 tx_buf_wr <= tx_buf_wr + 16'd1;
             end
             if (s1_last) tx_len_q <= plen;
+            // FMA byte-pair accumulator (USE_FMA=1): accumulate payload bytes
+            // into BF16 words and fire the FMA unit
+            if (USE_FMA && pos >= 16'd4 && pos < 4 + plen) begin
+                if (!fma_acc_lo) begin
+                    fma_acc_byte <= s1_data;    // latch low byte
+                    fma_acc_lo   <= 1'b1;
+                end else begin
+                    fma_word_in  <= {s1_data, fma_acc_byte};  // {hi, lo} = BF16 word
+                    fma_valid_d  <= 1'b1;
+                    fma_acc_lo   <= 1'b0;
+                end
+            end else begin
+                fma_valid_d <= 1'b0;
+            end
+            if (s1_last) fma_acc_lo <= 1'b0;
         end
     end
 

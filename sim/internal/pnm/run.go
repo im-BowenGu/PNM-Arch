@@ -51,7 +51,7 @@ func SimDir() string {
 }
 
 var FABRIC = []string{"flit_gate.v", "hfr.v", "xyz_repeater.v", "xy_turn.v",
-	"node_eject.v", "vc_merge.v", "crc16.v", "pe_tile_stub.v"}
+	"node_eject.v", "vc_merge.v", "crc16.v", "bf16_fma.v", "pe_tile_stub.v"}
 
 // PE_PIPE_DELAY: the generated node MAC stub (pe_tile_stub.v,
 // MULT_LATENCY=2) adds two pipe cycles between the eject and the node DMA
@@ -1175,7 +1175,7 @@ func RunOne(prog *Program, nodes []NodeID, dims Dims, groups, replays int) bool 
 		for _, n := range gnodes {
 			biases[n] = prog.Manifest[n].Bias
 		}
-		os.WriteFile(filepath.Join(simDir, nm.Top), []byte(GenTopology(lids, bx, by, biases)), 0o644)
+		os.WriteFile(filepath.Join(simDir, nm.Top), []byte(GenTopology(lids, bx, by, biases, false)), 0o644)
 		os.WriteFile(filepath.Join(simDir, nm.TB), []byte(GenTB(lids, bx, by, prog.BP, nbytes, nm.Stim, nm.Log)), 0o644)
 		jobs = append(jobs, &job{GI: gi, Lids: lids, Nm: nm, NB: nbytes})
 	}

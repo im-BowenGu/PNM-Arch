@@ -150,6 +150,9 @@ flowchart LR
 | `build.py` | Build pipeline → single submission DOCX |
 | `HDL/` | Verilog fabric: HFR, `xyz_repeater`, XY turn, eject, CRC-16 + doorbell DMA + testbenches |
 | `sim/` | Co-simulation harness: topology/tb generators, virtual execution units |
+| `sim/internal/pnm/safetensors.go` | Safetensors index parser + model config reader + tensor shape inference |
+| `sim/internal/pnm/model_compiler.go` | Model-to-PNM compiler: 5-stage AOT pipeline (ingest → partition → map → route → emit) |
+| `sim/examples/gemma4_test/` | Synthetic Gemma-4-26B-A4B-it config + index for testing the compiler |
 | `submission/` | Generated build artifacts (**gitignored**) |
 | `shell.nix` | Reproducible build + simulation environment |
 
@@ -278,6 +281,45 @@ per-packet latency min/mean/max for each scenario.
 verilator --lint-only -Wno-MULTITOP \
   hfr.v flit_gate.v xyz_repeater.v xy_turn.v node_eject.v
 ```
+
+### 6. Model compiler: safetensors → PNM
+
+The model compiler transpiles a HuggingFace model (safetensors + config.json) onto
+a PNM chassis. It parses the safetensors index, computes tensor sizes from shapes,
+partitions model layers across physical layers, distributes experts across nodes,
+and emits a `.pnm` program + chassis schema.
+
+```bash
+cd sim
+
+# compile a model onto a 4-layer, 4x4 chassis (64 nodes)
+go run ./cmd/pnmc compile-model examples/gemma4_test -l 4 -x 4 -y 4
+
+# compile onto the 8-layer reference chassis (512 nodes)
+go run ./cmd/pnmc compile-model examples/gemma4_test -l 8 -x 8 -y 8
+```
+
+The compiler outputs:
+- **Compilation listing** — per-node tensor assignments, memory usage, utilization
+- **Schema** (`gemma4_schema.txt`) — coordinate map, MODULE_ID, routing bitmaps, spine sizing
+- **Program** (`gemma4.pnm`) — kernel/bias/token directives for the co-simulation
+
+For a real model (e.g., `google/gemma-4-26B-A4B-it`), point the compiler at a
+directory containing `config.json` and `model.safetensors.index.json`:
+
+```bash
+# download config + index only (not the full 51 GB of weights)
+mkdir /tmp/gemma4 && cd /tmp/gemma4
+wget https://huggingface.co/google/gemma-4-26B-A4B-it/resolve/main/config.json
+wget https://huggingface.co/google/gemma-4-26B-A4B-it/resolve/main/model.safetensors.index.json
+
+# compile onto 64 nodes
+go run ./cmd/pnmc compile-model /tmp/gemma4 -l 4 -x 4 -y 4
+```
+
+The compiler is model-agnostic: it reads any safetensors index + config.json
+combination and maps it onto any chassis dimensions. The `.pnm` output is
+compatible with the existing co-simulation pipeline (step 4).
 
 ## Verification claims
 

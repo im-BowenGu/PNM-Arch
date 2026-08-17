@@ -9,7 +9,7 @@ handles MoE routing, POST discovery, PCIe, and coordinate mapping—with everyth
 data path kept as pure, stateless transport.
 
 A 512-node reference chassis delivers 64 TB of attached memory and 131 TB/s of aggregate
-node-local bandwidth at roughly $4/GB—two orders of magnitude below HBM—while a roofline
+node-local bandwidth at roughly $16/GB—two orders of magnitude below HBM—while a roofline
 analysis confirms that MoE transformer inference and FP64 stencil workloads are firmly
 bandwidth-bound and fully served by mature-node logic. Each node runs a 192-bit LPDDR6
 CAMM2 at ~256 GB/s and hangs off the spine over 16 GB/s links. By compiling high-level

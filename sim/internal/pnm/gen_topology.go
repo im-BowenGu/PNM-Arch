@@ -23,12 +23,17 @@ import (
 //   - the 2-bit VC sideband (paper §4.3) rides every link: class 2 on the
 //     spine descent, 2->3 at the repeater attachment, class 0 on board
 //     egress, 0->1 at the up-spine merge
+//   - optional KV cache banks per layer (paper §2.6, §3.3): when kvcache is
+//     true, a kv_cache_bank sits between each xyz_repeater's NoB output and
+//     the first xy_turn gate, providing per-layer FIFO KV storage with
+//     offload/reclaim interfaces tied off (active control via kv_offload.v)
 //
 // layerIDs: global (0-based) layer numbers to instantiate, in spine order.
 // A sub-list generates a horizontal slice of the chassis — used by RunOne
 // with groups > 1 to simulate layer groups in parallel vvp processes.
 // biases: {(layer, x, y): bias_add constant} for each node's MAC stub.
-func GenTopology(layerIDs []int, bx, by int, biases map[NodeID]int) string {
+// kvcache: when true, instantiate kv_cache_bank between NoB and xy_turn per layer.
+func GenTopology(layerIDs []int, bx, by int, biases map[NodeID]int, kvcache bool) string {
 	if biases == nil {
 		biases = map[NodeID]int{}
 	}
@@ -215,6 +220,9 @@ func GenTopology(layerIDs []int, bx, by int, biases map[NodeID]int) string {
 		for x := 0; x < bx; x++ {
 			a(fmt.Sprintf("    wire [7:0] t_%d_%d_data; wire t_%d_%d_valid, t_%d_%d_sop, t_%d_%d_eop, t_%d_%d_ready; wire [1:0] t_%d_%d_vc;", l, x, l, x, l, x, l, x, l, x, l, x))
 			a(fmt.Sprintf("    wire [7:0] h_%d_%d_data; wire h_%d_%d_valid, h_%d_%d_sop, h_%d_%d_eop, h_%d_%d_ready; wire [1:0] h_%d_%d_vc;", l, x, l, x, l, x, l, x, l, x, l, x))
+			if kvcache {
+				a(fmt.Sprintf("    wire [7:0] kvc_%d_%d_data; wire kvc_%d_%d_valid, kvc_%d_%d_sop, kvc_%d_%d_eop, kvc_%d_%d_ready; wire [1:0] kvc_%d_%d_vc;", l, x, l, x, l, x, l, x, l, x, l, x))
+			}
 			for y := 0; y < by; y++ {
 				a(fmt.Sprintf("    wire [7:0] y_%d_%d_%d_data; wire y_%d_%d_%d_valid, y_%d_%d_%d_sop, y_%d_%d_%d_eop, y_%d_%d_%d_ready; wire [1:0] y_%d_%d_%d_vc;", l, x, y, l, x, y, l, x, y, l, x, y, l, x, y, l, x, y))
 				// node-eject -> MAC-stub interconnect (DMA stream into the PE)
@@ -240,6 +248,24 @@ func GenTopology(layerIDs []int, bx, by int, biases map[NodeID]int) string {
 			xin := fmt.Sprintf("nob_%d", l)
 			if x != 0 {
 				xin = fmt.Sprintf("h_%d_%d", l, x-1)
+			}
+			if kvcache {
+				// KV cache bank: sits between NoB/HFR output and xy_turn input
+				a(fmt.Sprintf("    // -- column %d: KV cache bank (paper §2.6, §3.3) ----", x))
+				a(fmt.Sprintf("    kv_cache_bank #(.BANK_DEPTH(1024), .ENTRY_BYTES(512)) u_kvc_%d_%d (", l, x))
+				a("        .clk(clk), .rst_n(rst_n),")
+				a(fmt.Sprintf("        .nob_in_data(%s_data), .nob_in_valid(%s_valid), .nob_in_sop(%s_sop),", xin, xin, xin))
+				a(fmt.Sprintf("        .nob_in_eop(%s_eop), .nob_in_ready(%s_ready),", xin, xin))
+				a(fmt.Sprintf("        .nob_in_vc(%s_vc),", xin))
+				a(fmt.Sprintf("        .nob_out_data(kvc_%d_%d_data), .nob_out_valid(kvc_%d_%d_valid), .nob_out_sop(kvc_%d_%d_sop),", l, x, l, x, l, x))
+				a(fmt.Sprintf("        .nob_out_eop(kvc_%d_%d_eop), .nob_out_ready(kvc_%d_%d_ready),", l, x, l, x))
+				a(fmt.Sprintf("        .nob_out_vc(kvc_%d_%d_vc),", l, x))
+				a("        .kv_store_data(8'h00), .kv_store_valid(1'b0), .kv_store_sop(1'b0), .kv_store_eop(1'b0),")
+				a("        .kv_load_ready(1'b0),")
+				a("        .evict_req(1'b0), .evict_addr(10'd0), .evict_ready(1'b0),")
+				a("        .reclaim_req(1'b0), .reclaim_data(8'h00), .reclaim_valid(1'b0), .reclaim_sop(1'b0), .reclaim_eop(1'b0)")
+				a("    );")
+				xin = fmt.Sprintf("kvc_%d_%d", l, x)
 			}
 			a(fmt.Sprintf("    // -- column %d: X->Y turn gate ---------------------------", x))
 			a(fmt.Sprintf("    xy_turn #(.LOCAL_X(4'h%x)) u_%d_turn_%d (", x, l, x))
