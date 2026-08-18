@@ -29,15 +29,74 @@ type NodeAssignment struct {
 	Tensors    []TensorRef     // tensors resident on this node
 	TotalBytes int64
 	Bias       int
+	// Available compute units on this node (populated by Partition)
+	ComputeUnits []ComputeUnitType
 }
 
-// TensorRef is a reference to a tensor with its role.
+// ComputeUnitType enumerates the hardware compute units available on each node.
+type ComputeUnitType int
+
+const (
+	CUTypeNone    ComputeUnitType = iota
+	CUTypeBF16FMA                  // bf16_fma: 16-bit BF16 Fused Multiply-Accumulate
+	CUTypeFP16FMA                  // fp16_fma: 16-bit IEEE FP16 FMA
+	CUTypeFP32FMA                  // fp32_fma: 32-bit FP FMA
+	CUTypeFP64FMA                  // fp64_fma: 64-bit FP FMA
+	CUTypeFP32ALU                  // fp32_alu: FP32 multi-function ALU (ADD/SUB/MUL/DIV/MIN/MAX/CMP)
+	CUTypeINT8MAC                  // int8_mac: INT8 Multiply-Accumulate
+	CUTypeBF16Array                // bf16_mac_array: BF16 systolic MAC array
+	CUTypeFP16Array                // fp16_mac_array: FP16 systolic MAC array
+)
+
+// String returns the human-readable name of the compute unit type.
+func (t ComputeUnitType) String() string {
+	switch t {
+	case CUTypeBF16FMA:
+		return "bf16_fma"
+	case CUTypeFP16FMA:
+		return "fp16_fma"
+	case CUTypeFP32FMA:
+		return "fp32_fma"
+	case CUTypeFP64FMA:
+	return "fp64_fma"
+	case CUTypeFP32ALU:
+		return "fp32_alu"
+	case CUTypeINT8MAC:
+		return "int8_mac"
+	case CUTypeBF16Array:
+		return "bf16_mac_array"
+	case CUTypeFP16Array:
+		return "fp16_mac_array"
+	default:
+		return "none"
+	}
+}
+
+// DTypeBytes returns the byte width of the compute unit's native data type.
+func (t ComputeUnitType) DTypeBytes() int {
+	switch t {
+	case CUTypeBF16FMA, CUTypeFP16FMA, CUTypeBF16Array, CUTypeFP16Array:
+		return 2
+	case CUTypeFP32FMA, CUTypeFP32ALU:
+		return 4
+	case CUTypeINT8MAC:
+		return 1
+	case CUTypeFP64FMA:
+		return 8
+	default:
+		return 2 // BF16 default
+	}
+}
+
+// TensorRef is a reference to a tensor with its role and compute unit type.
 type TensorRef struct {
 	Name      string
-	Role      string // "expert_gate_up", "expert_down", "attention_q", etc.
+	Role      string          // "expert_gate_up", "expert_down", "attention_q", etc.
 	ModelLayer int
-	ExpertIdx  int  // -1 if not expert-specific
+	ExpertIdx  int            // -1 if not expert-specific
 	SizeBytes  int64
+	CUType     ComputeUnitType // hardware unit that processes this tensor
+	DType      string         // "BF16", "FP16", "FP32", "INT8"
 }
 
 // CompileModel performs the full AOT compilation pipeline.
@@ -58,6 +117,9 @@ func CompileModel(cfg *ModelConfig, idx *SafetensorsIndex, dims Dims) (*ModelCom
 	if err := mc.Partition(); err != nil {
 		return nil, err
 	}
+
+	// Assign compute units to each tensor based on its role
+	mc.AssignComputeUnits()
 
 	return mc, nil
 }
@@ -548,6 +610,57 @@ func (mc *ModelCompiler) EmitSchema() string {
 	b.WriteString(fmt.Sprintf("# spine_aggregate = ~2 TB/s per direction\n"))
 
 	return b.String()
+}
+
+// AssignComputeUnits selects the best compute unit for each tensor on a node.
+func (mc *ModelCompiler) AssignComputeUnits() {
+	for _, na := range mc.NodeAssignments {
+		if na.Node.L < 0 || len(na.Tensors) == 0 {
+			continue
+		}
+		cuSet := map[ComputeUnitType]bool{}
+		for i := range na.Tensors {
+			t := &na.Tensors[i]
+			switch {
+			case t.Role == "expert_gate_up" || t.Role == "expert_down":
+				t.CUType = CUTypeBF16FMA
+				t.DType = "BF16"
+			case t.Role == "attn_q" || t.Role == "attn_k" || t.Role == "attn_v" || t.Role == "attn_o":
+				t.CUType = CUTypeBF16Array
+				t.DType = "BF16"
+			case t.Role == "dense_gate" || t.Role == "dense_up" || t.Role == "dense_down":
+				t.CUType = CUTypeBF16FMA
+				t.DType = "BF16"
+			case t.Role == "layernorm" || t.Role == "final_norm":
+				t.CUType = CUTypeFP32ALU
+				t.DType = "FP32"
+			case t.Role == "embedding":
+				t.CUType = CUTypeBF16FMA
+				t.DType = "BF16"
+			default:
+				t.CUType = CUTypeBF16FMA
+				t.DType = "BF16"
+			}
+			cuSet[t.CUType] = true
+		}
+		for cu := range cuSet {
+			na.ComputeUnits = append(na.ComputeUnits, cu)
+		}
+	}
+}
+
+// ComputeUnitSummary returns a per-type count of compute units across all nodes.
+func (mc *ModelCompiler) ComputeUnitSummary() map[ComputeUnitType]int {
+	counts := map[ComputeUnitType]int{}
+	for _, na := range mc.NodeAssignments {
+		if na.Node.L < 0 {
+			continue
+		}
+		for _, cu := range na.ComputeUnits {
+			counts[cu]++
+		}
+	}
+	return counts
 }
 
 func min(a, b int) int {

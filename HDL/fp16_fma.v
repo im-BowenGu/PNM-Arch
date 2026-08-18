@@ -11,139 +11,148 @@
 //   [14:10] exponent (5 bits, bias = 15)
 //   [9:0]   mantissa (10 bits, implicit leading 1)
 //
-// Denormals, NaN, and infinity are handled.  Round-to-nearest-even is used.
-//
-// NOTE: iverilog drops the MSB of {1'b1, wire[9:0]} concatenations.
-//       Workaround: use bit-by-bit assignment for the mantissa field.
+// Fixes applied:
+//   1. Pipeline: multiply results registered into stage 1 (s1_mul_*)
+//   2. Underflow: signed norm_exp prevents unsigned wrap to infinity
+//   3. Rounding: round-to-nearest-even with guard/round/sticky bits
+//   4. Special cases: NaN, Inf, zero*Inf properly handled
 // =============================================================================
 
 module fp16_fma (
     input  wire        clk,
     input  wire        rst_n,
-
-    // Input operands (FP16 encoded)
-    input  wire [15:0] a,       // multiplicand
-    input  wire [15:0] b,       // multiplier
-    input  wire [15:0] c,       // addend
+    input  wire [15:0] a,
+    input  wire [15:0] b,
+    input  wire [15:0] c,
     input  wire        valid_in,
-
-    // Output result
     output reg  [15:0] result,
     output reg         valid_out
 );
 
-    // =========================================================================
-    // Internal constants
-    // =========================================================================
-    localparam FP16_BIAS    = 15;
-    localparam FP16_ZERO    = 16'h0000;
-    localparam FP16_ONE     = 16'h3C00;  // 1.0
-    localparam FP16_INF     = 16'h7C00;
-    localparam FP16_NAN     = 16'h7E00;
+    localparam FP16_BIAS = 15;
+    localparam FP16_ZERO = 16'h0000;
+    localparam FP16_INF  = 16'h7C00;
+    localparam FP16_NAN  = 16'h7E00;
 
     // =========================================================================
-    // Pipeline stage 1: unpack and multiply
+    // Pipeline stage 1: register inputs + detect special cases + multiply
     // =========================================================================
     reg [15:0] s1_a, s1_b, s1_c;
     reg        s1_valid;
 
-    // Unpack a
-    wire        a_sign = a[15];
-    wire [4:0]  a_exp  = a[14:10];
-    wire [9:0]  a_man  = a[9:0];
-    wire        a_zero = (a_exp == 0) && (a_man == 0);
-    wire        a_inf  = (a_exp == 31) && (a_man == 0);
-    wire        a_nan  = (a_exp == 31) && (a_man != 0);
-    wire        a_den  = (a_exp == 0) && (a_man != 0);
+    // Special case flags (registered with inputs)
+    reg s1_a_nan, s1_b_nan, s1_c_nan;
+    reg s1_a_inf, s1_b_inf, s1_c_inf;
+    reg s1_a_zero, s1_b_zero, s1_c_zero;
 
-    // Build mantissa: 11 bits (bit 10 = implicit 1, bits 9:0 = fraction)
-    // This mirrors bf16_fma's 8-bit mantissa (bit 7 = implicit 1, bits 6:0 = fraction)
-    wire [10:0] a_mantissa;
-    assign a_mantissa[10]   = a_zero ? 1'b0 : (a_den ? 1'b0 : 1'b1);
-    assign a_mantissa[9:0]  = a_zero ? 10'd0 : (a_den ? {1'b0, a_man} : a_man);
-    wire [5:0]  a_exponent = a_zero ? 6'd0   : (a_den ? 6'd1 : {1'b0, a_exp});
+    // Registered multiply results (fix #1: must travel with s1_c)
+    reg [21:0] s1_mul_man;
+    reg [6:0]  s1_mul_exp;
+    reg        s1_mul_sign;
+    reg        s1_mul_overflow;
 
-    // Unpack b
-    wire        b_sign = b[15];
-    wire [4:0]  b_exp  = b[14:10];
-    wire [9:0]  b_man  = b[9:0];
-    wire        b_zero = (b_exp == 0) && (b_man == 0);
-    wire        b_inf  = (b_exp == 31) && (b_man == 0);
-    wire        b_nan  = (b_exp == 31) && (b_man != 0);
-    wire        b_den  = (b_exp == 0) && (b_man != 0);
+    // Unpack a (combinational from current inputs)
+    wire        a_sign_w = a[15];
+    wire [4:0]  a_exp_w  = a[14:10];
+    wire [9:0]  a_man_w  = a[9:0];
+    wire        a_zero_w = (a == 16'h0000);
+    wire        a_den_w  = (a_exp_w == 0) && (a_man_w != 0);
 
-    wire [10:0] b_mantissa;
-    assign b_mantissa[10]   = b_zero ? 1'b0 : (b_den ? 1'b0 : 1'b1);
-    assign b_mantissa[9:0]  = b_zero ? 10'd0 : (b_den ? {1'b0, b_man} : b_man);
-    wire [5:0]  b_exponent = b_zero ? 6'd0   : (b_den ? 6'd1 : {1'b0, b_exp});
+    wire [10:0] a_mantissa_w;
+    assign a_mantissa_w[10]   = (a_zero_w || a_den_w) ? 1'b0 : 1'b1;
+    assign a_mantissa_w[9:0]  = a_zero_w ? 10'd0 : (a_den_w ? {1'b0, a_man_w} : a_man_w);
+    wire [5:0]  a_exponent_w = a_zero_w ? 6'd0 : (a_den_w ? 6'd1 : {1'b0, a_exp_w});
 
-    // Multiply: sign, exponent add, mantissa multiply
-    wire        mul_sign = a_sign ^ b_sign;
-    wire [6:0]  mul_exp  = a_exponent + b_exponent - FP16_BIAS;
-    wire [21:0] mul_man  = a_mantissa * b_mantissa;  // 11x11 = 22 bits
+    // Unpack b (combinational from current inputs)
+    wire        b_sign_w = b[15];
+    wire [4:0]  b_exp_w  = b[14:10];
+    wire [9:0]  b_man_w  = b[9:0];
+    wire        b_zero_w = (b == 16'h0000);
+    wire        b_den_w  = (b_exp_w == 0) && (b_man_w != 0);
+
+    wire [10:0] b_mantissa_w;
+    assign b_mantissa_w[10]   = (b_zero_w || b_den_w) ? 1'b0 : 1'b1;
+    assign b_mantissa_w[9:0]  = b_zero_w ? 10'd0 : (b_den_w ? {1'b0, b_man_w} : b_man_w);
+    wire [5:0]  b_exponent_w = b_zero_w ? 6'd0 : (b_den_w ? 6'd1 : {1'b0, b_exp_w});
+
+    // Multiply (combinational, registered next cycle)
+    wire        mul_sign_w = a_sign_w ^ b_sign_w;
+    wire [6:0]  mul_exp_w  = a_exponent_w + b_exponent_w - FP16_BIAS;
+    wire [21:0] mul_man_w  = a_mantissa_w * b_mantissa_w;
+    wire        mul_ovf_w  = mul_man_w[21];
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             s1_a <= 0; s1_b <= 0; s1_c <= 0;
             s1_valid <= 0;
+            s1_a_nan <= 0; s1_b_nan <= 0; s1_c_nan <= 0;
+            s1_a_inf <= 0; s1_b_inf <= 0; s1_c_inf <= 0;
+            s1_a_zero <= 0; s1_b_zero <= 0; s1_c_zero <= 0;
+            s1_mul_man <= 0; s1_mul_exp <= 0;
+            s1_mul_sign <= 0; s1_mul_overflow <= 0;
         end else begin
             s1_a <= a; s1_b <= b; s1_c <= c;
             s1_valid <= valid_in;
+            s1_a_nan   <= (a[14:10] == 5'd31) && (a[9:0] != 10'd0);
+            s1_b_nan   <= (b[14:10] == 5'd31) && (b[9:0] != 10'd0);
+            s1_c_nan   <= (c[14:10] == 5'd31) && (c[9:0] != 10'd0);
+            s1_a_inf   <= (a[14:10] == 5'd31) && (a[9:0] == 10'd0);
+            s1_b_inf   <= (b[14:10] == 5'd31) && (b[9:0] == 10'd0);
+            s1_c_inf   <= (c[14:10] == 5'd31) && (c[9:0] == 10'd0);
+            s1_a_zero  <= (a == 16'h0000);
+            s1_b_zero  <= (b == 16'h0000);
+            s1_c_zero  <= (c == 16'h0000);
+            s1_mul_man      <= mul_man_w;
+            s1_mul_exp      <= mul_exp_w;
+            s1_mul_sign     <= mul_sign_w;
+            s1_mul_overflow <= mul_ovf_w;
         end
     end
 
     // =========================================================================
-    // Pipeline stage 2: align and add
+    // Pipeline stage 2: align, add, normalize, round, pack
     // =========================================================================
-    reg [15:0] s2_result;
-    reg        s2_valid;
 
-    // Unpack c (the addend)
+    // Unpack s1_c (the addend, from registered s1_c)
     wire        c_sign = s1_c[15];
     wire [4:0]  c_exp  = s1_c[14:10];
     wire [9:0]  c_man  = s1_c[9:0];
-    wire        c_zero = (c_exp == 0) && (c_man == 0);
     wire        c_den  = (c_exp == 0) && (c_man != 0);
 
     wire [10:0] c_mantissa;
-    assign c_mantissa[10]   = c_zero ? 1'b0 : (c_den ? 1'b0 : 1'b1);
-    assign c_mantissa[9:0]  = c_zero ? 10'd0 : (c_den ? {1'b0, c_man} : c_man);
-    wire [5:0]  c_exponent = c_zero ? 6'd0   : (c_den ? 6'd1 : {1'b0, c_exp});
+    assign c_mantissa[10]   = (s1_c_zero || c_den) ? 1'b0 : 1'b1;
+    assign c_mantissa[9:0]  = s1_c_zero ? 10'd0 : (c_den ? {1'b0, c_man} : c_man);
+    wire [5:0]  c_exponent = s1_c_zero ? 6'd0 : (c_den ? 6'd1 : {1'b0, c_exp});
 
-    // FP16 mantissa product: 11-bit x 11-bit = 22-bit product.
-    // Both inputs have implicit 1 at bit 10, so the product has implicit 1
-    // at bit 20.  Left-shift by 1 to align with c_mantissa (implicit 1 at bit 21).
-    // If the shift overflows (mul_man[21]=1), the effective exponent is mul_exp+1.
-    wire        mul_overflow = mul_man[21];
-    wire [6:0]  mul_eff_exp  = mul_overflow ? (mul_exp + 7'd1) : mul_exp;
+    // Effective multiply exponent (from registered multiply results)
+    wire [6:0]  mul_exp_eff = s1_mul_overflow ? (s1_mul_exp + 7'd1) : s1_mul_exp;
 
-    // Determine result exponent
-    wire [5:0]  add_exp = (mul_eff_exp > c_exponent) ? mul_eff_exp : c_exponent;
+    // Result exponent: max(mul_exp_eff, c_exponent)
+    wire [6:0]  add_exp = (mul_exp_eff > {1'b0, c_exponent}) ? mul_exp_eff : {1'b0, c_exponent};
 
-    // Align mantissas: both now have implicit 1 at bit 21
-    wire [21:0] mul_man_aligned = (mul_eff_exp >= c_exponent) ?
-        (mul_man << 1) : (mul_man << 1) >> (c_exponent - mul_eff_exp);
-    wire [21:0] c_man_aligned   = (c_exponent > mul_eff_exp) ?
-        {c_mantissa, 11'd0} : {c_mantissa, 11'd0} >> (mul_eff_exp - c_exponent);
+    // Align mantissas: both have implicit 1 at bit 21
+    wire [21:0] mul_man_aligned = (mul_exp_eff >= {1'b0, c_exponent}) ?
+        (s1_mul_man << 1) :
+        (s1_mul_man << 1) >> ({1'b0, c_exponent} - mul_exp_eff);
+    wire [21:0] c_man_aligned = ({1'b0, c_exponent} > mul_exp_eff) ?
+        ({c_mantissa, 11'd0}) :
+        ({c_mantissa, 11'd0} >> (mul_exp_eff - {1'b0, c_exponent}));
 
-    // Add (with sign/magnitude handling)
-    wire        add_sign;
-    wire [22:0] add_result;
-
+    // Add with sign/magnitude
     wire        mul_ge_c = (mul_man_aligned >= c_man_aligned);
     wire [22:0] abs_diff = mul_ge_c ?
         ({1'b0, mul_man_aligned} - {1'b0, c_man_aligned}) :
         ({1'b0, c_man_aligned} - {1'b0, mul_man_aligned});
 
-    assign add_sign = (mul_sign == c_sign) ? mul_sign :
-                      mul_ge_c ? mul_sign : c_sign;
-    assign add_result = (mul_sign == c_sign) ?
-        {1'b0, mul_man_aligned} + {1'b0, c_man_aligned} :
+    wire        add_sign = (s1_mul_sign == c_sign) ? s1_mul_sign :
+                           mul_ge_c ? s1_mul_sign : c_sign;
+    wire [22:0] add_result = (s1_mul_sign == c_sign) ?
+        ({1'b0, mul_man_aligned} + {1'b0, c_man_aligned}) :
         abs_diff;
 
-    // Normalize
+    // Normalize (fix #2: signed exponent prevents underflow wrap)
     reg [21:0] norm_man;
-    reg [5:0]  norm_exp;
+    reg signed [7:0] norm_exp;
     reg        norm_sign;
     reg [4:0]  lead_pos;
     integer shift;
@@ -154,15 +163,14 @@ module fp16_fma (
             norm_man = 0;
             norm_exp = 0;
         end else if (add_result[22]) begin
-            // Overflow: shift right by 1, increment exponent
             norm_man = add_result[22:1];
             norm_exp = add_exp + 1;
         end else begin
             norm_man = add_result[21:0];
-            norm_exp = add_exp;
+            norm_exp = {1'b0, add_exp};
             if (!norm_man[21]) begin
                 lead_pos = 0;
-                if (norm_man[20]) lead_pos = 1;
+                if      (norm_man[20]) lead_pos = 1;
                 else if (norm_man[19]) lead_pos = 2;
                 else if (norm_man[18]) lead_pos = 3;
                 else if (norm_man[17]) lead_pos = 4;
@@ -185,24 +193,81 @@ module fp16_fma (
                 else                   lead_pos = 21;
                 shift = lead_pos;
                 norm_man = norm_man << shift;
-                norm_exp = add_exp - shift;
+                norm_exp = norm_exp - shift;
             end
         end
     end
 
+    // Round-to-nearest-even (fix #3)
+    // After normalization, implicit 1 at bit 21.
+    // Mantissa field: norm_man[20:11] (10 bits)
+    // Guard bit: norm_man[10], Round: norm_man[9], Sticky: |norm_man[8:0]
+    wire guard  = norm_man[10];
+    wire round  = norm_man[9];
+    wire sticky = |norm_man[8:0];
+
+    // Round up if: guard=1 AND (round=1 OR sticky=1 OR LSB of mantissa=1)
+    wire round_up = guard & (round | sticky | norm_man[11]);
+
+    // Apply rounding: add 1 at bit position 10 (LSB of mantissa field in norm_man)
+    wire [21:0] rounded_man = norm_man + (round_up ? 22'd1024 : 22'd0);
+
+    // Detect carry from rounding (bit 21 went from 1 to 0 = overflow)
+    wire rounded_carry = ~rounded_man[21] & norm_man[21];
+
+    wire [21:0] final_man = rounded_carry ? 22'h002000 : rounded_man;  // 1<<21
+    wire [7:0]  final_exp = rounded_carry ? (norm_exp + 8'd1) : norm_exp;
+
     // Pack result
+    // Underflow: norm_exp < 0 (signed), or norm_exp == 0 with no rounding carry
+    wire result_underflow = (norm_exp < 0) || (norm_exp == 0 && !rounded_carry);
+    wire result_overflow  = (final_exp >= 31);
     wire [15:0] packed_result;
-    assign packed_result = (norm_exp <= 0) ? FP16_ZERO :  // underflow -> zero
-                          (norm_exp >= 31) ? FP16_INF :    // overflow -> infinity
-                          {norm_sign, norm_exp[4:0], norm_man[20:11]};
+    assign packed_result = result_underflow ? FP16_ZERO :
+                           result_overflow  ? FP16_INF  :
+                           {norm_sign, final_exp[4:0], final_man[20:11]};
+
+    // =========================================================================
+    // Special case handling (fix #4)
+    // =========================================================================
+    // NaN * anything = NaN
+    // Inf * 0 = NaN
+    // Inf * finite = Inf (with sign)
+    // finite * Inf = Inf (with sign)
+    // NaN + anything = NaN
+    // Inf + anything = Inf (unless Inf + (-Inf) = NaN)
+    wire any_nan = s1_a_nan | s1_b_nan | s1_c_nan;
+    wire mul_inf_zero = (s1_a_inf & s1_b_zero) | (s1_b_inf & s1_a_zero);
+    wire mul_inf = s1_a_inf | s1_b_inf;
+    wire add_inf = s1_c_inf;
+
+    // Check if we are doing Inf + (-Inf) for the addend (which = NaN)
+    // This happens when: (a*b) produced Inf with some sign, and c is Inf with opposite sign
+    wire inf_add_nan = mul_inf & add_inf & (s1_mul_sign != c_sign);
+
+    wire is_special = any_nan | mul_inf_zero | mul_inf | add_inf;
+
+    wire [15:0] special_result =
+        any_nan      ? FP16_NAN :
+        mul_inf_zero ? FP16_NAN :
+        inf_add_nan  ? FP16_NAN :
+        mul_inf      ? {s1_mul_sign, 5'd31, 10'd0} :
+        add_inf      ? s1_c :
+                       packed_result;
+
+    reg [15:0] s2_result;
+    reg        s2_valid;
+    reg        s2_sign;
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             s2_result <= 0;
             s2_valid  <= 0;
+            s2_sign   <= 0;
         end else begin
-            s2_result <= packed_result;
+            s2_result <= is_special ? special_result : packed_result;
             s2_valid  <= s1_valid;
+            s2_sign   <= norm_sign;
         end
     end
 
@@ -211,10 +276,10 @@ module fp16_fma (
     // =========================================================================
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            result   <= 0;
+            result    <= 0;
             valid_out <= 0;
         end else begin
-            result   <= s2_result;
+            result    <= s2_result;
             valid_out <= s2_valid;
         end
     end

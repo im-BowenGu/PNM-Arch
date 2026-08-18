@@ -14,3 +14,6 @@ sim/pnm_top_params.py
 # sim/ binaries if built in place with `go build -o`
 sim/pnm
 sim/pnmc
+
+# Reproducibility script (users run it, not committed)
+reproduce.sh

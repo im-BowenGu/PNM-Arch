@@ -119,10 +119,12 @@ and the two trailing CRC bytes.
 
 The HDL is a byte-wide, Verilog-2005 model of the routing fabric: stateless Hardware
 Flit Repeaters (HFRs), the `xyz_repeater` layer gate, X→Y dimension-order turn gates,
-and node eject gates. The `HDL/` testbenches exercise a hand-wired 2-board slice; the
-`sim/` harness *generates* the full paper topology at any scale (default 3×4×4 = 48
-nodes, up to the 8×8×8 = 512-node reference chassis) from the same gates. It is what
-the *"lossless under backpressure"* claim is checked against.
+and node eject gates. Each node's PE tile instantiates a compute unit (BF16/FP16/FP32/FP64
+FMA, FP32 ALU, INT8 MAC, or systolic MAC array) selected by the model compiler. The
+`HDL/` testbenches exercise a hand-wired 2-board slice; the `sim/` harness *generates*
+the full paper topology at any scale (default 3×4×4 = 48 nodes, up to the 8×8×8 = 512-node
+reference chassis) from the same gates. It is what the *"lossless under backpressure"* claim
+is checked against.
 
 ```mermaid
 flowchart LR
@@ -148,11 +150,13 @@ flowchart LR
 |------|----------|
 | `Paper.MD` | Manuscript source (master copy, Markdown) |
 | `build.py` | Build pipeline → single submission DOCX |
-| `HDL/` | Verilog fabric: HFR, `xyz_repeater`, XY turn, eject, CRC-16 + doorbell DMA + testbenches |
-| `sim/` | Co-simulation harness: topology/tb generators, virtual execution units |
+| `HDL/` | Verilog fabric: HFR, `xyz_repeater`, XY turn, eject, CRC-16 + doorbell DMA + compute units (FP16/BF16/FP32/FP64 FMA, FP32 ALU, INT8 MAC, systolic arrays) + testbenches |
+| `sim/` | Co-simulation harness: topology/tb generators, virtual execution units, LLM inference client |
 | `sim/internal/pnm/safetensors.go` | Safetensors index parser + model config reader + tensor shape inference |
 | `sim/internal/pnm/model_compiler.go` | Model-to-PNM compiler: 5-stage AOT pipeline (ingest → partition → map → route → emit) |
+| `sim/fw/` | C firmware port for MCU targets (ARM Cortex-M/R, RISC-V) |
 | `sim/examples/gemma4_test/` | Synthetic Gemma-4-26B-A4B-it config + index for testing the compiler |
+| `sim/examples/mini_glm_moe/` | Mini GLM-MoE config for testing MoE gating |
 | `submission/` | Generated build artifacts (**gitignored**) |
 | `shell.nix` | Reproducible build + simulation environment |
 
@@ -204,6 +208,19 @@ iverilog -g2005 -o tb_load.out \
 # doorbell DMA: end-to-end CRC-16 + hardened fire conditions (tb_doorbell.v)
 iverilog -g2005 -o tb_doorbell.out \
   tb_doorbell.v pe_tile_stub.v doorbell.v crc16.v && vvp tb_doorbell.out
+
+# FP32 ALU (divider + multiplier + special cases)
+iverilog -g2005 -o tb_fp32_alu.out \
+  fp32_alu.v fp32_fma.v tb_fp32_alu.v && vvp tb_fp32_alu.out
+
+# FP16/BF16/FP32/FP64 FMA units (3-cycle pipelined multiply-accumulate)
+iverilog -g2005 -o tb_fp16_fma.out fp16_fma.v tb_fp16_fma.v && vvp tb_fp16_fma.out
+iverilog -g2005 -o tb_bf16_fma.out bf16_fma.v tb_bf16_fma.v && vvp tb_bf16_fma.out
+iverilog -g2005 -o tb_fp32_fma.out fp32_fma.v tb_fp32_fma.v && vvp tb_fp32_fma.out
+iverilog -g2005 -o tb_fp64_fma.out fp64_fma.v tb_fp64_fma.v && vvp tb_fp64_fma.out
+
+# INT8 MAC unit
+iverilog -g2005 -o tb_int8_mac.out int8_mac.v tb_int8_mac.v && vvp tb_int8_mac.out
 ```
 
 The load test scoreboards every packet end-to-end: destination packet counts, SOP/EOP
@@ -320,6 +337,41 @@ go run ./cmd/pnmc compile-model /tmp/gemma4 -l 4 -x 4 -y 4
 The compiler is model-agnostic: it reads any safetensors index + config.json
 combination and maps it onto any chassis dimensions. The `.pnm` output is
 compatible with the existing co-simulation pipeline (step 4).
+
+### 7. C firmware for MCU targets
+
+The firmware from `sim/internal/pnm/firmware.go` has been ported to C for
+bare-metal microcontroller targets (ARM Cortex-M/R, RISC-V, custom MCU).
+Static allocation only — no `malloc`, no dynamic memory.
+
+```bash
+cd sim/fw
+
+# compile check (should produce zero warnings)
+gcc -Wall -Wextra -std=c11 -c pnm_fw.c -o pnm_fw.o
+
+# full build with linking
+gcc -Wall -Wextra -std=c11 pnm_fw.c -o pnm_fw
+```
+
+The C port implements the same boot sequence (POST discovery, routing table
+load, weight upload, MoE gating load) and runtime dispatch loop (30 dense +
+240 MoE dispatches per token for Gemma-4) as the Go firmware, plus full
+KV cache management with LRU eviction.
+
+### 8. LLM inference client
+
+For FP16/BF16 models, the co-simulation harness includes an inference client
+that handles tokenization, prefill, autoregressive generation, and
+temperature/nucleus sampling.
+
+```bash
+cd sim
+go test ./internal/pnm/ -run TestLLMClient -v  # demo: encode, generate 10 tokens, print stats
+```
+
+The client tracks per-inference statistics (tokens generated, dispatches,
+KV store operations) and reports compute unit utilization across the chassis.
 
 ## Verification claims
 

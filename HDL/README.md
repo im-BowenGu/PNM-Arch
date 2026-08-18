@@ -1,6 +1,6 @@
 # PNM Fabric HDL Sketch
 
-Rough Verilog-2005 model of the **`xyz_repeater` layer gates** and **Hardware Flit Repeaters** from the paper *Bypassing the HBM Wall*.
+Verilog-2005 model of the **routing fabric**, **compute units**, and **co-simulation harness** from the paper *Bypassing the HBM Wall*.
 
 ## Modules
 
@@ -16,9 +16,55 @@ Rough Verilog-2005 model of the **`xyz_repeater` layer gates** and **Hardware Fl
 | `crc16.v` | Byte-wise CRC-16/CCITT-FALSE (init `0xFFFF`, poly `0x1021`) |
 | `doorbell.v` | Node DMA doorbell FSM — fires on byte count + CRC + DEST match, `NODE_ERR` on refusal |
 | `pe_tile_stub.v` | Processing Element (PE) tile — AXI-Stream slave→master elastic pipe (1–2 cycle MAC latency) running a bias-add kernel (`KERNEL_CONST`) with in-silicon CRC-16 validate + recompute (`corrupt_out` doorbell verdict); carries the node's routing bitmap and mask-compares the DEST nibble against DIST (`route_err`) |
+| **Compute units** | |
+| `fp16_fma.v` | FP16 Fused Multiply-Add (3-cycle pipeline) |
+| `bf16_fma.v` | BF16 Fused Multiply-Add (3-cycle pipeline) |
+| `fp32_fma.v` | FP32 Fused Multiply-Add (3-cycle pipeline) |
+| `fp64_fma.v` | FP64 Fused Multiply-Add (3-cycle pipeline) |
+| `fp16_mac_array.v` | FP16 systolic MAC array |
+| `bf16_mac_array.v` | BF16 systolic MAC array |
+| `fp32_alu.v` | FP32 ALU: ADD, SUB, MUL, DIV, MIN, MAX, CMP (4-cycle FMA path, 25-cycle div) |
+| `fp32_alu_chip.v` | FP32 ALU chip — wraps `fp32_alu.v` with AXI-Stream flit interface for PNM fabric integration |
+| `int8_mac.v` | INT8 multiply-accumulate |
+| **Fabric integration** | |
+| `router_chip.v` | Central router chip — PCIe ingress, flit builder, POST discovery FSM, spine injection |
+| `kv_cache_bank.v` | KV cache bank (on-node) |
+| `kv_offload.v` | KV cache offload engine |
+| `moe_gating.v` | MoE expert gating (top-K selection) |
+| **Testbenches** | |
 | `tb_fabric.v` | Functional smoke test |
 | `tb_load.v` | 500-packet load test with backpressure + real CRC-16 injection |
 | `tb_doorbell.v` | Doorbell FSM test: `pe_tile_stub` → `doorbell`, 6 activations + 2 rejections (truncated, wrong DEST), 2 `corrupt_out` pulses, 1 `route_err` |
+| `tb_fp16_fma.v` | FP16 FMA testbench |
+| `tb_bf16_fma.v` | BF16 FMA testbench |
+| `tb_fp32_fma.v` | FP32 FMA testbench |
+| `tb_fp64_fma.v` | FP64 FMA testbench |
+| `tb_fp32_alu.v` | FP32 ALU testbench (ADD/SUB/MUL/DIV/MIN/MAX/CMP) |
+| `tb_fp16_mac_array.v` | FP16 MAC array testbench |
+| `tb_bf16_mac_array.v` | BF16 MAC array testbench |
+| `tb_int8_mac.v` | INT8 MAC testbench |
+| `tb_router_chip.v` | Router chip testbench |
+| `tb_moe_gating.v` | MoE gating testbench |
+
+## Compute units
+
+Each node's PE tile (`pe_tile_stub.v`) instantiates one of several compute unit types selected by the model compiler:
+
+| Module | Type | Precision | Latency | Use case |
+|--------|------|-----------|---------|----------|
+| `bf16_fma.v` | FMA | BF16 | 3 cycles | MoE experts, dense MLP |
+| `fp16_fma.v` | FMA | FP16 | 3 cycles | FP16 models |
+| `fp32_fma.v` | FMA | FP32 | 3 cycles | High-precision compute |
+| `fp64_fma.v` | FMA | FP64 | 3 cycles | Double-precision scientific |
+| `bf16_mac_array.v` | Systolic array | BF16 | variable | Attention QKV |
+| `fp16_mac_array.v` | Systolic array | FP16 | variable | FP16 attention |
+| `fp32_alu.v` | ALU | FP32 | 1-25 cycles | Layernorm (divider + multiplier) |
+| `fp32_alu_chip.v` | ALU chip | FP32 | 5-29 cycles | AXI-Stream integrated ALU for fabric |
+| `int8_mac.v` | MAC | INT8 | 1 cycle | Quantized inference |
+
+All FMA modules share an identical interface: `clk, rst_n, a, b, c, valid_in → result, valid_out`
+(3-cycle pipeline). The `pe_tile_stub.v` uses `USE_FMA` parameter to select between
+bias-add (0) and BF16 FMA (1) compute paths.
 
 ## Packet format (byte-wide links, CRC-protected destination)
 
@@ -127,9 +173,56 @@ nix-shell -p iverilog --run \
 - Single physical channel per link (paper VC classes → parallel instances)
 - `doorbell.v` implements the three-condition fire (byte count + CRC + DEST) and the
   `NODE_ERR` refusal path; it does not model DMA burst scheduling into DRAM banks
-- The MAC array is a placeholder (`pe_tile_stub.v`): it runs a bias-add kernel with
-  in-silicon CRC-16 validation/recompute, exercised through the real `doorbell.v`
-  fire logic in `tb_doorbell.v`; a full systolic array / FP16 MAC datapath is future work
 - Byte-wide links for readability, not peak bandwidth modeling
 
 See `../Paper.MD` §§2–4 for the architectural specification.
+
+## IR toolchains (in `sim/internal/pnm/`)
+
+The co-simulation harness includes three source-language-to-IR compilers that target
+the HDL compute units:
+
+| Toolchain | Source language | Target | File |
+|-----------|----------------|--------|------|
+| `CompileR` | R (statistical computing) | FP64 (`fp64_fma.v`) | `r_ir.go` |
+| `CompileHaskell` | Haskell (functional) | FP64 (`fp64_fma.v`) | `haskell_ir.go` |
+| `CompileHLSL` | HLSL (GPU shading) | FP32 ALU (`fp32_alu.v`) | `hlsl_ir.go` |
+
+### FP64 IR format (R and Haskell)
+
+```
+f64.load  r0, [addr]          # load FP64 from memory
+f64.store [addr], r0          # store FP64 to memory
+f64.add   r0, r1, r2          # r0 = r1 + r2 (FP64)
+f64.mul   r0, r1, r2          # r0 = r1 * r2
+f64.fma   r0, r1, r2, r3      # r0 = r1*r2 + r3 (fp64_fma.v)
+f64.div   r0, r1, r2          # r0 = r1 / r2
+f64.min   r0, r1, r2          # r0 = min(r1, r2)
+f64.max   r0, r1, r2          # r0 = max(r1, r2)
+f64.cmp   r0, r1, r2, ==      # r0 = (r1 == r2) ? 1.0 : 0.0
+f64.mov   r0, r1              # r0 = r1
+f64.const r0, 3.14159         # r0 = literal
+```
+
+### FP32 ALU IR format (HLSL)
+
+```
+alu.load  r0, [addr]          # load FP32 from memory
+alu.store [addr], r0          # store FP32 to memory
+alu.add   r0, r1, r2          # r0 = r1 + r2 (FP32)
+alu.sub   r0, r1, r2          # r0 = r1 - r2
+alu.mul   r0, r1, r2          # r0 = r1 * r2
+alu.div   r0, r1, r2          # r0 = r1 / r2 (25-cycle restoring div)
+alu.min   r0, r1, r2          # r0 = min(r1, r2)
+alu.max   r0, r1, r2          # r0 = max(r1, r2)
+alu.cmp   r0, r1, r2, >=      # r0 = (r1 >= r2) ? 1.0 : 0.0
+alu.dot   r0, r1, r2          # dot product (expanded to mul+add chain)
+alu.lerp  r0, r1, r2, r3      # lerp(a,b,t) = a + t*(b-a)
+alu.clamp r0, r1, r2, r3      # clamp(x, lo, hi)
+alu.rcp   r0, r1              # reciprocal (1/x)
+```
+
+### HLSL intrinsics supported
+
+`dot`, `lerp`/`mix`, `clamp`, `saturate`, `abs`, `min`, `max`, `rcp`, `sqrt`,
+`step`, `smoothstep`, `mul`, vector constructors (`float4`/`float3`/`float2`).

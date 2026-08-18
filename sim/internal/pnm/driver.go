@@ -149,9 +149,13 @@ func (d *Driver) computeMoeMap() map[MoeKey]NodeID {
 //
 //	CMD(0x01) | LAYER | MODULE | LEN_HI | LEN_LO | payload... | CRC_HI | CRC_LO
 type WeightUploadCommand struct {
-	TargetLayer  int    // physical layer (0-based)
-	TargetModule byte   // MODULE_ID = {X[3:0], Y[3:0]}
-	Payload      []byte // raw tensor bytes (BF16 weights)
+	TargetLayer  int             // physical layer (0-based)
+	TargetModule byte            // MODULE_ID = {X[3:0], Y[3:0]}
+	Payload      []byte          // raw tensor bytes
+	CUType       ComputeUnitType // compute unit that processes this tensor
+	DType        string          // "BF16", "FP16", "FP32", "INT8"
+	ModelLayer   int             // model layer index (-1 for non-layer tensors)
+	TensorRole   string          // tensor role for dispatch routing
 }
 
 // BuildWeightCommands produces the sequence of weight upload commands for
@@ -208,6 +212,10 @@ func (d *Driver) BuildWeightCommands() ([]WeightUploadCommand, error) {
 					TargetLayer:  nid.L,
 					TargetModule: moduleID,
 					Payload:      payload,
+					CUType:       t.CUType,
+					DType:        t.DType,
+					ModelLayer:   t.ModelLayer,
+					TensorRole:   t.Role,
 				})
 			}
 		}

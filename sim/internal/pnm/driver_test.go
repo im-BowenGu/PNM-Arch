@@ -150,3 +150,133 @@ func TestRouterBitmaps(t *testing.T) {
 		t.Errorf("(2,1,2): expected 0x182, got 0x%03x", bm)
 	}
 }
+
+// TestLLMClient exercises the FP16/BF16 LLM inference client.
+func TestLLMClient(t *testing.T) {
+	modelDir := filepath.Join(SimDir(), "examples", "gemma4_test")
+	if _, err := os.Stat(filepath.Join(modelDir, "config.json")); err != nil {
+		t.Skip("gemma4_test model not found")
+	}
+
+	dims := Dims{Layers: 4, Bx: 4, By: 4}
+	client, err := NewLLMClient(LLMConfig{
+		ModelDir:  modelDir,
+		Dims:      dims,
+		MaxTokens: 10,
+		DataType:  CUTypeBF16FMA,
+	})
+	if err != nil {
+		t.Fatalf("NewLLMClient: %v", err)
+	}
+
+	// Test vocabulary
+	if client.Vocab == nil {
+		t.Fatal("vocabulary is nil")
+	}
+
+	// Test encode/decode roundtrip
+	ids := client.Vocab.Encode("hello world")
+	if len(ids) != 2 {
+		t.Errorf("expected 2 tokens, got %d", len(ids))
+	}
+	// Verify encode produces deterministic IDs
+	ids2 := client.Vocab.Encode("hello world")
+	if ids[0] != ids2[0] || ids[1] != ids2[1] {
+		t.Error("encode not deterministic")
+	}
+
+	// Test generation
+	tokens, err := client.Generate("test prompt")
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if len(tokens) == 0 {
+		t.Error("no tokens generated")
+	}
+	if len(tokens) > 10 {
+		t.Errorf("expected max 10 tokens, got %d", len(tokens))
+	}
+
+	// Verify stats
+	if client.Stats.PrefillTokens == 0 {
+		t.Error("prefill tokens not tracked")
+	}
+	if client.Stats.TokensGenerated == 0 {
+		t.Error("generated tokens not tracked")
+	}
+
+	t.Logf("LLM Client: %s", client.Summary())
+}
+
+// TestComputeUnitTypes verifies CU type assignment.
+func TestComputeUnitTypes(t *testing.T) {
+	modelDir := filepath.Join(SimDir(), "examples", "gemma4_test")
+	if _, err := os.Stat(filepath.Join(modelDir, "config.json")); err != nil {
+		t.Skip("gemma4_test model not found")
+	}
+
+	dims := Dims{Layers: 4, Bx: 4, By: 4}
+	drv, err := NewDriver(DriverConfig{ModelDir: modelDir, Dims: dims})
+	if err != nil {
+		t.Fatalf("NewDriver: %v", err)
+	}
+
+	// Verify CU type assignment
+	cuSummary := drv.MC.ComputeUnitSummary()
+	if len(cuSummary) == 0 {
+		t.Error("no compute units assigned")
+	}
+
+	// Check that BF16 FMA is present (MoE experts)
+	if cuSummary[CUTypeBF16FMA] == 0 {
+		t.Error("expected BF16 FMA units for MoE experts")
+	}
+
+	// Check that BF16 array is present (attention)
+	if cuSummary[CUTypeBF16Array] == 0 {
+		t.Error("expected BF16 array units for attention")
+	}
+
+	// Check that FP32 ALU is present (layernorm)
+	if cuSummary[CUTypeFP32ALU] == 0 {
+		t.Error("expected FP32 ALU units for layernorm")
+	}
+
+	// Verify CU type metadata
+	if CUTypeBF16FMA.DTypeBytes() != 2 {
+		t.Error("BF16 FMA should be 2 bytes")
+	}
+	if CUTypeFP32FMA.DTypeBytes() != 4 {
+		t.Error("FP32 FMA should be 4 bytes")
+	}
+	if CUTypeFP64FMA.DTypeBytes() != 8 {
+		t.Error("FP64 FMA should be 8 bytes")
+	}
+	if CUTypeINT8MAC.DTypeBytes() != 1 {
+		t.Error("INT8 MAC should be 1 byte")
+	}
+
+	// Verify weight commands have CU types (use smaller dims for speed)
+	smallDims := Dims{Layers: 2, Bx: 2, By: 2}
+	smallDrv, err := NewDriver(DriverConfig{ModelDir: modelDir, Dims: smallDims})
+	if err != nil {
+		t.Fatalf("NewDriver (small): %v", err)
+	}
+	cmds, err := smallDrv.BuildWeightCommands()
+	if err != nil {
+		t.Fatalf("BuildWeightCommands: %v", err)
+	}
+	if len(cmds) == 0 {
+		t.Fatal("no weight commands")
+	}
+	hasBF16 := false
+	for _, cmd := range cmds {
+		if cmd.CUType == CUTypeBF16FMA {
+			hasBF16 = true
+			break
+		}
+	}
+	if !hasBF16 {
+		t.Error("expected BF16 FMA weight commands")
+	}
+}

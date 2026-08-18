@@ -24,11 +24,19 @@ module tb_fp32_fma;
 
     task check;
         input [31:0] exp;
+        input [8*32-1:0] name;
         begin
             if (result !== exp) begin
-                $display("[TB] MISMATCH: a=%h b=%h c=%h -> got %h, expected %h", a, b, c, result, exp);
+                $display("[TB] MISMATCH (%0s): a=%h b=%h c=%h -> got %h, expected %h", name, a, b, c, result, exp);
                 errors = errors + 1;
             end
+        end
+    endtask
+
+    task run_op;
+        begin
+            valid_in = 1; #10; valid_in = 0;
+            repeat (4) @(posedge clk);
         end
     endtask
 
@@ -37,42 +45,39 @@ module tb_fp32_fma;
         $dumpvars(0, tb_fp32_fma);
         errors = 0;
 
-        // Reset
         #25; rst_n = 1; #10;
 
         // Test 1: 1.0 * 1.0 + 0.0 = 1.0
-        // 1.0 = 0x3F800000
         a = 32'h3F800000; b = 32'h3F800000; c = 32'h00000000;
-        valid_in = 1; #10; valid_in = 0;
-        repeat (4) @(posedge clk);
-        check(32'h3F800000);
+        run_op; check(32'h3F800000, "1*1+0");
 
         // Test 2: 2.0 * 3.0 + 1.0 = 7.0
-        // 2.0 = 0x40000000, 3.0 = 0x40400000, 7.0 = 0x40E00000
         a = 32'h40000000; b = 32'h40400000; c = 32'h3F800000;
-        valid_in = 1; #10; valid_in = 0;
-        repeat (4) @(posedge clk);
-        check(32'h40E00000);
+        run_op; check(32'h40E00000, "2*3+1");
 
         // Test 3: 0.5 * 0.5 + 0.0 = 0.25
-        // 0.5 = 0x3F000000, 0.25 = 0x3E800000
         a = 32'h3F000000; b = 32'h3F000000; c = 32'h00000000;
-        valid_in = 1; #10; valid_in = 0;
-        repeat (4) @(posedge clk);
-        check(32'h3E800000);
+        run_op; check(32'h3E800000, "0.5*0.5+0");
 
         // Test 4: 1.0 * 0.0 + 0.0 = 0.0
         a = 32'h3F800000; b = 32'h00000000; c = 32'h00000000;
-        valid_in = 1; #10; valid_in = 0;
-        repeat (4) @(posedge clk);
-        check(32'h00000000);
+        run_op; check(32'h00000000, "1*0+0");
 
         // Test 5: -1.0 * 2.0 + 3.0 = 1.0
-        // -1.0 = 0xBF800000, 2.0 = 0x40000000, 3.0 = 0x40400000
         a = 32'hBF800000; b = 32'h40000000; c = 32'h40400000;
-        valid_in = 1; #10; valid_in = 0;
-        repeat (4) @(posedge clk);
-        check(32'h3F800000);
+        run_op; check(32'h3F800000, "-1*2+3");
+
+        // Test 6: NaN * 1 = NaN
+        a = 32'h7FC00000; b = 32'h3F800000; c = 32'h00000000;
+        run_op; check(32'h7FC00000, "NaN*1");
+
+        // Test 7: Inf * 0 = NaN
+        a = 32'h7F800000; b = 32'h00000000; c = 32'h00000000;
+        run_op; check(32'h7FC00000, "Inf*0");
+
+        // Test 8: Inf + (-Inf) = NaN
+        a = 32'h7F800000; b = 32'h3F800000; c = 32'hFF800000;
+        run_op; check(32'h7FC00000, "Inf+(-Inf)");
 
         if (errors == 0)
             $display("*** FP32 FMA TEST PASSED ***");

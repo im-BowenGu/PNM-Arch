@@ -166,12 +166,14 @@ func (fw *Firmware) bootMoELoad() ([]WeightUploadCommand, error) {
 
 // DispatchRecord is one step in the inference dispatch sequence.
 type DispatchRecord struct {
-	Layer      int      // model layer index
-	Phase      string   // "dense", "moe", or "kv_offload"
-	TargetNode NodeID   // destination node
-	ExpertIdx  int      // -1 for dense, >= 0 for MoE
-	FlitBytes  int      // flit wire length
-	KVAction   string   // "store", "load", "evict", or "" (none)
+	Layer      int              // model layer index
+	Phase      string           // "dense", "moe", or "kv_offload"
+	TargetNode NodeID           // destination node
+	ExpertIdx  int              // -1 for dense, >= 0 for MoE
+	FlitBytes  int              // flit wire length
+	KVAction   string           // "store", "load", "evict", or "" (none)
+	CUType     ComputeUnitType  // compute unit to use on target node
+	TensorRole string           // tensor role for dispatch routing
 }
 
 // PlanInference computes the full dispatch sequence for one token through
@@ -209,7 +211,9 @@ func (fw *Firmware) PlanInference(token []byte) ([]DispatchRecord, error) {
 			TargetNode: attnNode,
 			ExpertIdx:  -1,
 			FlitBytes:  len(flit),
-			KVAction:   "store", // attention writes K/V into cache
+			KVAction:   "store",
+			CUType:     CUTypeBF16Array, // attention uses BF16 systolic MAC array
+			TensorRole: "attn_q",
 		})
 
 		// Step 2: KV cache check — offload if needed
@@ -221,6 +225,7 @@ func (fw *Firmware) PlanInference(token []byte) ([]DispatchRecord, error) {
 				ExpertIdx:  -1,
 				FlitBytes:  0,
 				KVAction:   "evict",
+				CUType:     CUTypeNone,
 			})
 			// Perform the offload in the model
 			fw.KV.OffloadCycle()
@@ -242,6 +247,8 @@ func (fw *Firmware) PlanInference(token []byte) ([]DispatchRecord, error) {
 				TargetNode: expertNode,
 				ExpertIdx:  expIdx,
 				FlitBytes:  len(flit),
+				CUType:     CUTypeBF16FMA, // MoE experts use BF16 weight-stationary FMA
+				TensorRole: "expert_gate_up",
 			})
 		}
 	}
@@ -346,8 +353,8 @@ func (fw *Firmware) DispatchSummary(records []DispatchRecord) string {
 	s += fmt.Sprintf("# Total dispatches: %d\n", len(records))
 	s += fmt.Sprintf("# KV cache: %s\n", fw.KV.Summary())
 	s += "#\n"
-	s += "# Layer | Phase     | Target       | Expert | FlitBytes | KV\n"
-	s += "#-------+-----------+--------------+--------+-----------+------\n"
+	s += "# Layer | Phase     | Target       | Expert | FlitBytes | CU            | KV\n"
+	s += "#-------+-----------+--------------+--------+-----------+---------------+------\n"
 
 	currentLayer := -1
 	for _, r := range records {
@@ -363,8 +370,8 @@ func (fw *Firmware) DispatchSummary(records []DispatchRecord) string {
 		if kvStr == "" {
 			kvStr = "-"
 		}
-		s += fmt.Sprintf("#   %2d  | %-9s | %-12s | %-6s | %9d | %s\n",
-			r.Layer, r.Phase, r.TargetNode, expertStr, r.FlitBytes, kvStr)
+		s += fmt.Sprintf("#   %2d  | %-9s | %-12s | %-6s | %9d | %-13s | %s\n",
+			r.Layer, r.Phase, r.TargetNode, expertStr, r.FlitBytes, r.CUType, kvStr)
 	}
 
 	return s
