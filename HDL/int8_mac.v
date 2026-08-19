@@ -1,21 +1,10 @@
 `timescale 1ns/1ps
 
 // =============================================================================
-// int8_mac — Signed INT8 Multiply-Accumulate unit
+// int8_mac — INT8 Multiply-Accumulate Unit
 //
-// Computes: result = (a * b) + c  using signed 8-bit integers.
-// Pipeline latency: 2 cycles (no normalization needed for integers).
-//
-// Input format:
-//   a, b: signed 8-bit integers (-128 to +127)
-//   c:    signed 32-bit accumulator
-//
-// Output format:
-//   result: signed 32-bit integer (sufficient range for accumulate)
-//
-// This unit is used for INT8 quantized inference where activations and
-// weights are quantized to 8-bit integers, and accumulation uses 32-bit
-// to prevent overflow.
+// Computes: result = (a * b) + c
+// Pipeline latency: 2 cycles
 // =============================================================================
 
 module int8_mac (
@@ -34,40 +23,37 @@ module int8_mac (
 );
 
     // =========================================================================
-    // Pipeline stage 1: multiply
+    // Pipeline Stage 1: Multiply
     // =========================================================================
-    reg [7:0]  s1_a, s1_b;
-    reg [31:0] s1_c;
-    reg        s1_valid;
-
-    // Sign-extend and multiply: 8x8 = 16 bits (signed)
-    wire signed [7:0]  a_signed = a;
-    wire signed [7:0]  b_signed = b;
-    wire signed [15:0] product  = a_signed * b_signed;
+    reg signed [15:0] s1_product;
+    reg signed [31:0] s1_c;
+    reg               s1_valid;
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            s1_a <= 0; s1_b <= 0; s1_c <= 0;
-            s1_valid <= 0;
+            s1_product <= 16'sd0;
+            s1_c       <= 32'sd0;
+            s1_valid   <= 1'b0;
         end else begin
-            s1_a <= a; s1_b <= b; s1_c <= c;
-            s1_valid <= valid_in;
+            s1_product <= $signed(a) * $signed(b);
+            s1_c       <= $signed(c);
+            s1_valid   <= valid_in;
         end
     end
 
     // =========================================================================
-    // Pipeline stage 2: accumulate
+    // Pipeline Stage 2: Accumulate
     // =========================================================================
-    // Sign-extend product to 32 bits and add accumulator
-    wire signed [31:0] product_ext = {{16{product[15]}}, product};
-    wire signed [31:0] sum = product_ext + s1_c;
+    // Verilog sign-extends s1_product to 32 bits because both operands
+    // are declared as signed.
+    wire signed [31:0] sum = s1_product + s1_c;
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            result   <= 0;
-            valid_out <= 0;
+            result    <= 32'd0;
+            valid_out <= 1'b0;
         end else begin
-            result   <= sum;
+            result    <= sum;
             valid_out <= s1_valid;
         end
     end

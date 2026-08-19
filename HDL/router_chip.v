@@ -52,10 +52,10 @@ module router_chip #(
     output wire        pcie_in_ready,
 
     // -- PCIe egress (router → host) -------------------------------------
-    output wire [7:0]  pcie_out_data,
-    output wire        pcie_out_valid,
-    output wire        pcie_out_sop,
-    output wire        pcie_out_eop,
+    output reg  [7:0]  pcie_out_data,
+    output reg         pcie_out_valid,
+    output reg         pcie_out_sop,
+    output reg         pcie_out_eop,
     input  wire        pcie_out_ready,
 
     // -- Spine injection port (connects to pnm_top inject_data) ----------
@@ -129,6 +129,16 @@ module router_chip #(
     reg [7:0]  moe_weights [0:NUM_LAYERS*MAX_EXPERTS*HIDDEN_SIZE-1];
 
     // =========================================================================
+    // Forward declarations (Verilog-2005: must declare before use)
+    // =========================================================================
+    localparam ADDR_BITS = 20;  // must hold NUM_EXPERTS*HIDDEN_DIM (e.g. 128*2816=360448 for Gemma-4)
+
+    reg [2:0]  pie_state;
+    reg [3:0]  pie_pos;
+    reg [7:0]  pie_buf [0:5];
+    reg [7:0]  fb_layer;
+
+    // =========================================================================
     // MoE gating unit: systolic-array gated matrix-vector multiply + top-K
     // =========================================================================
     wire        gate_start;
@@ -138,8 +148,6 @@ module router_chip #(
     wire [ADDR_BITS-1:0] gate_hidden_addr;
     wire        gate_fma_busy;
     reg  [15:0] gate_hidden_data;
-
-    localparam ADDR_BITS = 10; // log2(HIDDEN_SIZE) max
 
     moe_gating #(
         .NUM_EXPERTS(MAX_EXPERTS),
@@ -155,7 +163,7 @@ module router_chip #(
         .hidden_addr   (gate_hidden_addr),
         .hidden_data   (gate_hidden_data),
         .weight_load   (pie_state == PIE_MOE_H && pie_pos == 3),
-        .weight_addr   (pie_buf[0] * HIDDEN_SIZE[ADDR_BITS-1:0] + pie_buf[1]),
+        .weight_addr   (pie_buf[0] * NUM_EXPERTS * HIDDEN_SIZE + pie_buf[1] * HIDDEN_SIZE),
         .weight_data   ({pie_buf[2], pcie_in_data}),
         .moe_layer_in  (moe_layer[pie_buf[0] * MAX_EXPERTS + pie_buf[1]]),
         .moe_module_in (moe_module[pie_buf[0] * MAX_EXPERTS + pie_buf[1]]),
@@ -178,13 +186,14 @@ module router_chip #(
     localparam FB_CRC     = 3'd3;  // compute and append CRC
 
     reg [2:0]  fb_state;
-    reg [7:0]  fb_layer;
     reg [7:0]  fb_module;
     reg [7:0]  fb_ctrl;
     reg [15:0] fb_len;
-    reg [15:0] fb_pos;      // byte position within payload
+    reg [15:0] fb_pos;      // byte position within payload (flit builder only)
     reg [15:0] fb_crc;      // running CRC-16/CCITT
     reg        fb_active;   // flit builder is processing a message
+
+    reg [15:0] pie_fwd_cnt; // payload bytes forwarded to flit builder
 
     // =========================================================================
     // PCIe ingress parser state machine
@@ -198,10 +207,7 @@ module router_chip #(
     localparam PIE_INF_TOKEN = 3'd6;  // inference token header
     localparam PIE_INF_TOKEN_P = 3'd7; // inference token payload
 
-    reg [2:0]  pie_state;
     reg [7:0]  pie_cmd;
-    reg [7:0]  pie_buf [0:5];  // header buffer
-    reg [3:0]  pie_pos;
     reg [15:0] pie_len;
 
     // =========================================================================
@@ -257,7 +263,7 @@ module router_chip #(
     reg        fb_in_ready_r;
     wire       fb_in_ready = fb_in_ready_r;
 
-    assign pcie_in_ready = (pie_state == PIE_IDLE) || (pie_state == PIE_INF_TOKEN && fb_in_ready);
+    assign pcie_in_ready = (pie_state == PIE_WEIGHT_P || pie_state == PIE_INF_TOKEN_P) ? (fb_in_ready && fb_state == 3'd2) : 1'b1;
 
     // =========================================================================
     // Main control FSM
@@ -295,6 +301,7 @@ module router_chip #(
             pie_cmd       <= 0;
             pie_pos       <= 0;
             pie_len       <= 0;
+            pie_fwd_cnt   <= 0;
 
             rc_state      <= RC_IDLE;
             rc_pos        <= 0;
@@ -406,22 +413,18 @@ module router_chip #(
                             fb_crc    <= 16'hFFFF;
                             fb_active <= 1;
                             pie_state <= PIE_WEIGHT_P;
+                            pie_fwd_cnt <= 0;
                             fb_in_ready_r <= 1;
                         end else
                             pie_pos <= pie_pos + 1;
                     end
 
                     PIE_WEIGHT_P: begin
-                        // Forward payload bytes to flit builder
-                        // fb_pos tracks the flit builder's payload position
-                        if (fb_in_ready && pcie_in_valid) begin
-                            if (fb_pos < fb_len)
-                                fb_pos <= fb_pos + 1;
-                            else begin
-                                // Payload complete, flit builder will emit CRC
-                                pie_state <= PIE_IDLE;
-                                fb_in_ready_r <= 0;
-                            end
+                        // Wait for flit builder to finish emitting the flit
+                        // (FB_CRC = 3'd3, then back to FB_IDLE = 3'd0)
+                        if (fb_state == 3'd0 && !fb_active) begin
+                            pie_state <= PIE_IDLE;
+                            fb_in_ready_r <= 0;
                         end
                     end
 
@@ -474,23 +477,30 @@ module router_chip #(
                             fb_crc    <= 16'hFFFF;
                             fb_active <= 1;
                             pie_state <= PIE_INF_TOKEN_P;
+                            pie_fwd_cnt <= 0;
                             fb_in_ready_r <= 1;
                             dispatches <= dispatches + 1;
                         end
                     end
 
                     PIE_INF_TOKEN_P: begin
-                        // Forward token payload bytes to flit builder
-                        if (fb_in_ready) begin
-                            if (fb_pos < fb_len)
-                                fb_pos <= fb_pos + 1;
-                            else begin
-                                pie_state <= PIE_IDLE;
-                                fb_in_ready_r <= 0;
-                            end
+                        // Wait for flit builder to finish emitting the flit
+                        if (fb_state == 3'd0 && !fb_active) begin
+                            pie_state <= PIE_IDLE;
+                            fb_in_ready_r <= 0;
                         end
                     end
+                    default: pie_state <= PIE_IDLE;
                 endcase
+            end
+
+            // =================================================================
+            // Flit-builder-done check (runs even when pcie_in_valid is deasserted)
+            // =================================================================
+            if ((pie_state == PIE_WEIGHT_P || pie_state == PIE_INF_TOKEN_P)
+                && fb_state == 3'd0 && !fb_active) begin
+                pie_state <= PIE_IDLE;
+                fb_in_ready_r <= 0;
             end
 
             // =================================================================

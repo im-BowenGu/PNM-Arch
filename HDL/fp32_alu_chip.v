@@ -72,10 +72,12 @@ module fp32_alu_chip #(
     reg [31:0] result_q;     // latched ALU result
     reg [7:0]  emit_bytes;   // bytes remaining to emit
     reg [1:0]  emit_pos;     // current emit byte index (0-3)
+    reg [7:0]  corrupt_out_reg;
 
-    // Operand assembly: big-endian byte packing
-    wire [31:0] operand_a = {op_a[23:16], op_a[15:8], op_a[7:0], s_axis_tdata}; // shift in
-    wire [31:0] operand_b = {op_b[23:16], op_b[15:8], op_b[7:0], s_axis_tdata};
+    // Route bitmap comparator: check DEST nibble on SOP
+    wire [3:0] dest_nibble = (ROUTE_BM[6]) ? s_axis_tdata[7:4] : s_axis_tdata[3:0];
+    assign route_err = (state == ST_IDLE) && s_axis_tstart && s_axis_tvalid &&
+                       (dest_nibble != ROUTE_BM[4:0]);
 
     // ALU interface
     reg  [31:0] alu_a, alu_b;
@@ -91,16 +93,11 @@ module fp32_alu_chip #(
         .result(alu_result), .valid_out(alu_valid_out)
     );
 
-    // CRC validation (simplified: single-byte at a time)
+    // CRC validation
     reg [15:0] crc_acc;
     reg        crc_valid_q;
     wire [15:0] crc_next;
     crc16 u_crc (.crc_in(crc_acc), .data_in(s_axis_tdata), .crc_out(crc_next));
-
-    // Route bitmap comparator: check DEST nibble on SOP
-    wire [3:0] dest_nibble = (ROUTE_BM[6]) ? s_axis_tdata[7:4] : s_axis_tdata[3:0];
-    assign route_err = (state == ST_IDLE) && s_axis_tstart && s_axis_tvalid &&
-                       (dest_nibble != ROUTE_BM[4:0]);
 
     // =========================================================================
     // Main state machine
@@ -118,8 +115,11 @@ module fp32_alu_chip #(
             alu_op     <= 0;
             crc_acc    <= 16'hFFFF;
             crc_valid_q <= 1;
+            corrupt_out_reg <= 0;
         end else begin
             alu_valid <= 0;
+            if (state == ST_IDLE && s_axis_tvalid && s_axis_tready && s_axis_tstart)
+                corrupt_out_reg <= 0;
 
             case (state)
                 ST_IDLE: begin
@@ -154,7 +154,7 @@ module fp32_alu_chip #(
                             if (byte_cnt == 4'd7) begin
                                 // Both operands collected, start compute
                                 state <= ST_COMPUTE;
-                                alu_a  <= {op_a[23:0], s_axis_tdata}; // last byte of A was already latched
+                                alu_a  <= op_a;  // fully assembled in ST_IDLE
                                 alu_b  <= {op_b[23:0], s_axis_tdata};
                                 alu_op <= OP_CODE;
                                 alu_valid <= 1;
@@ -183,12 +183,12 @@ module fp32_alu_chip #(
                         end
                     end
                 end
+                default: state <= ST_IDLE;
             endcase
         end
     end
 
     // Emit byte mux: big-endian result serialization
-    reg [7:0] corrupt_out_reg;
     assign corrupt_out = corrupt_out_reg;
 
     reg [7:0] m_axis_tdata_mux;
@@ -198,6 +198,7 @@ module fp32_alu_chip #(
             2'd1: m_axis_tdata_mux = result_q[23:16];
             2'd2: m_axis_tdata_mux = result_q[15:8];
             2'd3: m_axis_tdata_mux = result_q[7:0];
+            default: m_axis_tdata_mux = 8'h00;
         endcase
     end
 

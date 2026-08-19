@@ -226,3 +226,155 @@ alu.rcp   r0, r1              # reciprocal (1/x)
 
 `dot`, `lerp`/`mix`, `clamp`, `saturate`, `abs`, `min`, `max`, `rcp`, `sqrt`,
 `step`, `smoothstep`, `mul`, vector constructors (`float4`/`float3`/`float2`).
+
+### Transpilation pipeline (source → hardware)
+
+```
+Source code (R / Haskell / HLSL)
+  │
+  ├─ Parse: language-specific front end (r_ir.go / haskell_ir.go / hlsl_ir.go)
+  │   └─ Extract assignments, arithmetic, function calls, conditionals
+  │
+  ├─ IR emission: typed register-based instruction set
+  │   ├─ FP64 IR  (11 opcodes) → fp64_fma.v  (R, Haskell)
+  │   └─ FP32 ALU IR (14 opcodes) → fp32_alu.v (HLSL)
+  │
+  ├─ Compute unit selection (model compiler)
+  │   ├─ BF16 FMA    → MoE experts, dense MLP
+  │   ├─ BF16 array  → attention QKV
+  │   ├─ FP32 ALU    → layernorm (div + mul)
+  │   └─ FP64 FMA    → scientific/R/Haskell workloads
+  │
+  └─ Flit emission: wrap result in wormhole packet
+      └─ LAYER_ID | MODULE_ID | CTRL | LEN | payload | CRC-16
+```
+
+The compilers are **ahead-of-time (AOT)**: they run on the host, produce a
+sequence of register operations, and the firmware dispatches each operation to
+the appropriate compute unit node. No JIT compilation or runtime linking
+occurs on the router chip.
+
+### IR-to-compute-unit mapping
+
+| IR opcode | HDL module | Latency | Notes |
+|-----------|-----------|---------|-------|
+| `f64.fma` | `fp64_fma.v` | 3 cycles | Double-precision FMA |
+| `f64.div` | `fp64_fma.v` | 3 cycles | Uses FMA's add path for div |
+| `f64.add/mul/min/max/cmp` | `fp64_fma.v` | 3 cycles | All via FMA pipeline |
+| `alu.add/sub/mul` | `fp32_alu.v` | 4 cycles | Via internal `fp32_fma` |
+| `alu.div` | `fp32_alu.v` | 27 cycles | Left-shifting restoring division |
+| `alu.min/max/cmp` | `fp32_alu.v` | 4 cycles | Pipelined signed comparison |
+| `alu.dot` | `fp32_alu.v` | N×4 cycles | Expanded to N multiply+add ops |
+| `alu.lerp` | `fp32_alu.v` | 3×4 cycles | `a + t*(b-a)` via MUL+ADD |
+| `alu.clamp` | `fp32_alu.v` | 2×4 cycles | Two MIN/MAX operations |
+| `alu.rcp` | `fp32_alu.v` | 27 cycles | Reciprocal via division |
+| `alu.sqrt` | `fp32_alu.v` | ~24 cycles | Newton-Raphson iteration |
+| BF16 FMA | `bf16_fma.v` | 3 cycles | MoE expert compute |
+| BF16 array | `bf16_mac_array.v` | variable | Systolic attention QKV |
+| INT8 MAC | `int8_mac.v` | 2 cycles | Quantized inference |
+
+### Toolchain limitations
+
+The IR compilers target a **minimal register-based instruction set** with no
+loops, branches, or dynamic allocation. Supported constructs:
+
+| Language | Supported | Not supported |
+|----------|-----------|---------------|
+| **R** | Assignments, `+` `-` `*` `/`, comparisons, `sum` `mean` `min` `max` `prod` `sqrt` `abs` | Loops, `for`/`while`, arrays, `list`, recursion, `apply`, `paste` (skipped), `c()` (skipped) |
+| **Haskell** | Function defs, guards, `let`/`in`, `do` blocks, `if`/`then`/`else`, `+` `-` `*` `/`, comparisons, `sum` `product` `minimum` `maximum` `abs` `sqrt` | Recursion, pattern matching, `where` clauses, lists, monads, type classes, guards with complex expressions |
+| **HLSL** | `float`/`int`/`half` vars, `return`, ternary `?:`, `dot` `lerp` `clamp` `saturate` `abs` `min` `max` `rcp` `sqrt` `step` `smoothstep`, vector constructors (`float4`/`float3`/`float2`/`half`×N) | Loops, `if`/`else` blocks (only ternary), textures, samplers, vertex/fragment stages, matrices |
+
+All three compilers produce **straight-line code**: the IR is a linear sequence
+of instructions with no control flow. This is sufficient for inference
+workloads (forward pass only) but not for training or iterative algorithms.
+
+### Router chip architecture (`router_chip.v`)
+
+The router chip is the only stateful silicon in the fabric. It contains four
+independent FSMs that run concurrently:
+
+#### 1. Boot FSM (`boot_state`, 7 states)
+
+```
+BOOT_RESET → BOOT_POST_PING → BOOT_POST_WAIT → BOOT_LOAD_RT
+  → BOOT_LOAD_WT → BOOT_LOAD_MOE → BOOT_READY
+```
+
+| Phase | State | What it does |
+|-------|-------|-------------|
+| POST discovery | `BOOT_POST_PING` | Sends ping flits to all nodes, latches `topology_rdy` bits for 256 cycles |
+| | `BOOT_POST_WAIT` | Popcount of latched bits → node count |
+| Routing table | `BOOT_LOAD_RT` | Programs xyz_repeaters/HFRs with 11-bit routing bitmaps via PCIe cmd `0x02` |
+| Weight upload | `BOOT_LOAD_WT` | Receives weight blobs from host via PCIe cmd `0x01`, wraps in wormhole flits, injects into spine |
+| MoE gating | `BOOT_LOAD_MOE` | Loads `router.proj.weight` into on-chip SRAM + expert→(layer, module) map via PCIe cmd `0x03` |
+| Ready | `BOOT_READY` | Normal operation; `boot_done` asserted |
+
+#### 2. PCIe Ingress Parser (`pie_state`, 8 states)
+
+| Command | State | Description |
+|---------|-------|-------------|
+| `0x01` | `PIE_WEIGHT_H` → `PIE_WEIGHT_P` | Weight upload: 4-byte header + payload |
+| `0x02` | `PIE_RT_NODE` | Routing table entry: node_id + bitmap |
+| `0x03` | `PIE_MOE_H` | MoE map entry: expert→(layer, module) |
+| `0x04` | `PIE_INF_TOKEN` → `PIE_INF_TOKEN_P` | Inference token: header + hidden state |
+| `0xFF` | — | NOP / idle marker |
+
+The parser buffers up to 6 header bytes in `pie_buf[0:5]` and dispatches to the
+appropriate sub-FSM. The `weight_load` signal to the MoE gating unit is
+asserted when `pie_state == PIE_MOE_H && pie_pos == 3` (4th byte of MoE header).
+
+#### 3. Flit Builder (`fb_state`, 4 states)
+
+Constructs wormhole flits from PCIe data:
+
+```
+FB_IDLE → FB_HDR → FB_PAYLOAD → FB_CRC
+```
+
+The builder accumulates LAYER_ID, MODULE_ID, CTRL, LEN in the header phase,
+streams payload bytes, and appends a running CRC-16/CCITT-FALSE. The completed
+flit is injected into the spine.
+
+#### 4. Result Collection (`rc_state`)
+
+Forwards `spine_extract` bytes (returned computation results) back to PCIe
+egress. Runs continuously when `spine_extract_valid` is high.
+
+#### MoE gating integration
+
+The router chip instantiates `moe_gating.v` as `u_gating`. The gating unit
+receives:
+- `weight_load` / `weight_addr` / `weight_data` from the PCIe parser
+- `current_layer` from the flit builder
+- `expert_idx_packed` / `expert_logit_packed` from the FMA computation
+
+The gating unit performs a **systolic gated matrix-vector multiply** (hidden
+state × router weight matrix) and a **top-K selection** (insertion sort into a
+sorted buffer of size K). The selected expert indices and logits are packed
+into the dispatch flit.
+
+### KV cache architecture
+
+Two modules manage the key-value cache on each node:
+
+#### `kv_cache_bank.v`
+
+On-node SRAM bank that stores KV pairs for attention layers. It operates as a
+**pass-through with injection**: normal flits pass through transparently, but
+when a KV store/load command arrives, the bank intercepts the flit and either
+writes payload bytes to SRAM (store) or reads them back (load).
+
+The bank tracks:
+- `write_ptr` / `read_ptr`: circular buffer pointers
+- `ks_state`: KV store FSM (header capture → payload capture → done)
+- `kl_state`: KV load FSM (header capture → SRAM read → flit injection)
+
+Eviction is LRU: when the bank is full, the oldest entry is overwritten. The
+`reclaim_*` interface allows the offload engine to read evicted entries.
+
+#### `kv_offload.v`
+
+Offload engine that transfers KV pairs between node SRAM and the host via the
+spine. It monitors `kv_cache_bank` for eviction events and constructs
+appropriate flits for host-side storage. The offload path uses VC class 3
+(highest priority) to avoid stalling compute traffic.

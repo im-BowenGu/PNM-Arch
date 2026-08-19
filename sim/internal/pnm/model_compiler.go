@@ -662,10 +662,3 @@ func (mc *ModelCompiler) ComputeUnitSummary() map[ComputeUnitType]int {
 	}
 	return counts
 }
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}

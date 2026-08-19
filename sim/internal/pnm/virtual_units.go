@@ -66,10 +66,11 @@ func decode(byteList []byte) *Pkt {
 	if end > len(byteList) {
 		end = len(byteList)
 	}
-	if end < 4 {
-		end = 4
+	if end <= 4 {
+		p.Payload = nil
+	} else {
+		p.Payload = append([]byte(nil), byteList[4:end]...)
 	}
-	p.Payload = append([]byte(nil), byteList[4:end]...)
 	if len(byteList) >= 2 {
 		p.CRC = [2]byte{byteList[len(byteList)-2], byteList[len(byteList)-1]}
 	}

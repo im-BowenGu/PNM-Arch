@@ -53,7 +53,7 @@ module fp64_fma (
     wire         a_sign_w = a[63];
     wire [10:0]  a_exp_w  = a[62:52];
     wire [51:0]  a_man_w  = a[51:0];
-    wire         a_zero_w = (a == 64'h0000000000000000);
+    wire         a_zero_w = (a[62:0] == 63'h0000000000000000);
     wire         a_den_w  = (a_exp_w == 0) && (a_man_w != 0);
 
     wire [52:0] a_mantissa_w;
@@ -65,7 +65,7 @@ module fp64_fma (
     wire         b_sign_w = b[63];
     wire [10:0]  b_exp_w  = b[62:52];
     wire [51:0]  b_man_w  = b[51:0];
-    wire         b_zero_w = (b == 64'h0000000000000000);
+    wire         b_zero_w = (b[62:0] == 63'h0000000000000000);
     wire         b_den_w  = (b_exp_w == 0) && (b_man_w != 0);
 
     wire [52:0] b_mantissa_w;
@@ -97,9 +97,9 @@ module fp64_fma (
             s1_a_inf   <= (a[62:52] == 11'd2047) && (a[51:0] == 52'd0);
             s1_b_inf   <= (b[62:52] == 11'd2047) && (b[51:0] == 52'd0);
             s1_c_inf   <= (c[62:52] == 11'd2047) && (c[51:0] == 52'd0);
-            s1_a_zero  <= (a == 64'h0000000000000000);
-            s1_b_zero  <= (b == 64'h0000000000000000);
-            s1_c_zero  <= (c == 64'h0000000000000000);
+            s1_a_zero  <= (a[62:0] == 63'h0000000000000000);
+            s1_b_zero  <= (b[62:0] == 63'h0000000000000000);
+            s1_c_zero  <= (c[62:0] == 63'h0000000000000000);
             s1_mul_man      <= mul_man_w;
             s1_mul_exp      <= mul_exp_w;
             s1_mul_sign     <= mul_sign_w;
@@ -295,8 +295,8 @@ module fp64_fma (
     wire result_underflow = (norm_exp < 0) || (norm_exp == 0 && !rounded_carry);
     wire result_overflow  = (final_exp >= 2047);
     wire [63:0] packed_result;
-    assign packed_result = result_underflow ? FP64_ZERO :
-                           result_overflow  ? FP64_INF  :
+    assign packed_result = result_underflow ? (norm_sign ? 64'h8000000000000000 : FP64_ZERO) :
+                           result_overflow  ? {norm_sign, 11'd2047, 52'd0} :
                            {norm_sign, final_exp[10:0], final_man[104:53]};
 
     // Special cases

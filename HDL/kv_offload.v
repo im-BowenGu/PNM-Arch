@@ -23,7 +23,8 @@
 module kv_offload #(
     parameter NUM_LAYERS  = 4,
     parameter BANK_DEPTH  = 1024,
-    parameter ADDR_BITS   = 10
+    parameter ADDR_BITS   = 10,
+    parameter ENTRY_BYTES = 512        // bytes per KV entry (payload frame size)
 )(
     input  wire        clk,
     input  wire        rst_n,
@@ -203,7 +204,7 @@ module kv_offload #(
     assign spine_out_data  = evict_data_active;
     assign spine_out_valid = (oc_state == OC_EVICT_WR) ? evict_valid_active : 1'b0;
     assign spine_out_sop   = (oc_pos == 0);
-    assign spine_out_eop   = (oc_pos == 511); // ENTRY_BYTES - 1
+    assign spine_out_eop   = (oc_pos == ENTRY_BYTES - 1);
     assign spine_out_vc    = 2'b01;  // VC_SPINE_ASCENT
 
     assign spine_in_ready = (oc_state == OC_RECLAIM);
@@ -251,8 +252,11 @@ module kv_offload #(
                         evict_req_r <= 1;
                         evict_addr_r <= 0;
                         oc_pos    <= 0;
+                    end else if (spine_in_valid && spine_in_sop) begin
+                        // Reclaim: host reloading a KV entry into the bank
+                        oc_bank  <= spine_in_data[1:0]; // target bank from header
+                        oc_state <= OC_RECLAIM;
                     end
-                    // Reclaim handled by spine_in extraction (see below)
                 end
 
                 OC_EVICT_RD: begin
@@ -267,7 +271,7 @@ module kv_offload #(
                     // Stream evicted data to spine
                     if (spine_out_ready && evict_valid_active) begin
                         oc_pos <= oc_pos + 1;
-                        if (oc_pos == 511) begin // ENTRY_BYTES - 1
+                        if (oc_pos == ENTRY_BYTES - 1) begin
                             evictions <= evictions + 1;
                             oc_state  <= OC_IDLE;
                         end

@@ -55,7 +55,7 @@ module fp16_fma (
     wire        a_sign_w = a[15];
     wire [4:0]  a_exp_w  = a[14:10];
     wire [9:0]  a_man_w  = a[9:0];
-    wire        a_zero_w = (a == 16'h0000);
+    wire        a_zero_w = (a[14:0] == 15'h0000);
     wire        a_den_w  = (a_exp_w == 0) && (a_man_w != 0);
 
     wire [10:0] a_mantissa_w;
@@ -67,7 +67,7 @@ module fp16_fma (
     wire        b_sign_w = b[15];
     wire [4:0]  b_exp_w  = b[14:10];
     wire [9:0]  b_man_w  = b[9:0];
-    wire        b_zero_w = (b == 16'h0000);
+    wire        b_zero_w = (b[14:0] == 15'h0000);
     wire        b_den_w  = (b_exp_w == 0) && (b_man_w != 0);
 
     wire [10:0] b_mantissa_w;
@@ -76,9 +76,14 @@ module fp16_fma (
     wire [5:0]  b_exponent_w = b_zero_w ? 6'd0 : (b_den_w ? 6'd1 : {1'b0, b_exp_w});
 
     // Multiply (combinational, registered next cycle)
+    // Bug fix #1: force exponent and mantissa to zero when either operand
+    // is zero, preventing unsigned underflow of (0 + exp - 15) which wraps
+    // to 113+ in 7-bit arithmetic.
     wire        mul_sign_w = a_sign_w ^ b_sign_w;
-    wire [6:0]  mul_exp_w  = a_exponent_w + b_exponent_w - FP16_BIAS;
-    wire [21:0] mul_man_w  = a_mantissa_w * b_mantissa_w;
+    wire [6:0]  mul_exp_w  = (a_zero_w || b_zero_w) ? 7'd0 :
+                             (a_exponent_w + b_exponent_w - FP16_BIAS);
+    wire [21:0] mul_man_w  = (a_zero_w || b_zero_w) ? 22'd0 :
+                             (a_mantissa_w * b_mantissa_w);
     wire        mul_ovf_w  = mul_man_w[21];
 
     always @(posedge clk or negedge rst_n) begin
@@ -99,9 +104,9 @@ module fp16_fma (
             s1_a_inf   <= (a[14:10] == 5'd31) && (a[9:0] == 10'd0);
             s1_b_inf   <= (b[14:10] == 5'd31) && (b[9:0] == 10'd0);
             s1_c_inf   <= (c[14:10] == 5'd31) && (c[9:0] == 10'd0);
-            s1_a_zero  <= (a == 16'h0000);
-            s1_b_zero  <= (b == 16'h0000);
-            s1_c_zero  <= (c == 16'h0000);
+            s1_a_zero  <= (a[14:0] == 15'h0000);
+            s1_b_zero  <= (b[14:0] == 15'h0000);
+            s1_c_zero  <= (c[14:0] == 15'h0000);
             s1_mul_man      <= mul_man_w;
             s1_mul_exp      <= mul_exp_w;
             s1_mul_sign     <= mul_sign_w;
@@ -131,9 +136,12 @@ module fp16_fma (
     wire [6:0]  add_exp = (mul_exp_eff > {1'b0, c_exponent}) ? mul_exp_eff : {1'b0, c_exponent};
 
     // Align mantissas: both have implicit 1 at bit 21
+    // Bug fix #2: only shift left by 1 when product did not overflow bit 20;
+    // when s1_mul_overflow=1, bit 21 is already set and <<1 would truncate it.
+    wire [21:0] mul_man_norm = s1_mul_overflow ? s1_mul_man : (s1_mul_man << 1);
     wire [21:0] mul_man_aligned = (mul_exp_eff >= {1'b0, c_exponent}) ?
-        (s1_mul_man << 1) :
-        (s1_mul_man << 1) >> ({1'b0, c_exponent} - mul_exp_eff);
+        mul_man_norm :
+        (mul_man_norm >> ({1'b0, c_exponent} - mul_exp_eff));
     wire [21:0] c_man_aligned = ({1'b0, c_exponent} > mul_exp_eff) ?
         ({c_mantissa, 11'd0}) :
         ({c_mantissa, 11'd0} >> (mul_exp_eff - {1'b0, c_exponent}));
@@ -215,7 +223,8 @@ module fp16_fma (
     // Detect carry from rounding (bit 21 went from 1 to 0 = overflow)
     wire rounded_carry = ~rounded_man[21] & norm_man[21];
 
-    wire [21:0] final_man = rounded_carry ? 22'h002000 : rounded_man;  // 1<<21
+    // Bug fix #3: 22'h002000 was 1<<13, should be 22'h200000 (1<<21)
+    wire [21:0] final_man = rounded_carry ? 22'h200000 : rounded_man;
     wire [7:0]  final_exp = rounded_carry ? (norm_exp + 8'd1) : norm_exp;
 
     // Pack result
@@ -223,8 +232,8 @@ module fp16_fma (
     wire result_underflow = (norm_exp < 0) || (norm_exp == 0 && !rounded_carry);
     wire result_overflow  = (final_exp >= 31);
     wire [15:0] packed_result;
-    assign packed_result = result_underflow ? FP16_ZERO :
-                           result_overflow  ? FP16_INF  :
+    assign packed_result = result_underflow ? (norm_sign ? 16'h8000 : FP16_ZERO) :
+                           result_overflow  ? {norm_sign, 5'd31, 10'd0} :
                            {norm_sign, final_exp[4:0], final_man[20:11]};
 
     // =========================================================================
@@ -257,17 +266,14 @@ module fp16_fma (
 
     reg [15:0] s2_result;
     reg        s2_valid;
-    reg        s2_sign;
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             s2_result <= 0;
             s2_valid  <= 0;
-            s2_sign   <= 0;
         end else begin
             s2_result <= is_special ? special_result : packed_result;
             s2_valid  <= s1_valid;
-            s2_sign   <= norm_sign;
         end
     end
 

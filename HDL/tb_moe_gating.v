@@ -17,7 +17,6 @@ module tb_moe_gating;
     reg         rst_n = 0;
     reg         start;
     wire        done;
-    reg  [7:0]  current_layer;
 
     wire [9:0]  hidden_addr;
     reg  [15:0] hidden_data;
@@ -28,6 +27,8 @@ module tb_moe_gating;
 
     wire [4*8-1:0]  expert_idx_packed;
     wire [4*16-1:0] expert_logit_packed;
+    wire [4*8-1:0]  expert_layer_packed;
+    wire [4*8-1:0]  expert_module_packed;
     wire        fma_busy;
 
     // Unpack for display
@@ -40,6 +41,11 @@ module tb_moe_gating;
     wire [15:0] el2 = expert_logit_packed[47:32];
     wire [15:0] el3 = expert_logit_packed[63:48];
 
+    // DUT port connections
+    reg  [7:0]  current_layer;
+    reg  [7:0]  moe_layer_in;
+    reg  [7:0]  moe_module_in;
+
     always #5 clk = ~clk;
 
     moe_gating #(
@@ -50,11 +56,11 @@ module tb_moe_gating;
     ) dut (
         .clk(clk), .rst_n(rst_n),
         .start(start), .done(done),
-        .current_layer(current_layer),
         .hidden_addr(hidden_addr), .hidden_data(hidden_data),
         .weight_load(weight_load), .weight_addr(weight_addr), .weight_data(weight_data),
-        .moe_layer_in(8'h00), .moe_module_in(8'h00),
+        .current_layer(current_layer), .moe_layer_in(moe_layer_in), .moe_module_in(moe_module_in),
         .expert_idx_packed(expert_idx_packed), .expert_logit_packed(expert_logit_packed),
+        .expert_layer_packed(expert_layer_packed), .expert_module_packed(expert_module_packed),
         .fma_busy(fma_busy)
     );
 
@@ -73,11 +79,13 @@ module tb_moe_gating;
         $dumpvars(0, tb_moe_gating);
         errors = 0;
         start = 0;
-        current_layer = 0;
         weight_load = 0;
         weight_addr = 0;
         weight_data = 0;
         hidden_data = BF16_1;
+        current_layer = 0;
+        moe_layer_in = 0;
+        moe_module_in = 0;
 
         // Reset
         #25; rst_n = 1; #10;

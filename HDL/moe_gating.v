@@ -36,7 +36,6 @@ module moe_gating #(
     // -- Control -----------------------------------------------------------
     input  wire        start,            // begin gating computation
     output reg         done,             // top-K selection complete
-    input  wire [7:0]  current_layer,    // model layer index (for coord lookup)
 
     // -- Hidden state read port (from token payload) ----------------------
     output reg  [ADDR_BITS-1:0] hidden_addr,
@@ -47,13 +46,16 @@ module moe_gating #(
     input  wire [ADDR_BITS-1:0] weight_addr,  // linear index into weights[]
     input  wire [15:0] weight_data,      // BF16 weight value
 
-    // -- MoE expert map (from router chip SRAM) ---------------------------
-    input  wire [7:0]  moe_layer_in,     // physical layer for expert
-    input  wire [7:0]  moe_module_in,    // module_id for expert
+    // -- Expert coordinate map (layer, module_id per expert) ---------------
+    input  wire [7:0]  current_layer,    // current model layer
+    input  wire [7:0]  moe_layer_in,     // target layer for expert being loaded
+    input  wire [7:0]  moe_module_in,    // target module for expert being loaded
 
     // -- Top-K results (packed arrays for Verilog-2005) -------------------
     output reg  [TOP_K*8-1:0]   expert_idx_packed,   // {idx[K-1], ..., idx[0]}
     output reg  [TOP_K*16-1:0]  expert_logit_packed,  // {logit[K-1], ..., logit[0]}
+    output reg  [TOP_K*8-1:0]   expert_layer_packed,  // {layer[K-1], ..., layer[0]}
+    output reg  [TOP_K*8-1:0]   expert_module_packed, // {module[K-1], ..., module[0]}
 
     // -- FMA status -------------------------------------------------------
     output wire        fma_busy          // FMA unit is computing
@@ -75,17 +77,43 @@ module moe_gating #(
     reg [15:0] logits [0:NUM_EXPERTS-1];
 
     // =========================================================================
+    // Expert coordinate map: expert_index → (layer, module_id)
+    // =========================================================================
+    reg [7:0] expert_layer [0:NUM_EXPERTS-1];
+    reg [7:0] expert_module [0:NUM_EXPERTS-1];
+
+    // =========================================================================
     // Top-K unpacked outputs (for internal use)
     // =========================================================================
-    reg [7:0]  topk_idx  [0:TOP_K-1];
-    reg [15:0] topk_logit [0:TOP_K-1];
+    reg [7:0]  topk_idx    [0:TOP_K-1];
+    reg [15:0] topk_logit  [0:TOP_K-1];
+    reg [7:0]  topk_layer  [0:TOP_K-1];
+    reg [7:0]  topk_module [0:TOP_K-1];
+
+    // =========================================================================
+    // Signed BF16 comparison: returns 1 if a > b (BF16 signed encoding)
+    // =========================================================================
+    function bf16_gt;
+        input [15:0] a, b;
+    begin
+        if (a[15] != b[15]) begin
+            bf16_gt = (a[15] == 1'b0); // positive > negative
+        end else if (a[15] == 1'b0) begin
+            bf16_gt = (a[14:0] > b[14:0]); // both positive: unsigned mag compare
+        end else begin
+            bf16_gt = (a[14:0] < b[14:0]); // both negative: reversed
+        end
+    end
+    endfunction
 
     // Pack into output ports
     integer pi;
     always @(*) begin
         for (pi = 0; pi < TOP_K; pi = pi + 1) begin
-            expert_idx_packed[pi*8 +: 8]   = topk_idx[pi];
-            expert_logit_packed[pi*16 +: 16] = topk_logit[pi];
+            expert_idx_packed[pi*8 +: 8]       = topk_idx[pi];
+            expert_logit_packed[pi*16 +: 16]   = topk_logit[pi];
+            expert_layer_packed[pi*8 +: 8]      = topk_layer[pi];
+            expert_module_packed[pi*8 +: 8]     = topk_module[pi];
         end
     end
 
@@ -99,6 +127,16 @@ module moe_gating #(
     localparam G_NEXT_EXPERT= 3'd4;
     localparam G_TOPK       = 3'd5;
     localparam G_DONE       = 3'd6;
+
+    localparam TOPK_IDLE = 2'd0;
+    localparam TOPK_INIT = 2'd1;
+    localparam TOPK_SCAN = 2'd2;
+    localparam TOPK_DONE = 2'd3;
+
+    reg [1:0]  topk_state;
+    reg [7:0]  topk_scan_ptr;
+    reg [2:0]  topk_ins_pos;
+    integer ti;
 
     reg [2:0]  g_state;
     reg [7:0]  expert_ptr;
@@ -127,11 +165,15 @@ module moe_gating #(
     assign fma_busy = (g_state != G_IDLE);
 
     // =========================================================================
-    // Weight load
+    // Weight load + expert coordinate map
     // =========================================================================
     always @(posedge clk) begin
-        if (weight_load)
+        if (weight_load) begin
             weights[weight_addr] <= weight_data;
+            // Latch expert coordinate map (expert index = weight_addr / HIDDEN_DIM)
+            expert_layer[weight_addr / HIDDEN_DIM]  <= moe_layer_in;
+            expert_module[weight_addr / HIDDEN_DIM] <= moe_module_in;
+        end
     end
 
     // =========================================================================
@@ -165,8 +207,14 @@ module moe_gating #(
             for (i = 0; i < NUM_EXPERTS; i = i + 1)
                 logits[i] <= 16'h0000;
             for (i = 0; i < TOP_K; i = i + 1) begin
-                topk_idx[i]  <= 8'hFF;
-                topk_logit[i] <= 16'h0000;
+                topk_idx[i]     <= 8'hFF;
+                topk_logit[i]   <= 16'h0000;
+                topk_layer[i]   <= 8'h00;
+                topk_module[i]  <= 8'h00;
+            end
+            for (i = 0; i < NUM_EXPERTS; i = i + 1) begin
+                expert_layer[i]  <= 8'h00;
+                expert_module[i] <= 8'h00;
             end
         end else begin
             done <= 1'b0;
@@ -178,18 +226,17 @@ module moe_gating #(
                         expert_ptr <= 0;
                         g_state    <= G_LOAD_HIDDEN;
                         dim_ptr    <= 0;
-    
+                        hidden_addr <= 0;
                     end
                 end
 
                 G_LOAD_HIDDEN: begin
-                    hidden_addr <= dim_ptr;
                     if (dim_ptr == HIDDEN_DIM - 1) begin
                         dim_ptr <= 0;
                         acc     <= 16'h0000;
                         g_state <= G_COMPUTE;
-
                     end else begin
+                        hidden_addr <= dim_ptr + 1;
                         dim_ptr <= dim_ptr + 1;
                     end
                 end
@@ -260,16 +307,7 @@ module moe_gating #(
     //   from a strictly lower index than it writes, and all NBA reads capture
     //   the pre-update values.
     // =========================================================================
-    localparam TOPK_IDLE = 2'd0;
-    localparam TOPK_INIT = 2'd1;
-    localparam TOPK_SCAN = 2'd2;
-    localparam TOPK_DONE = 2'd3;
-
-    reg [1:0]  topk_state;
-    reg [7:0]  topk_scan_ptr;
-    reg [2:0]  topk_ins_pos;
-    integer ti;
-
+    // =========================================================================
     // Combinational: find insertion position for logits[topk_scan_ptr]
     // Scans from index 0 (largest) toward TOP_K-1 (smallest).
     // Returns the first index where the new logit is strictly larger.
@@ -277,7 +315,7 @@ module moe_gating #(
     always @(*) begin
         topk_ins_pos = TOP_K[2:0];
         for (ti = 0; ti < TOP_K; ti = ti + 1) begin
-            if (topk_ins_pos == TOP_K[2:0] && logits[topk_scan_ptr] > topk_logit[ti])
+            if (topk_ins_pos == TOP_K[2:0] && bf16_gt(logits[topk_scan_ptr], topk_logit[ti]))
                 topk_ins_pos = ti[2:0];
         end
     end
@@ -294,12 +332,14 @@ module moe_gating #(
             case (topk_state)
                 TOPK_IDLE: begin
                     if (g_state == G_NEXT_EXPERT && expert_ptr == NUM_EXPERTS - 1) begin
-                        // Populate sorted buffer with first TOP_K experts
+                        // Initialize sorted buffer to minimum values; scan all experts
                         for (ti = 0; ti < TOP_K; ti = ti + 1) begin
-                            topk_idx[ti]   <= ti[7:0];
-                            topk_logit[ti] <= logits[ti];
+                            topk_idx[ti]     <= 8'hFF;
+                            topk_logit[ti]   <= 16'hFF80; // negative infinity (min BF16)
+                            topk_layer[ti]   <= 8'h00;
+                            topk_module[ti]  <= 8'h00;
                         end
-                        topk_scan_ptr <= TOP_K[7:0];
+                        topk_scan_ptr <= 0;
                         topk_state    <= TOPK_SCAN;
                     end
                 end
@@ -309,13 +349,17 @@ module moe_gating #(
                         // Shift entries [topk_ins_pos .. TOP_K-2] down by one
                         for (ti = TOP_K - 1; ti > 0; ti = ti - 1) begin
                             if (ti[2:0] > topk_ins_pos) begin
-                                topk_idx[ti]   <= topk_idx[ti - 1];
-                                topk_logit[ti] <= topk_logit[ti - 1];
+                                topk_idx[ti]     <= topk_idx[ti - 1];
+                                topk_logit[ti]   <= topk_logit[ti - 1];
+                                topk_layer[ti]   <= topk_layer[ti - 1];
+                                topk_module[ti]  <= topk_module[ti - 1];
                             end
                         end
                         // Insert at the found position
-                        topk_idx[topk_ins_pos]   <= topk_scan_ptr;
-                        topk_logit[topk_ins_pos] <= logits[topk_scan_ptr];
+                        topk_idx[topk_ins_pos]     <= topk_scan_ptr;
+                        topk_logit[topk_ins_pos]   <= logits[topk_scan_ptr];
+                        topk_layer[topk_ins_pos]   <= expert_layer[topk_scan_ptr];
+                        topk_module[topk_ins_pos]  <= expert_module[topk_scan_ptr];
                     end
                     // Advance or finish
                     if (topk_scan_ptr == NUM_EXPERTS[7:0] - 1)

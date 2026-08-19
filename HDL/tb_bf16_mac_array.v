@@ -5,18 +5,18 @@
 //
 // Tests:
 //   1. Weight loading into the array
-//   2. Single-element MAC: W[0][0]*X[0] = Y[0]
-//   3. Accumulation: multiple activations accumulate in the partial sum
-//   4. Vector MAC: 16-element activation vector against loaded weights
+//   2. Burst weight load across all rows
+//   3. Activation feed and busy deassertion
+//   4. Zero-weight identity
 //
-// Mirrors tb_fp16_mac_array structure, using BF16 encoding.
+// Uses ASIZE=4 (4x4=16 FMA instances) for fast simulation.
 // =============================================================================
 module tb_bf16_mac_array;
 
     reg         clk = 0;
     reg         rst_n = 0;
 
-    localparam ASIZE = 16;
+    localparam ASIZE = 4;
 
     reg  [ASIZE*16-1:0] act_in;
     reg                  act_valid;
@@ -133,8 +133,8 @@ module tb_bf16_mac_array;
         act_sop = 0;
         act_eop = 0;
 
-        // Wait for FMA pipeline + time-multiplex slots
-        repeat (400) @(posedge clk);
+        // Wait for pipeline: ARRAY_SIZE * PIPE_DEPTH + PIPE_DEPTH = 15 cycles
+        repeat (30) @(posedge clk);
 
         // MAC array should return to idle
         if (busy !== 1'b0) begin
@@ -167,7 +167,7 @@ module tb_bf16_mac_array;
         act_sop = 0;
         act_eop = 0;
 
-        repeat (400) @(posedge clk);
+        repeat (30) @(posedge clk);
 
         if (busy !== 1'b0) begin
             $display("[TB] FAIL: busy should be 0 after zero-weight computation");
@@ -182,6 +182,6 @@ module tb_bf16_mac_array;
         $finish;
     end
 
-    initial begin #100000; $display("TIMEOUT"); $finish(1); end
+    initial begin #10000; $display("TIMEOUT"); $finish(1); end
 
 endmodule

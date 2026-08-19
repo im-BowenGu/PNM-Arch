@@ -5,20 +5,18 @@
 //
 // Tests:
 //   1. Weight loading into the array
-//   2. Single-element MAC: W[0][0]*X[0] = Y[0]
-//   3. Accumulation: multiple activations accumulate in the partial sum
-//   4. Vector MAC: 16-element activation vector against loaded weights
+//   2. Burst weight load across all rows
+//   3. Activation feed and busy deassertion
+//   4. Zero-weight identity (not included, tested via bf16 counterpart)
 //
-// The array uses a shared time-multiplexed FMA unit, so full throughput
-// verification requires waiting for all 256 MAC slots to be processed.
-// This test uses a small subset for fast simulation.
+// Uses ASIZE=4 (4x4=16 FMA instances) for fast simulation.
 // =============================================================================
 module tb_fp16_mac_array;
 
     reg         clk = 0;
     reg         rst_n = 0;
 
-    localparam ASIZE = 16;
+    localparam ASIZE = 4;
 
     reg  [ASIZE*16-1:0] act_in;
     reg                  act_valid;
@@ -137,9 +135,8 @@ module tb_fp16_mac_array;
         act_sop = 0;
         act_eop = 0;
 
-        // Wait for FMA pipeline to complete (3 cycles FMA + time-multiplex slots)
-        // The array is time-multiplexed so it takes many cycles
-        repeat (400) @(posedge clk);
+        // Wait for pipeline: ARRAY_SIZE * PIPE_DEPTH + PIPE_DEPTH = 15 cycles
+        repeat (30) @(posedge clk);
 
         // The MAC array should have gone busy then returned to idle
         if (busy !== 1'b0) begin
@@ -155,6 +152,6 @@ module tb_fp16_mac_array;
         $finish;
     end
 
-    initial begin #100000; $display("TIMEOUT"); $finish(1); end
+    initial begin #10000; $display("TIMEOUT"); $finish(1); end
 
 endmodule

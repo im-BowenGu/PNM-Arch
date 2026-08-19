@@ -53,7 +53,7 @@ module fp32_fma (
     wire        a_sign_w = a[31];
     wire [7:0]  a_exp_w  = a[30:23];
     wire [22:0] a_man_w  = a[22:0];
-    wire        a_zero_w = (a == 32'h00000000);
+    wire        a_zero_w = (a[30:0] == 31'h00000000);
     wire        a_den_w  = (a_exp_w == 0) && (a_man_w != 0);
 
     wire [23:0] a_mantissa_w;
@@ -65,7 +65,7 @@ module fp32_fma (
     wire        b_sign_w = b[31];
     wire [7:0]  b_exp_w  = b[30:23];
     wire [22:0] b_man_w  = b[22:0];
-    wire        b_zero_w = (b == 32'h00000000);
+    wire        b_zero_w = (b[30:0] == 31'h00000000);
     wire        b_den_w  = (b_exp_w == 0) && (b_man_w != 0);
 
     wire [23:0] b_mantissa_w;
@@ -97,9 +97,9 @@ module fp32_fma (
             s1_a_inf   <= (a[30:23] == 8'd255) && (a[22:0] == 23'd0);
             s1_b_inf   <= (b[30:23] == 8'd255) && (b[22:0] == 23'd0);
             s1_c_inf   <= (c[30:23] == 8'd255) && (c[22:0] == 23'd0);
-            s1_a_zero  <= (a == 32'h00000000);
-            s1_b_zero  <= (b == 32'h00000000);
-            s1_c_zero  <= (c == 32'h00000000);
+            s1_a_zero  <= (a[30:0] == 31'h00000000);
+            s1_b_zero  <= (b[30:0] == 31'h00000000);
+            s1_c_zero  <= (c[30:0] == 31'h00000000);
             s1_mul_man      <= mul_man_w;
             s1_mul_exp      <= mul_exp_w;
             s1_mul_sign     <= mul_sign_w;
@@ -237,8 +237,8 @@ module fp32_fma (
     wire result_underflow = (norm_exp < 0) || (norm_exp == 0 && !rounded_carry);
     wire result_overflow  = (final_exp >= 255);
     wire [31:0] packed_result;
-    assign packed_result = result_underflow ? FP32_ZERO :
-                           result_overflow  ? FP32_INF  :
+    assign packed_result = result_underflow ? (norm_sign ? 32'h80000000 : FP32_ZERO) :
+                           result_overflow  ? {norm_sign, 8'd255, 23'd0} :
                            {norm_sign, final_exp[7:0], final_man[46:24]};
 
     // Special cases

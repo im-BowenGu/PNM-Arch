@@ -302,15 +302,15 @@ module tb_fabric;
         end
     endtask
 
-    // Full spine packet: LAYER, MODULE, CTRL, LEN_LO, LEN_HI, payload..., CRC_LO, CRC_HI
+    // Full spine packet: LAYER, MODULE, CTRL, LEN_LO, LEN_HI, payload..., CRC_HI, CRC_LO
     task send_spine_pkt;
         input [7:0] layer;
         input [7:0] mod_id;
         input [7:0] ctrl;
         input [7:0] pay0;
         input [7:0] pay1;
-        input [7:0] crc_lo;
         input [7:0] crc_hi;
+        input [7:0] crc_lo;
         begin
             send_s(layer,  1'b1, 1'b0);
             send_s(mod_id, 1'b0, 1'b0);
@@ -319,8 +319,8 @@ module tb_fabric;
             send_s(8'h00,  1'b0, 1'b0); // LEN_HI
             send_s(pay0,   1'b0, 1'b0);
             send_s(pay1,   1'b0, 1'b0);
-            send_s(crc_lo, 1'b0, 1'b0); // CRC_LO
-            send_s(crc_hi, 1'b0, 1'b1); // CRC_HI + EOP
+            send_s(crc_hi, 1'b0, 1'b0); // CRC_HI
+            send_s(crc_lo, 1'b0, 1'b1); // CRC_LO + EOP
         end
     endtask
 
@@ -329,16 +329,16 @@ module tb_fabric;
         input [7:0] mod_id;
         input [7:0] ctrl;
         input [7:0] pay0;
-        input [7:0] crc_lo;
         input [7:0] crc_hi;
+        input [7:0] crc_lo;
         begin
             send_b(mod_id, 1'b1, 1'b0);
             send_b(ctrl,   1'b0, 1'b0);
             send_b(8'h01,  1'b0, 1'b0); // LEN_LO = 1
             send_b(8'h00,  1'b0, 1'b0); // LEN_HI
             send_b(pay0,   1'b0, 1'b0);
-            send_b(crc_lo, 1'b0, 1'b0);
-            send_b(crc_hi, 1'b0, 1'b1);
+            send_b(crc_hi, 1'b0, 1'b0);
+            send_b(crc_lo, 1'b0, 1'b1);
         end
     endtask
 

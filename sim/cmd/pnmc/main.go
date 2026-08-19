@@ -95,6 +95,7 @@ func runPNMC(argv []string) int {
 			fmt.Fprintf(os.Stderr, "cpuprofile: %v\n", err)
 			return 2
 		}
+		defer f.Close()
 		if err := pprof.StartCPUProfile(f); err != nil {
 			fmt.Fprintf(os.Stderr, "cpuprofile: %v\n", err)
 			return 2

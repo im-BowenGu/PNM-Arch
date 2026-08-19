@@ -340,8 +340,6 @@ func (fw *Firmware) VerifyDispatch(records []DispatchRecord) error {
 
 // Summary returns a human-readable summary of the firmware state.
 func (fw *Firmware) Summary() string {
-	var b fmt.Stringer
-	_ = b
 	return fmt.Sprintf("Firmware: state=%d nodes=%d dispatches=%d weights=%d errors=%d",
 		fw.State, fw.NodeCount, fw.DispatchCount, fw.WeightCount, fw.ErrorCount)
 }
