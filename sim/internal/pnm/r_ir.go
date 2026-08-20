@@ -16,6 +16,7 @@ const (
 	FP64Load FP64Op = iota
 	FP64Store
 	FP64Add
+	FP64Sub
 	FP64Mul
 	FP64FMA
 	FP64Div
@@ -24,6 +25,7 @@ const (
 	FP64Cmp
 	FP64Mov
 	FP64Const
+	FP64Neg
 )
 
 func (o FP64Op) String() string {
@@ -34,6 +36,8 @@ func (o FP64Op) String() string {
 		return "f64.store"
 	case FP64Add:
 		return "f64.add"
+	case FP64Sub:
+		return "f64.sub"
 	case FP64Mul:
 		return "f64.mul"
 	case FP64FMA:
@@ -50,6 +54,8 @@ func (o FP64Op) String() string {
 		return "f64.mov"
 	case FP64Const:
 		return "f64.const"
+	case FP64Neg:
+		return "f64.neg"
 	default:
 		return "f64???"
 	}
@@ -173,7 +179,14 @@ func compileRAssign(p *FP64Program, varName, expr string) error {
 		lhs := resolveRAtom(p, strings.TrimSpace(m[1]))
 		rhs := resolveRAtom(p, strings.TrimSpace(m[3]))
 		op := rArithOp(m[2])
-		p.Regs = append(p.Regs, FP64IR{Op: op, Dest: dest, Src: []string{lhs, rhs}})
+		if op == FP64Neg {
+			// subtraction: negate RHS, then add
+			negRHS := p.allocReg()
+			p.Regs = append(p.Regs, FP64IR{Op: FP64Neg, Dest: negRHS, Src: []string{rhs}})
+			p.Regs = append(p.Regs, FP64IR{Op: FP64Add, Dest: dest, Src: []string{lhs, negRHS}})
+		} else {
+			p.Regs = append(p.Regs, FP64IR{Op: op, Dest: dest, Src: []string{lhs, rhs}})
+		}
 		return nil
 	}
 
@@ -215,7 +228,7 @@ func rArithOp(op string) FP64Op {
 	case "+":
 		return FP64Add
 	case "-":
-		return FP64Add // emit sub as add(-b) handled at lowering
+		return FP64Neg // sentinel: handled specially in compileRAssign
 	case "*":
 		return FP64Mul
 	case "/":
@@ -235,13 +248,21 @@ func compileRCall(p *FP64Program, dest, funcName, args string) error {
 	case "c":
 		return nil // vector literal, skip
 	case "sqrt":
-		// sqrt(x) -> f64.fma r, x, x, 0.0  (approximation via x*x, but really we need fsqrt)
-		// Emit as x^0.5 via const + mul sequence
+		// sqrt(x) via 4 iterations of Newton-Raphson: y = 0.5*(y + x/y)
 		if len(argList) == 1 {
 			src := resolveRAtom(p, argList[0])
+			y := p.allocReg()
 			half := p.allocReg()
+			xDivY := p.allocReg()
+			sum := p.allocReg()
+			p.Regs = append(p.Regs, FP64IR{Op: FP64Const, Dest: y, Imm: 1.0})
 			p.Regs = append(p.Regs, FP64IR{Op: FP64Const, Dest: half, Imm: 0.5})
-			p.Regs = append(p.Regs, FP64IR{Op: FP64Mul, Dest: dest, Src: []string{src, half}})
+			for i := 0; i < 4; i++ {
+				p.Regs = append(p.Regs, FP64IR{Op: FP64Div, Dest: xDivY, Src: []string{src, y}})
+				p.Regs = append(p.Regs, FP64IR{Op: FP64Add, Dest: sum, Src: []string{y, xDivY}})
+				p.Regs = append(p.Regs, FP64IR{Op: FP64Mul, Dest: y, Src: []string{sum, half}})
+			}
+			p.Regs = append(p.Regs, FP64IR{Op: FP64Mov, Dest: dest, Src: []string{y}})
 			return nil
 		}
 	case "abs":

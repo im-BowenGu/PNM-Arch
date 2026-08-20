@@ -45,7 +45,7 @@ module fp64_fma (
     reg s1_a_zero, s1_b_zero, s1_c_zero;
 
     reg [105:0] s1_mul_man;
-    reg [11:0]  s1_mul_exp;
+    reg signed [12:0] s1_mul_exp;
     reg         s1_mul_sign;
     reg         s1_mul_overflow;
 
@@ -75,7 +75,7 @@ module fp64_fma (
 
     // Multiply (explicit zero-extend for iverilog)
     wire         mul_sign_w = a_sign_w ^ b_sign_w;
-    wire [11:0]  mul_exp_w  = a_exponent_w + b_exponent_w - FP64_BIAS;
+    wire signed [12:0] mul_exp_w = $signed({1'b0, a_exponent_w}) + $signed({1'b0, b_exponent_w}) - 13'sd1023;
     wire [105:0] mul_man_w  = {53'd0, a_mantissa_w} * {53'd0, b_mantissa_w};
     wire         mul_ovf_w  = mul_man_w[105];
 
@@ -122,16 +122,17 @@ module fp64_fma (
     assign c_mantissa[51:0] = s1_c_zero ? 52'd0 : (c_den ? {1'b0, c_man} : c_man);
     wire [11:0] c_exponent = s1_c_zero ? 12'd0 : (c_den ? 12'd1 : {1'b0, c_exp});
 
-    wire [11:0] mul_exp_eff = s1_mul_overflow ? (s1_mul_exp + 12'd1) : s1_mul_exp;
-    wire [11:0] add_exp = (mul_exp_eff > c_exponent) ? mul_exp_eff : c_exponent;
+    wire signed [12:0] mul_exp_eff = s1_mul_overflow ? (s1_mul_exp + 13'sd1) : s1_mul_exp;
+    wire signed [12:0] add_exp = (mul_exp_eff > $signed({1'b0, c_exponent})) ? mul_exp_eff : $signed({1'b0, c_exponent});
+    wire signed [12:0] exp_diff = mul_exp_eff - $signed({1'b0, c_exponent});
 
     // Align mantissas: implicit 1 at bit 105
-    wire [105:0] mul_man_aligned = (mul_exp_eff >= c_exponent) ?
+    wire [105:0] mul_man_aligned = (exp_diff >= 0) ?
         (s1_mul_man << 1) :
-        (s1_mul_man << 1) >> (c_exponent - mul_exp_eff);
-    wire [105:0] c_man_aligned = (c_exponent > mul_exp_eff) ?
+        (s1_mul_man << 1) >> (-exp_diff);
+    wire [105:0] c_man_aligned = (exp_diff < 0) ?
         ({c_mantissa, 53'd0}) :
-        ({c_mantissa, 53'd0} >> (mul_exp_eff - c_exponent));
+        ({c_mantissa, 53'd0} >> exp_diff);
 
     // Add
     wire         mul_ge_c = (mul_man_aligned >= c_man_aligned);

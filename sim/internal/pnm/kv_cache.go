@@ -93,17 +93,23 @@ func (b *KVCacheBank) Store(entry []byte) bool {
 	return true
 }
 
-// Load reads a KV entry from the bank. Returns nil if empty.
-func (b *KVCacheBank) Load() []byte {
-	if b.Empty {
+// Load reads a KV entry from the bank by position. Returns nil if the
+// position is outside the valid range [WritePtr-Occupancy, WritePtr).
+func (b *KVCacheBank) Load(seqPos int) []byte {
+	if b.Empty || seqPos < 0 {
 		return nil
 	}
-	entry := b.Entries[b.ReadPtr]
-	b.ReadPtr = (b.ReadPtr + 1) % b.Depth
-	b.Occupancy--
-	b.Empty = (b.Occupancy == 0)
-	b.Full = false
-	return entry
+	// The entry at seqPos is stored at index (seqPos % depth) in the circular buffer.
+	idx := seqPos % b.Depth
+	if idx < 0 {
+		idx += b.Depth
+	}
+	// Validate that idx is within the live window [ReadPtr, ReadPtr+Occupancy)
+	dist := (idx - b.ReadPtr + b.Depth) % b.Depth
+	if dist >= b.Occupancy {
+		return nil // evicted or never written
+	}
+	return b.Entries[idx]
 }
 
 // Evict removes and returns the oldest entry for offloading. Returns nil if empty.
@@ -148,10 +154,13 @@ func (kl *KVCacheLayer) Store(seqPos int, entry []byte) bool {
 	return kl.Banks[bankIdx].Store(entry)
 }
 
-// Load reads a KV entry from the appropriate bank.
+// Load reads a KV entry from the appropriate bank by sequence position.
 func (kl *KVCacheLayer) Load(seqPos int) []byte {
 	bankIdx := seqPos % kl.Config.NumBanks
-	return kl.Banks[bankIdx].Load()
+	// Position within this bank: entries are distributed round-robin across banks,
+	// so the bank-local index is seqPos / numBanks.
+	bankLocalPos := seqPos / kl.Config.NumBanks
+	return kl.Banks[bankIdx].Load(bankLocalPos)
 }
 
 // NeedsOffload returns true if any bank is above the offload threshold.

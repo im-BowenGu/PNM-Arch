@@ -287,6 +287,9 @@ func newDES(lids []int, bx, by int, bp map[NodeID]int, stim []StreamByte, pktAt 
 				m.pe0[li][x][y] = m.addReg(rkPE0, li, x, y)
 				m.pe1[li][x][y] = m.addReg(rkPE1, li, x, y)
 				m.txe[li][x][y] = m.addReg(rkTXE, li, x, y)
+				n := NodeID{L: lids[li], X: x, Y: y}
+				m.echoStart[n] = -1
+				m.busyEnd[n] = -1
 			}
 		}
 	}
@@ -858,6 +861,9 @@ func (m *desModel) refillFrom(r *desReg, src int, c int) {
 // txeAdvance refills the echo emitter: the next byte of the golden echo
 // stream, or idle when the echo completes.
 func (m *desModel) txeAdvance(r *desReg, c int) {
+	if r.occ == nil {
+		return
+	}
 	pos := r.occ.dma + 1
 	if pos < len(r.occ.pkt.echo) {
 		r.pending = &desByte{data: r.occ.pkt.echo[pos], sop: false,

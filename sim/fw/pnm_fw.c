@@ -132,18 +132,24 @@ int fw_plan_inference(firmware_t *fw, const uint8_t *token,
 
     (void)token; /* used in production for flit construction */
     int idx = 0;
-    int nodes_per_layer = PNM_MAX_NODES;
+    int bx = fw->board_x > 0 ? fw->board_x : 4;
+    int by = fw->board_y > 0 ? fw->board_y : 4;
+    int nodes_per_layer = bx * by;
+    int mpl = fw->model_layers_per_physical > 0 ? fw->model_layers_per_physical : 1;
 
     /* For each model layer dispatched to this physical chassis */
     for (int ml = 0; ml < PNM_MAX_MODEL_LAYERS && idx < max_records; ml++) {
+        int pl = ml / mpl;  /* physical layer index */
+        if (pl >= fw->num_layers) break;
+
         /* Step 1: Dense path — attention node */
         int attn_node = ml % nodes_per_layer;
         dispatch_record_t *r = &records[idx];
         r->layer = ml;
         memcpy(r->phase, "dense", 6);
-        r->target.L = 0; /* simplified: all on layer 0 */
-        r->target.X = attn_node / 4;
-        r->target.Y = attn_node % 4;
+        r->target.L = (int8_t)pl;
+        r->target.X = (uint8_t)(attn_node / by);
+        r->target.Y = (uint8_t)(attn_node % by);
         r->expert_idx = -1;
         r->flit_bytes = 4 + token_len + 2; /* header + payload + CRC */
         memcpy(r->kv_action, "store", 6);
@@ -152,18 +158,24 @@ int fw_plan_inference(firmware_t *fw, const uint8_t *token,
 
         /* Step 2: MoE gating — dispatch to top-k experts */
         for (int exp = 0; exp < PNM_MAX_TOPK && idx < max_records; exp++) {
-            int exp_node = exp % nodes_per_layer;
-            dispatch_record_t *er = &records[idx];
-            er->layer = ml;
-            memcpy(er->phase, "moe", 4);
-            er->target.L = 0;
-            er->target.X = exp_node / 4;
-            er->target.Y = exp_node % 4;
-            er->expert_idx = exp;
-            er->flit_bytes = 4 + token_len + 2;
-            memcpy(er->kv_action, "", 1);
-            er->cu_type = CU_BF16_FMA; /* MoE experts use BF16 FMA */
-            idx++;
+            /* Look up expert in MoE map */
+            int found = 0;
+            for (int e = 0; e < fw->moe_count; e++) {
+                if (fw->moe_map[e].model_layer == ml && fw->moe_map[e].expert_idx == exp) {
+                    dispatch_record_t *er = &records[idx];
+                    er->layer = ml;
+                    memcpy(er->phase, "moe", 4);
+                    er->target = fw->moe_map[e].target_node;
+                    er->expert_idx = exp;
+                    er->flit_bytes = 4 + token_len + 2;
+                    memcpy(er->kv_action, "", 1);
+                    er->cu_type = fw->moe_map[e].cu_type;
+                    idx++;
+                    found = 1;
+                    break;
+                }
+            }
+            if (!found) continue;  /* expert not in map, skip */
         }
     }
 

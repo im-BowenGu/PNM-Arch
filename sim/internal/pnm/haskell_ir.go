@@ -59,6 +59,10 @@ func emitFP64Inst(b *strings.Builder, inst FP64IR) {
 		fmt.Fprintf(b, "  %-10s [%s], %s\n", inst.Op, inst.Dest, inst.Src[0])
 	case FP64Load:
 		fmt.Fprintf(b, "  %-10s %s, [%s]\n", inst.Op, inst.Dest, inst.Src[0])
+	case FP64Neg:
+		fmt.Fprintf(b, "  %-10s %s, %s\n", inst.Op, inst.Dest, inst.Src[0])
+	case FP64Sub:
+		fmt.Fprintf(b, "  %-10s %s, %s, %s\n", inst.Op, inst.Dest, inst.Src[0], inst.Src[1])
 	default:
 		parts := []string{inst.Dest}
 		parts = append(parts, inst.Src...)
@@ -239,14 +243,26 @@ func compileHaskellExpr(p *HaskellProgram, varName, expr string) error {
 
 func compileHaskellIf(p *HaskellProgram, dest, expr string) error {
 	parts := strings.Fields(expr)
-	if len(parts) >= 5 {
+	if len(parts) >= 6 {
 		cond := resolveHaskellAtom(p, parts[1])
 		thenVal := resolveHaskellAtom(p, parts[3])
+		elseVal := resolveHaskellAtom(p, parts[5])
+		// Emulate: dest = cond ? thenVal : elseVal
+		// via: dest = thenVal * cmp + elseVal * (1 - cmp)
+		// where cmp = (cond != 0) ? 1.0 : 0.0
 		zero := p.allocReg()
 		p.Regs = append(p.Regs, FP64IR{Op: FP64Const, Dest: zero, Imm: 0.0})
 		cmpResult := p.allocReg()
 		p.Regs = append(p.Regs, FP64IR{Op: FP64Cmp, Dest: cmpResult, Src: []string{cond, zero}, Cond: "!="})
-		p.Regs = append(p.Regs, FP64IR{Op: FP64Mov, Dest: dest, Src: []string{thenVal}})
+		one := p.allocReg()
+		p.Regs = append(p.Regs, FP64IR{Op: FP64Const, Dest: one, Imm: 1.0})
+		notCmp := p.allocReg()
+		p.Regs = append(p.Regs, FP64IR{Op: FP64Sub, Dest: notCmp, Src: []string{one, cmpResult}})
+		thenPart := p.allocReg()
+		p.Regs = append(p.Regs, FP64IR{Op: FP64Mul, Dest: thenPart, Src: []string{thenVal, cmpResult}})
+		elsePart := p.allocReg()
+		p.Regs = append(p.Regs, FP64IR{Op: FP64Mul, Dest: elsePart, Src: []string{elseVal, notCmp}})
+		p.Regs = append(p.Regs, FP64IR{Op: FP64Add, Dest: dest, Src: []string{thenPart, elsePart}})
 	}
 	return nil
 }
@@ -273,7 +289,7 @@ func parseHaskellBinop(expr string) (FP64Op, string, string, bool) {
 			}
 		case '-':
 			if depth == 0 && i > 0 {
-				return FP64Add, expr[:i], "-" + expr[i+1:], true
+				return FP64Sub, expr[:i], expr[i+1:], true
 			}
 		}
 	}
@@ -295,7 +311,7 @@ func parseHaskellCond(s string) (string, string) {
 	s = strings.TrimSpace(s)
 	cmps := []string{"==", "/=", "<=", ">=", "<", ">"}
 	for _, c := range cmps {
-		if idx := strings.Index(s, c); idx > 0 {
+		if idx := strings.Index(s, c); idx >= 0 {
 			return c, strings.TrimSpace(s[idx+len(c):])
 		}
 	}
@@ -330,11 +346,21 @@ func compileHaskellCall(p *HaskellProgram, dest, funcName, args string) error {
 			return nil
 		}
 	case "sqrt":
+		// sqrt(x) via 4 iterations of Newton-Raphson: y = 0.5*(y + x/y)
 		if len(argList) == 1 {
 			src := resolveHaskellAtom(p, argList[0])
+			y := p.allocReg()
 			half := p.allocReg()
+			xDivY := p.allocReg()
+			sum := p.allocReg()
+			p.Regs = append(p.Regs, FP64IR{Op: FP64Const, Dest: y, Imm: 1.0})
 			p.Regs = append(p.Regs, FP64IR{Op: FP64Const, Dest: half, Imm: 0.5})
-			p.Regs = append(p.Regs, FP64IR{Op: FP64Mul, Dest: dest, Src: []string{src, half}})
+			for i := 0; i < 4; i++ {
+				p.Regs = append(p.Regs, FP64IR{Op: FP64Div, Dest: xDivY, Src: []string{src, y}})
+				p.Regs = append(p.Regs, FP64IR{Op: FP64Add, Dest: sum, Src: []string{y, xDivY}})
+				p.Regs = append(p.Regs, FP64IR{Op: FP64Mul, Dest: y, Src: []string{sum, half}})
+			}
+			p.Regs = append(p.Regs, FP64IR{Op: FP64Mov, Dest: dest, Src: []string{y}})
 			return nil
 		}
 	case "id":

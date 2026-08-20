@@ -168,6 +168,12 @@ typedef struct {
 
     /* State */
     fw_state_t state;
+
+    /* Board dimensions (set during init) */
+    int board_x;              /* X columns per board                     */
+    int board_y;              /* Y rows per board                        */
+    int num_layers;           /* physical spine layers                   */
+    int model_layers_per_physical; /* model layers per physical layer    */
 } firmware_t;
 
 /* ── Dispatch Record ───────────────────────────────────────────────── */

@@ -51,7 +51,7 @@ func SimDir() string {
 }
 
 var FABRIC = []string{"flit_gate.v", "hfr.v", "xyz_repeater.v", "xy_turn.v",
-	"node_eject.v", "vc_merge.v", "crc16.v", "bf16_fma.v", "pe_tile_stub.v"}
+	"node_eject.v", "vc_merge.v", "crc16.v", "bf16_fma.v", "pe_tile_stub.v", "kv_cache_bank.v"}
 
 // PE_PIPE_DELAY: the generated node MAC stub (pe_tile_stub.v,
 // MULT_LATENCY=2) adds two pipe cycles between the eject and the node DMA
@@ -1070,7 +1070,7 @@ func SpanCycles(delivered *Delivery) (int, int) {
 		}
 	}
 	last := 0
-	streams := [][]Entry4{delivered.Tail, delivered.Inject}
+	streams := [][]Entry4{delivered.Tail, delivered.Inject, delivered.TailUp}
 	for _, v := range delivered.Nodes {
 		streams = append(streams, v)
 	}
@@ -1234,7 +1234,7 @@ func RunOne(prog *Program, nodes []NodeID, dims Dims, groups, replays int) bool 
 			cmd := exec.Command("vvp", j.Nm.Out)
 			cmd.Dir = simDir
 			if err := cmd.Start(); err != nil {
-				fmt.Printf("  group %d: vvp exited nonzero\n", j.GI)
+				fmt.Printf("  group %d: vvp failed to start: %v\n", j.GI, err)
 				ok = false
 				continue
 			}

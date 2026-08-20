@@ -262,9 +262,10 @@ module pe_tile_stub #(
 
     // the computed result byte: FMA path or bias-add on payload, recomputed CRC on tail
     wire [7:0] fma_out_byte = fma_out_sr[fma_out_cnt[1:0]];
+    wire in_payload = (pos >= 4 && pos < 4 + plen);
     wire [7:0] out_byte =
-        (USE_FMA && fma_out_pending)   ? fma_out_byte
-      : (pos >= 4 && pos < 4 + plen && !USE_FMA) ? (s1_data + KERNEL_CONST)
+        (USE_FMA && fma_out_pending && in_payload) ? fma_out_byte
+      : (in_payload && !USE_FMA) ? (s1_data + KERNEL_CONST)
       : (pos == 4 + plen)            ? crc_out_acc[15:8]
       : (pos == 4 + plen + 1)        ? crc_out_acc[7:0]
       :                                s1_data;

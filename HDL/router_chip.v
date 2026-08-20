@@ -263,7 +263,7 @@ module router_chip #(
     reg        fb_in_ready_r;
     wire       fb_in_ready = fb_in_ready_r;
 
-    assign pcie_in_ready = (pie_state == PIE_WEIGHT_P || pie_state == PIE_INF_TOKEN_P) ? (fb_in_ready && fb_state == 3'd2) : 1'b1;
+    assign pcie_in_ready = (pie_state == PIE_WEIGHT_P || pie_state == PIE_INF_TOKEN_P) ? (fb_in_ready && fb_state == 3'd2 && (fb_out_ready || !fb_out_valid)) : 1'b1;
 
     // =========================================================================
     // Main control FSM

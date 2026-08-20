@@ -272,7 +272,7 @@ func GenTopology(layerIDs []int, bx, by int, biases map[NodeID]int, kvcache bool
 			a("        .clk(clk), .rst_n(rst_n),")
 			a(fmt.Sprintf("        .xin_data(%s_data), .xin_valid(%s_valid), .xin_sop(%s_sop),", xin, xin, xin))
 			a(fmt.Sprintf("        .xin_eop(%s_eop), .xin_ready(%s_ready),", xin, xin))
-			a(fmt.Sprintf("        .xin_vc(nob_%d_vc),", l))
+			a(fmt.Sprintf("        .xin_vc(%s_vc),", xin))
 			a(fmt.Sprintf("        .xout_data(t_%d_%d_data), .xout_valid(t_%d_%d_valid), .xout_sop(t_%d_%d_sop),", l, x, l, x, l, x))
 			a(fmt.Sprintf("        .xout_eop(t_%d_%d_eop), .xout_ready(t_%d_%d_ready),", l, x, l, x))
 			a(fmt.Sprintf("        .xout_vc(t_%d_%d_vc),", l, x))

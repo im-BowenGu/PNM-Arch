@@ -112,7 +112,7 @@ func (d *Driver) computeRouteBitmaps() map[NodeID]uint16 {
 		}
 		layerBits := uint16(nid.L+1) << 7  // 1-based layer ID
 		distBits := uint16(nid.Y) & 0x1F   // Y distance from xyz_repeater
-		bitmaps[nid] = layerBits | distBits
+		bitmaps[nid] = layerBits | (1 << 6) | distBits  // bit 6 = Y-axis
 	}
 	return bitmaps
 }
@@ -262,7 +262,6 @@ func BuildWeightFlit(cmd WeightUploadCommand) []StreamByte {
 // network and dispatches to the top-k experts.
 type InferDispatch struct {
 	TokenPayload []byte    // input hidden state
-	LayerResults [][]byte  // per-layer output (after each transformer layer)
 }
 
 // PlanInference computes the dispatch sequence for one token through all
@@ -276,7 +275,6 @@ func (d *Driver) PlanInference(token []byte) (*InferDispatch, error) {
 
 	disp := &InferDispatch{
 		TokenPayload: token,
-		LayerResults: make([][]byte, tc.NumHiddenLayers),
 	}
 
 	nodesPerLayer := d.Dims.Bx * d.Dims.By

@@ -47,7 +47,7 @@ module fp16_fma (
 
     // Registered multiply results (fix #1: must travel with s1_c)
     reg [21:0] s1_mul_man;
-    reg [6:0]  s1_mul_exp;
+    reg signed [7:0] s1_mul_exp;
     reg        s1_mul_sign;
     reg        s1_mul_overflow;
 
@@ -80,8 +80,8 @@ module fp16_fma (
     // is zero, preventing unsigned underflow of (0 + exp - 15) which wraps
     // to 113+ in 7-bit arithmetic.
     wire        mul_sign_w = a_sign_w ^ b_sign_w;
-    wire [6:0]  mul_exp_w  = (a_zero_w || b_zero_w) ? 7'd0 :
-                             (a_exponent_w + b_exponent_w - FP16_BIAS);
+    wire signed [7:0] mul_exp_w = (a_zero_w || b_zero_w) ? 8'sd0 :
+        $signed({1'b0, a_exponent_w}) + $signed({1'b0, b_exponent_w}) - 8'sd15;
     wire [21:0] mul_man_w  = (a_zero_w || b_zero_w) ? 22'd0 :
                              (a_mantissa_w * b_mantissa_w);
     wire        mul_ovf_w  = mul_man_w[21];
@@ -130,21 +130,22 @@ module fp16_fma (
     wire [5:0]  c_exponent = s1_c_zero ? 6'd0 : (c_den ? 6'd1 : {1'b0, c_exp});
 
     // Effective multiply exponent (from registered multiply results)
-    wire [6:0]  mul_exp_eff = s1_mul_overflow ? (s1_mul_exp + 7'd1) : s1_mul_exp;
+    wire signed [7:0] mul_exp_eff = s1_mul_overflow ? (s1_mul_exp + 8'sd1) : s1_mul_exp;
 
     // Result exponent: max(mul_exp_eff, c_exponent)
-    wire [6:0]  add_exp = (mul_exp_eff > {1'b0, c_exponent}) ? mul_exp_eff : {1'b0, c_exponent};
+    wire signed [7:0] add_exp = (mul_exp_eff > $signed({1'b0, c_exponent})) ? mul_exp_eff : $signed({1'b0, c_exponent});
+    wire signed [7:0] exp_diff = mul_exp_eff - $signed({1'b0, c_exponent});
 
     // Align mantissas: both have implicit 1 at bit 21
     // Bug fix #2: only shift left by 1 when product did not overflow bit 20;
     // when s1_mul_overflow=1, bit 21 is already set and <<1 would truncate it.
     wire [21:0] mul_man_norm = s1_mul_overflow ? s1_mul_man : (s1_mul_man << 1);
-    wire [21:0] mul_man_aligned = (mul_exp_eff >= {1'b0, c_exponent}) ?
+    wire [21:0] mul_man_aligned = (exp_diff >= 0) ?
         mul_man_norm :
-        (mul_man_norm >> ({1'b0, c_exponent} - mul_exp_eff));
-    wire [21:0] c_man_aligned = ({1'b0, c_exponent} > mul_exp_eff) ?
+        (mul_man_norm >> (-exp_diff));
+    wire [21:0] c_man_aligned = (exp_diff < 0) ?
         ({c_mantissa, 11'd0}) :
-        ({c_mantissa, 11'd0} >> (mul_exp_eff - {1'b0, c_exponent}));
+        ({c_mantissa, 11'd0} >> exp_diff);
 
     // Add with sign/magnitude
     wire        mul_ge_c = (mul_man_aligned >= c_man_aligned);
@@ -172,7 +173,7 @@ module fp16_fma (
             norm_exp = 0;
         end else if (add_result[22]) begin
             norm_man = add_result[22:1];
-            norm_exp = add_exp + 1;
+            norm_exp = {1'b0, add_exp} + 8'd1;
         end else begin
             norm_man = add_result[21:0];
             norm_exp = {1'b0, add_exp};

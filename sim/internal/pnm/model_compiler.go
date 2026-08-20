@@ -305,11 +305,6 @@ func (mc *ModelCompiler) Partition() error {
 	// Reserve 80% of remaining budget for KV cache (20%留给 activation memory).
 	tc = &mc.Config.TextConfig
 	kvEntryBytes := int64(tc.HiddenSize) * 4 // K(2B) + V(2B) per hidden dim
-	kvBudgetPerNode := int64(float64(mc.PerNodeBudget) * 0.80)
-	kvEntriesPerNode := kvBudgetPerNode / kvEntryBytes
-	if kvEntriesPerNode > 16384 {
-		kvEntriesPerNode = 16384 // cap at 16K entries (16K context)
-	}
 	for nid, na := range mc.NodeAssignments {
 		if nid.L < 0 || na.TotalBytes == 0 {
 			continue
@@ -323,6 +318,19 @@ func (mc *ModelCompiler) Partition() error {
 			}
 		}
 		if hasAttn {
+			var usedBytes int64
+			for _, t := range na.Tensors {
+				usedBytes += t.SizeBytes
+			}
+			remaining := mc.PerNodeBudget - usedBytes
+			if remaining < 0 {
+				remaining = 0
+			}
+			kvBudgetPerNode := int64(float64(remaining) * 0.80)
+			kvEntriesPerNode := kvBudgetPerNode / kvEntryBytes
+			if kvEntriesPerNode > 16384 {
+				kvEntriesPerNode = 16384 // cap at 16K entries (16K context)
+			}
 			kvBytes := kvEntriesPerNode * kvEntryBytes
 			na.Tensors = append(na.Tensors, TensorRef{
 				Name:       fmt.Sprintf("kv_cache.l%d", nid.L),
@@ -586,7 +594,7 @@ func (mc *ModelCompiler) EmitSchema() string {
 			continue
 		}
 		moduleID := (nid.X << 4) | nid.Y
-		routeBitmap := ((nid.L + 1) << 7) | (nid.Y << 0) // layer + Y dist
+		routeBitmap := ((nid.L + 1) << 7) | (1 << 6) | (nid.Y << 0) // layer + AXIS=Y + Y dist
 		role := "empty"
 		if na.TotalBytes > 0 {
 			role = fmt.Sprintf("compute (%d tensors, %.0f MB)",
@@ -643,9 +651,12 @@ func (mc *ModelCompiler) AssignComputeUnits() {
 			}
 			cuSet[t.CUType] = true
 		}
+		var cus []ComputeUnitType
 		for cu := range cuSet {
-			na.ComputeUnits = append(na.ComputeUnits, cu)
+			cus = append(cus, cu)
 		}
+		sort.Slice(cus, func(i, j int) bool { return cus[i] < cus[j] })
+		na.ComputeUnits = append(na.ComputeUnits, cus...)
 	}
 }
 

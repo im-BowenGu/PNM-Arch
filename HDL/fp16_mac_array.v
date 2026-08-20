@@ -72,7 +72,7 @@ module fp16_mac_array #(
     // Indexed as [row * ARRAY_SIZE + col][stage]
     reg [15:0] act_sr  [0:ARRAY_SIZE*ARRAY_SIZE-1][0:PIPE_DEPTH-1];
     reg        act_v_sr [0:ARRAY_SIZE*ARRAY_SIZE-1][0:PIPE_DEPTH-1];
-    reg [31:0] psum_sr [0:ARRAY_SIZE*ARRAY_SIZE-1][0:PIPE_DEPTH-1];
+    reg [15:0] psum_sr [0:ARRAY_SIZE*ARRAY_SIZE-1][0:PIPE_DEPTH-1];
     reg        psum_v_sr [0:ARRAY_SIZE*ARRAY_SIZE-1][0:PIPE_DEPTH-1];
 
     // =========================================================================
@@ -99,7 +99,7 @@ module fp16_mac_array #(
                 for (s = 0; s < PIPE_DEPTH; s = s + 1) begin
                     act_sr[r][s]   <= 16'h0000;
                     act_v_sr[r][s] <= 1'b0;
-                    psum_sr[r][s]  <= 32'h00000000;
+                    psum_sr[r][s]  <= 16'h0000;
                     psum_v_sr[r][s] <= 1'b0;
                 end
             end
@@ -113,10 +113,10 @@ module fp16_mac_array #(
                         act_v_sr[r*ARRAY_SIZE][0] <= act_valid;
                         // Partial sum input: zero for row 0, from row above for row > 0
                         if (r == 0) begin
-                            psum_sr[0][0]  <= 32'h00000000;
+                            psum_sr[0][0]  <= 16'h0000;
                             psum_v_sr[0][0] <= act_valid;
                         end else begin
-                            psum_sr[r*ARRAY_SIZE][0]  <= {16'h0000, fma_result[r-1][0]};
+                            psum_sr[r*ARRAY_SIZE][0]  <= fma_result[r-1][0];
                             psum_v_sr[r*ARRAY_SIZE][0] <= fma_valid_out[r-1][0];
                         end
                     end else begin
@@ -125,10 +125,10 @@ module fp16_mac_array #(
                         act_v_sr[r*ARRAY_SIZE+c][0] <= act_v_sr[r*ARRAY_SIZE+c-1][PIPE_DEPTH-1];
                         // Partial sum: from row above (same column)
                         if (r == 0) begin
-                            psum_sr[c][0]  <= 32'h00000000;
+                            psum_sr[c][0]  <= 16'h0000;
                             psum_v_sr[c][0] <= act_v_sr[r*ARRAY_SIZE+c][0];
                         end else begin
-                            psum_sr[r*ARRAY_SIZE+c][0]  <= {16'h0000, fma_result[r-1][c]};
+                            psum_sr[r*ARRAY_SIZE+c][0]  <= fma_result[r-1][c];
                             psum_v_sr[r*ARRAY_SIZE+c][0] <= fma_valid_out[r-1][c];
                         end
                     end
@@ -158,7 +158,7 @@ module fp16_mac_array #(
                     .rst_n     (rst_n),
                     .a         (act_sr[row * ARRAY_SIZE + col][PIPE_DEPTH-1]),
                     .b         (weights[row][col]),
-                    .c         (psum_sr[row * ARRAY_SIZE + col][PIPE_DEPTH-1][15:0]),
+                    .c         (psum_sr[row * ARRAY_SIZE + col][PIPE_DEPTH-1]),
                     .valid_in  (act_v_sr[row * ARRAY_SIZE + col][PIPE_DEPTH-1]),
                     .result    (fma_result[row][col]),
                     .valid_out (fma_valid_out[row][col])

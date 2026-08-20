@@ -135,7 +135,7 @@ module moe_gating #(
 
     reg [1:0]  topk_state;
     reg [7:0]  topk_scan_ptr;
-    reg [2:0]  topk_ins_pos;
+    reg [3:0]  topk_ins_pos;
     integer ti;
 
     reg [2:0]  g_state;
@@ -313,10 +313,10 @@ module moe_gating #(
     // Returns the first index where the new logit is strictly larger.
     // If no such index, returns TOP_K (meaning "not inserted").
     always @(*) begin
-        topk_ins_pos = TOP_K[2:0];
+        topk_ins_pos = TOP_K[3:0];
         for (ti = 0; ti < TOP_K; ti = ti + 1) begin
-            if (topk_ins_pos == TOP_K[2:0] && bf16_gt(logits[topk_scan_ptr], topk_logit[ti]))
-                topk_ins_pos = ti[2:0];
+            if (topk_ins_pos == TOP_K[3:0] && bf16_gt(logits[topk_scan_ptr], topk_logit[ti]))
+                topk_ins_pos = {1'b0, ti[2:0]};
         end
     end
 
@@ -345,10 +345,10 @@ module moe_gating #(
                 end
 
                 TOPK_SCAN: begin
-                    if (topk_ins_pos < TOP_K[2:0]) begin
+                    if (topk_ins_pos < TOP_K[3:0]) begin
                         // Shift entries [topk_ins_pos .. TOP_K-2] down by one
                         for (ti = TOP_K - 1; ti > 0; ti = ti - 1) begin
-                            if (ti[2:0] > topk_ins_pos) begin
+                            if ({1'b0, ti[2:0]} > topk_ins_pos) begin
                                 topk_idx[ti]     <= topk_idx[ti - 1];
                                 topk_logit[ti]   <= topk_logit[ti - 1];
                                 topk_layer[ti]   <= topk_layer[ti - 1];
@@ -356,10 +356,10 @@ module moe_gating #(
                             end
                         end
                         // Insert at the found position
-                        topk_idx[topk_ins_pos]     <= topk_scan_ptr;
-                        topk_logit[topk_ins_pos]   <= logits[topk_scan_ptr];
-                        topk_layer[topk_ins_pos]   <= expert_layer[topk_scan_ptr];
-                        topk_module[topk_ins_pos]  <= expert_module[topk_scan_ptr];
+                        topk_idx[topk_ins_pos[2:0]]     <= topk_scan_ptr;
+                        topk_logit[topk_ins_pos[2:0]]   <= logits[topk_scan_ptr];
+                        topk_layer[topk_ins_pos[2:0]]   <= expert_layer[topk_scan_ptr];
+                        topk_module[topk_ins_pos[2:0]]  <= expert_module[topk_scan_ptr];
                     end
                     // Advance or finish
                     if (topk_scan_ptr == NUM_EXPERTS[7:0] - 1)

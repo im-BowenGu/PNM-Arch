@@ -196,7 +196,7 @@ module fp32_alu (
     wire s1_b_nan = (s1_b[30:23] == 8'd255) && (s1_b[22:0] != 0);
     wire s1_a_gt_b = s1_both_zero ? 1'b0 :
                      s1_a_nan ? 1'b0 :
-                     s1_b_nan ? 1'b1 :
+                     s1_b_nan ? 1'b0 :
                      (s1_a_sign != s1_b_sign) ? ~s1_a_sign :
                      s1_a_sign ? (s1_b[30:0] > s1_a[30:0]) : (s1_a[30:0] > s1_b[30:0]);
 

@@ -244,15 +244,24 @@ func compileHLSLExpr(p *HLSLProgram, varName, expr string) error {
 			cond := strings.TrimSpace(expr[:idx])
 			thenExpr := strings.TrimSpace(parts[0])
 			elseExpr := strings.TrimSpace(parts[1])
+			// Emulate: dest = cond ? thenVal : elseVal
+			// via: dest = thenVal * cmp + elseVal * (1 - cmp)
 			cmpResult := p.allocReg()
+			c := resolveHLSLAtom(p, cond)
 			zero := p.allocReg()
 			p.Regs = append(p.Regs, HLSLIR{Op: ALUConst, Dest: zero, Imm: 0.0})
-			c := resolveHLSLAtom(p, cond)
-			p.Regs = append(p.Regs, HLSLIR{Op: ALUCmp, Dest: cmpResult, Src: []string{c, "0.0"}, Cond: "!="})
+			p.Regs = append(p.Regs, HLSLIR{Op: ALUCmp, Dest: cmpResult, Src: []string{c, zero}, Cond: "!="})
+			one := p.allocReg()
+			p.Regs = append(p.Regs, HLSLIR{Op: ALUConst, Dest: one, Imm: 1.0})
+			notCmp := p.allocReg()
+			p.Regs = append(p.Regs, HLSLIR{Op: ALUSub, Dest: notCmp, Src: []string{one, cmpResult}})
 			thenVal := resolveHLSLAtom(p, thenExpr)
-			p.Regs = append(p.Regs, HLSLIR{Op: ALUMov, Dest: dest, Src: []string{thenVal}})
-			_ = elseVal(elseExpr) // phi node would be needed; simplified
-			_ = cmpResult
+			elseVal := resolveHLSLAtom(p, elseExpr)
+			thenPart := p.allocReg()
+			p.Regs = append(p.Regs, HLSLIR{Op: ALUMul, Dest: thenPart, Src: []string{thenVal, cmpResult}})
+			elsePart := p.allocReg()
+			p.Regs = append(p.Regs, HLSLIR{Op: ALUMul, Dest: elsePart, Src: []string{elseVal, notCmp}})
+			p.Regs = append(p.Regs, HLSLIR{Op: ALUAdd, Dest: dest, Src: []string{thenPart, elsePart}})
 			return nil
 		}
 	}
@@ -276,8 +285,6 @@ func compileHLSLExpr(p *HLSLProgram, varName, expr string) error {
 	p.Regs = append(p.Regs, HLSLIR{Op: ALUMov, Dest: dest, Src: []string{src}})
 	return nil
 }
-
-func elseVal(s string) string { return s }
 
 func parseHLSLBinop(expr string) (FP32ALUOp, string, string, bool) {
 	// Find operator at nesting depth 0, right-to-left for precedence
@@ -387,11 +394,21 @@ func compileHLSLCall(p *HLSLProgram, dest, funcName, argsStr string) error {
 			return nil
 		}
 	case "sqrt":
+		// sqrt(x) via 4 iterations of Newton-Raphson: y = 0.5*(y + x/y)
 		if len(args) == 1 {
 			x := resolveHLSLAtom(p, args[0])
+			y := p.allocReg()
 			half := p.allocReg()
+			xDivY := p.allocReg()
+			sum := p.allocReg()
+			p.Regs = append(p.Regs, HLSLIR{Op: ALUConst, Dest: y, Imm: 1.0})
 			p.Regs = append(p.Regs, HLSLIR{Op: ALUConst, Dest: half, Imm: 0.5})
-			p.Regs = append(p.Regs, HLSLIR{Op: ALUMul, Dest: dest, Src: []string{x, half}})
+			for i := 0; i < 4; i++ {
+				p.Regs = append(p.Regs, HLSLIR{Op: ALUDiv, Dest: xDivY, Src: []string{x, y}})
+				p.Regs = append(p.Regs, HLSLIR{Op: ALUAdd, Dest: sum, Src: []string{y, xDivY}})
+				p.Regs = append(p.Regs, HLSLIR{Op: ALUMul, Dest: y, Src: []string{sum, half}})
+			}
+			p.Regs = append(p.Regs, HLSLIR{Op: ALUMov, Dest: dest, Src: []string{y}})
 			return nil
 		}
 	case "step":

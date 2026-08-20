@@ -129,25 +129,25 @@ func TestRouterBitmaps(t *testing.T) {
 	}
 
 	// Check a few known bitmaps
-	// Node (0,0,0): layer=0+1=1, bits=1<<7=0x080, dist=0 → 0x080
+	// Node (0,0,0): layer=0+1=1, bits=1<<7=0x080, axis=1<<6=0x040, dist=0 → 0x0C0
 	if bm, ok := drv.RouteBitmaps[NodeID{L: 0, X: 0, Y: 0}]; !ok {
 		t.Error("missing bitmap for (0,0,0)")
-	} else if bm != 0x080 {
-		t.Errorf("(0,0,0): expected 0x080, got 0x%03x", bm)
+	} else if bm != 0x0C0 {
+		t.Errorf("(0,0,0): expected 0x0C0, got 0x%03x", bm)
 	}
 
-	// Node (0,0,3): layer=1, dist=3 → 0x083
+	// Node (0,0,3): layer=1, axis=Y, dist=3 → 0x0C3
 	if bm, ok := drv.RouteBitmaps[NodeID{L: 0, X: 0, Y: 3}]; !ok {
 		t.Error("missing bitmap for (0,0,3)")
-	} else if bm != 0x083 {
-		t.Errorf("(0,0,3): expected 0x083, got 0x%03x", bm)
+	} else if bm != 0x0C3 {
+		t.Errorf("(0,0,3): expected 0x0C3, got 0x%03x", bm)
 	}
 
-	// Node (2,1,2): layer=3, dist=2 → 0x182
+	// Node (2,1,2): layer=3, axis=Y, dist=2 → 0x1C2
 	if bm, ok := drv.RouteBitmaps[NodeID{L: 2, X: 1, Y: 2}]; !ok {
 		t.Error("missing bitmap for (2,1,2)")
-	} else if bm != 0x182 {
-		t.Errorf("(2,1,2): expected 0x182, got 0x%03x", bm)
+	} else if bm != 0x1C2 {
+		t.Errorf("(2,1,2): expected 0x1C2, got 0x%03x", bm)
 	}
 }
 

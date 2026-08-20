@@ -129,9 +129,7 @@ func NewLLMClient(cfg LLMConfig) (*LLMClient, error) {
 	if cfg.MaxTokens == 0 {
 		cfg.MaxTokens = 2048
 	}
-	if cfg.Temperature == 0 {
-		cfg.Temperature = 1.0
-	}
+	// Temperature=0 is valid for greedy decoding (argmax)
 	if cfg.TopP == 0 {
 		cfg.TopP = 0.9
 	}
@@ -306,6 +304,17 @@ func (c *LLMClient) GenerateWithSampling(prompt string, logits []float32) ([]int
 func sampleFromLogits(logits []float32, temperature, topP float32) int {
 	if len(logits) == 0 {
 		return 0
+	}
+
+	// Greedy decoding: return argmax
+	if temperature == 0 {
+		best := 0
+		for i := 1; i < len(logits); i++ {
+			if logits[i] > logits[best] {
+				best = i
+			}
+		}
+		return best
 	}
 
 	// Apply temperature

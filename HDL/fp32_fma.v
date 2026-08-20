@@ -45,7 +45,7 @@ module fp32_fma (
     reg s1_a_zero, s1_b_zero, s1_c_zero;
 
     reg [47:0] s1_mul_man;
-    reg [8:0]  s1_mul_exp;
+    reg signed [9:0] s1_mul_exp;
     reg        s1_mul_sign;
     reg        s1_mul_overflow;
 
@@ -75,7 +75,7 @@ module fp32_fma (
 
     // Multiply
     wire        mul_sign_w = a_sign_w ^ b_sign_w;
-    wire [8:0]  mul_exp_w  = a_exponent_w + b_exponent_w - FP32_BIAS;
+    wire signed [9:0] mul_exp_w = $signed({1'b0, a_exponent_w}) + $signed({1'b0, b_exponent_w}) - 10'sd127;
     wire [47:0] mul_man_w  = a_mantissa_w * b_mantissa_w;
     wire        mul_ovf_w  = mul_man_w[47];
 
@@ -122,16 +122,17 @@ module fp32_fma (
     assign c_mantissa[22:0] = s1_c_zero ? 23'd0 : (c_den ? {1'b0, c_man} : c_man);
     wire [8:0]  c_exponent = s1_c_zero ? 9'd0 : (c_den ? 9'd1 : {1'b0, c_exp});
 
-    wire [8:0]  mul_exp_eff = s1_mul_overflow ? (s1_mul_exp + 9'd1) : s1_mul_exp;
-    wire [8:0]  add_exp = (mul_exp_eff > c_exponent) ? mul_exp_eff : c_exponent;
+    wire signed [9:0] mul_exp_eff = s1_mul_overflow ? (s1_mul_exp + 10'sd1) : s1_mul_exp;
+    wire signed [9:0] add_exp = (mul_exp_eff > $signed({1'b0, c_exponent})) ? mul_exp_eff : $signed({1'b0, c_exponent});
+    wire signed [9:0] exp_diff = mul_exp_eff - $signed({1'b0, c_exponent});
 
     // Align mantissas: implicit 1 at bit 47
-    wire [47:0] mul_man_aligned = (mul_exp_eff >= c_exponent) ?
+    wire [47:0] mul_man_aligned = (exp_diff >= 0) ?
         (s1_mul_man << 1) :
-        (s1_mul_man << 1) >> (c_exponent - mul_exp_eff);
-    wire [47:0] c_man_aligned = (c_exponent > mul_exp_eff) ?
+        (s1_mul_man << 1) >> (-exp_diff);
+    wire [47:0] c_man_aligned = (exp_diff < 0) ?
         ({c_mantissa, 24'd0}) :
-        ({c_mantissa, 24'd0} >> (mul_exp_eff - c_exponent));
+        ({c_mantissa, 24'd0} >> exp_diff);
 
     // Add
     wire        mul_ge_c = (mul_man_aligned >= c_man_aligned);

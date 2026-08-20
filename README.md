@@ -149,6 +149,8 @@ flowchart LR
 | Path | Contents |
 |------|----------|
 | `Paper.MD` | Manuscript source (master copy, Markdown) |
+| `TLDR.md` | Quick overview: problem, solution, key numbers, how it works |
+| `docs.md` | Comprehensive documentation: HDL, co-sim harness, compiler, wire format, build commands |
 | `build.py` | Build pipeline → single submission DOCX |
 | `HDL/` | Verilog fabric: HFR, `xyz_repeater`, XY turn, eject, CRC-16 + doorbell DMA + compute units (FP16/BF16/FP32/FP64 FMA, FP32 ALU, INT8 MAC, systolic arrays) + testbenches |
 | `sim/` | Co-simulation harness: topology/tb generators, virtual execution units, LLM inference client |
@@ -199,15 +201,15 @@ cd HDL
 
 # functional smoke test
 iverilog -g2005 -o tb_fabric.out \
-  hfr.v flit_gate.v xyz_repeater.v xy_turn.v node_eject.v tb_fabric.v && vvp tb_fabric.out
+  hfr.v flit_gate.v vc_merge.v xyz_repeater.v xy_turn.v node_eject.v tb_fabric.v && vvp tb_fabric.out
 
 # 500-packet load test with 100/50/25% sink backpressure + checksums
 iverilog -g2005 -o tb_load.out \
-  hfr.v flit_gate.v xyz_repeater.v xy_turn.v node_eject.v tb_load.v && vvp tb_load.out
+  hfr.v flit_gate.v vc_merge.v xyz_repeater.v xy_turn.v node_eject.v tb_load.v && vvp tb_load.out
 
 # doorbell DMA: end-to-end CRC-16 + hardened fire conditions (tb_doorbell.v)
 iverilog -g2005 -o tb_doorbell.out \
-  tb_doorbell.v pe_tile_stub.v doorbell.v crc16.v && vvp tb_doorbell.out
+  tb_doorbell.v pe_tile_stub.v doorbell.v crc16.v bf16_fma.v && vvp tb_doorbell.out
 
 # FP32 ALU (divider + multiplier + special cases)
 iverilog -g2005 -o tb_fp32_alu.out \

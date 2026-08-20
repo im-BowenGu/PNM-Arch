@@ -60,6 +60,7 @@ func run(argv []string) int {
 	fs.IntVar(&bx, "x", 4, "X columns per board")
 	fs.IntVar(&bx, "board-x", 4, "X columns per board")
 	fs.IntVar(&by, "y", 4, "Y rows per board")
+	fs.IntVar(&by, "board-y", 4, "Y rows per board")
 	seed := fs.Int64("seed", 0xC0FFEE, "RNG seed (default 0xC0FFEE)")
 	flits := fs.Int("flits", 0, "override flit count for load/hotspot/stress")
 	hotFrac := fs.Float64("hot-frac", 0.35, "hot-expert traffic share for hotspot")
