@@ -5,8 +5,11 @@
 // Paper §2.1 (Z-axis ingress) / §2.2 (dimension-order NoB)
 //
 // On the head byte of a packet (sop), a combinational XOR/AND tree compares
-// the incoming byte against MATCH_VALUE under MATCH_MASK
-// (~50–100 ps on 14nm DUV; no clocks in the compare path).
+// the incoming byte against match_value under match_mask
+// (~50–100 ps on 14nm DUV; no clocks in the compare path).  The match
+// value/mask are runtime inputs — the pre-loaded routing-table entry of
+// Paper §2.1 — instead of compile-time parameters, so a repeater's routing
+// decision can be programmed at boot like the paper's immutable tables.
 //
 // The decision gates the whole packet to the MATCH port or the PASS port.
 // It is registered at the clock edge and held until eop.
@@ -15,12 +18,23 @@
 // header peel): the next byte becomes the new sop for the downstream hop.
 // =============================================================================
 module flit_gate #(
-    parameter [7:0] MATCH_VALUE    = 8'h00,
-    parameter [7:0] MATCH_MASK     = 8'hFF,
     parameter       STRIP_ON_MATCH = 0
 )(
     input  wire       clk,
     input  wire       rst_n,
+
+    // bit-mask comparator inputs: head byte matches when
+    // ((in_data ^ match_value) & match_mask) == 8'h0
+    input  wire [7:0] match_value,
+    input  wire [7:0] match_mask,
+
+    // virtual-channel class filter (paper §4.3): a flit matches only if its
+    // head byte arrives on the class this gate routes (vc_accept); the 2-bit
+    // per-link VC sideband passes through on both output ports.
+    input  wire [1:0] vc_accept,
+    input  wire [1:0] in_vc,
+    output wire [1:0] match_vc,
+    output wire [1:0] pass_vc,
 
     // upstream
     input  wire [7:0] in_data,
@@ -44,9 +58,11 @@ module flit_gate #(
     input  wire       pass_ready
 );
 
-    // --- combinational comparator: XOR then masked NOR-reduce ---
+    // --- combinational comparator: XOR then masked NOR-reduce, plus the
+    // VC class check ---
     // Pure combo path — this is the ~50–100 ps DUV tree in the paper.
-    wire cmp_match = (((in_data ^ MATCH_VALUE) & MATCH_MASK) == 8'b0);
+    wire cmp_match = (((in_data ^ match_value) & match_mask) == 8'b0)
+                  && (in_vc == vc_accept);
 
     // Decision hold: head decision kept for the packet body.
     reg  route_match_q;
@@ -79,11 +95,13 @@ module flit_gate #(
     assign match_valid = in_valid && route_match && !match_drop;
     assign match_sop   = (STRIP_ON_MATCH != 0) ? strip_next_q : in_sop;
     assign match_eop   = in_eop;
+    assign match_vc    = in_vc;
 
     assign pass_data   = in_data;
     assign pass_valid  = in_valid && !route_match;
     assign pass_sop    = in_sop;
     assign pass_eop    = in_eop;
+    assign pass_vc     = in_vc;
 
     // Dropped head byte is consumed by the gate itself (always ready).
     assign in_ready = route_match

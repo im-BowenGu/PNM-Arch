@@ -69,7 +69,7 @@ module doorbell #(
     // p < 4                -> header bytes (DEST, CTRL, LEN_LO, LEN_HI): fold
     // 4 <= p < 4+LEN       -> payload: fold
     // 4+LEN <= p <= 5+LEN  -> CRC_HI, CRC_LO: capture, do not fold
-    wire [16:0] body_end = {1'b0, 16'd4 + len};   // index of the first CRC byte
+    wire [16:0] body_end = 17'd4 + {1'b0, len};   // index of the first CRC byte
     wire [16:0] msg_end  = body_end + 17'd1;     // index of the last CRC byte
 
     always @(posedge clk or negedge rst_n) begin

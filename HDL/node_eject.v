@@ -20,12 +20,13 @@ module node_eject #(
     input  wire       clk,
     input  wire       rst_n,
 
-    // Y-lane in
+    // Y-lane in (class 3: on-board delivery)
     input  wire [7:0] yin_data,
     input  wire       yin_valid,
     input  wire       yin_sop,
     input  wire       yin_eop,
     output wire       yin_ready,
+    input  wire [1:0] yin_vc,
 
     // Y-lane out (continue along column)
     output wire [7:0] yout_data,
@@ -33,22 +34,28 @@ module node_eject #(
     output wire       yout_sop,
     output wire       yout_eop,
     input  wire       yout_ready,
+    output wire [1:0] yout_vc,
 
     // to node DMA / doorbell
     output wire [7:0] node_data,
     output wire       node_valid,
     output wire       node_sop,
     output wire       node_eop,
-    input  wire       node_ready
+    input  wire       node_ready,
+    output wire [1:0] node_vc
 );
 
     flit_gate #(
-        .MATCH_VALUE   (LOCAL_MODULE),
-        .MATCH_MASK    (8'hFF),
         .STRIP_ON_MATCH(0)
     ) gate (
         .clk        (clk),
         .rst_n      (rst_n),
+        .match_value(LOCAL_MODULE),
+        .match_mask (8'hFF),
+        .vc_accept  (`VC_ONBOARD_DELIVER),
+        .in_vc      (yin_vc),
+        .match_vc   (node_vc),
+        .pass_vc    (yout_vc),
         .in_data    (yin_data),
         .in_valid   (yin_valid),
         .in_sop     (yin_sop),
