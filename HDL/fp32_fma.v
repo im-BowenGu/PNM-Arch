@@ -235,10 +235,28 @@ module fp32_fma (
     wire [9:0]  final_exp = rounded_carry ? (norm_exp + 10'd1) : norm_exp;
 
     // Pack result
-    wire result_underflow = (norm_exp < 0) || (norm_exp == 0 && !rounded_carry);
+    wire signed [9:0] final_exp_s = final_exp;
+    wire result_underflow = (final_exp_s < 10'sd1);
     wire result_overflow  = (final_exp >= 255);
+
+    // Subnormal output: rescale the normalized mantissa into the denormal
+    // field with round-to-nearest-even instead of flushing to zero.
+    wire signed [9:0] dn_raw    = 10'sd1 - final_exp_s;
+    wire [9:0]  dn_shift        = (dn_raw > 10'sd24) ? 10'd24 : dn_raw[9:0];
+    wire [23:0] dn_m            = {1'b1, final_man[46:24]};
+    wire [23:0] dn_sr           = dn_m >> dn_shift;
+    wire        dn_in_range     = (dn_raw >= 10'sd1) && (dn_raw <= 10'sd24);
+    wire        dn_guard        = dn_in_range && dn_m[dn_shift - 10'd1];
+    wire [23:0] dn_low_mask     = (24'd1 << (dn_shift - 10'd1)) - 24'd1;
+    wire        dn_sticky       = |(dn_m & dn_low_mask);
+    wire        dn_round_up     = dn_guard & (dn_sticky | dn_sr[0]);
+    wire [23:0] dn_field        = dn_sr + (dn_round_up ? 24'd1 : 24'd0);
+    wire        dn_carry        = dn_field[23];
+    wire [31:0] dn_result       = dn_carry ? {norm_sign, 8'd1, 23'd0}
+                                           : {norm_sign, 8'd0, dn_field[22:0]};
     wire [31:0] packed_result;
-    assign packed_result = result_underflow ? (norm_sign ? 32'h80000000 : FP32_ZERO) :
+    assign packed_result = result_underflow ? ((norm_man != 0) ? dn_result :
+                                                (norm_sign ? 32'h80000000 : FP32_ZERO)) :
                            result_overflow  ? {norm_sign, 8'd255, 23'd0} :
                            {norm_sign, final_exp[7:0], final_man[46:24]};
 

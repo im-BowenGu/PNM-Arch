@@ -60,6 +60,9 @@ func run(argv []string) int {
 	if len(argv) > 0 && argv[0] == "run-driver" {
 		return runDriver(argv[1:])
 	}
+	if len(argv) > 0 && argv[0] == "workload" {
+		return runWorkload(argv[1:])
+	}
 	return runPNMC(argv)
 }
 
@@ -161,11 +164,19 @@ func runCompileModel(argv []string) int {
 	}
 	fmt.Printf("  tensors: %d entries in weight map\n", len(idx.WeightMap))
 
-	// Compile
 	dims := pnm.Dims{Layers: layers, Bx: bx, By: by}
 	fmt.Printf("  chassis: %dx%dx%d = %d nodes\n", dims.Layers, dims.Bx, dims.By, dims.Layers*dims.Bx*dims.By)
 
-	mc, err := pnm.CompileModel(cfg, idx, dims)
+	// Compile: model -> IR (chassis-independent), then IR -> schema (placement)
+	ir, err := pnm.CompileModelIR(cfg, idx)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "IR compilation error: %v\n", err)
+		return 1
+	}
+	fmt.Println()
+	fmt.Println(ir.Emit())
+
+	mc, err := ir.PopulateSchema(dims)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "compilation error: %v\n", err)
 		return 1
@@ -369,4 +380,85 @@ func totalPayloadBytes(cmds []pnm.WeightUploadCommand) int64 {
 		total += int64(len(c.Payload))
 	}
 	return total
+}
+
+func runWorkload(argv []string) int {
+	if len(argv) < 1 {
+		fmt.Fprintln(os.Stderr, "usage: pnmc workload <name> [-l layers] [-x bx] [-y by] [-frag N] [-o path] [-run]")
+		fmt.Fprintln(os.Stderr)
+		fmt.Fprintln(os.Stderr, "available workloads:")
+		registry := pnm.Workloads()
+		for _, name := range []string{"jacobi5", "matvec", "reduction", "broadcast", "nbody"} {
+			w := registry[name]
+			fmt.Fprintf(os.Stderr, "  %-12s  default: %dx%dx%d  frag=%d\n", name, w.Layers, w.Bx, w.By, w.Frag)
+		}
+		fmt.Fprintln(os.Stderr)
+		fmt.Fprintln(os.Stderr, "examples:")
+		fmt.Fprintln(os.Stderr, "  pnmc workload jacobi5 -l 1 -x 8 -y 8")
+		fmt.Fprintln(os.Stderr, "  pnmc workload matvec -l 4 -x 4 -y 4 -frag 32 -run")
+		fmt.Fprintln(os.Stderr, "  pnmc workload reduction -l 4 -x 4 -y 4")
+		return 2
+	}
+	wlName := argv[0]
+
+	fs := flag.NewFlagSet("workload "+wlName, flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+
+	var layers, bx, by, frag int
+	fs.IntVar(&layers, "l", 4, "spine layers / boards")
+	fs.IntVar(&layers, "layers", 4, "spine layers / boards")
+	fs.IntVar(&bx, "x", 4, "X columns per board")
+	fs.IntVar(&bx, "board-x", 4, "X columns per board")
+	fs.IntVar(&by, "y", 4, "Y rows per board")
+	fs.IntVar(&by, "board-y", 4, "Y rows per board")
+	fs.IntVar(&frag, "frag", 0, "extra parameter (vector length, fragment size, payload length)")
+	outPath := fs.String("o", "", "output .pnm path (default: /tmp/<name>.pnm)")
+	runSim := fs.Bool("run", false, "also run co-simulation after emitting the program")
+	if err := fs.Parse(argv[1:]); err != nil {
+		return 2
+	}
+
+	registry := pnm.Workloads()
+	reg, ok := registry[wlName]
+	if !ok {
+		fmt.Fprintf(os.Stderr, "unknown workload %q (available: jacobi5, matvec, reduction, broadcast, nbody)\n", wlName)
+		return 1
+	}
+	if frag == 0 {
+		frag = reg.Frag
+	}
+
+	wl, err := reg.Gen(layers, bx, by, frag)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "workload %s: %v\n", wlName, err)
+		return 1
+	}
+
+	fmt.Printf("=== Workload: %s ===\n", wl.Name)
+	fmt.Printf("  %s\n", wl.Desc)
+	fmt.Printf("  chassis: %dx%dx%d = %d nodes\n", layers, bx, by, layers*bx*by)
+	fmt.Printf("  active nodes: %d, tokens: %d\n", wl.Nodes, wl.Tokens)
+	fmt.Printf("  routing pattern: %s\n\n", wl.Routing)
+
+	if *outPath == "" {
+		*outPath = "/tmp/" + wlName + ".pnm"
+	}
+	outAbs, err := filepath.Abs(*outPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "output path: %v\n", err)
+		return 1
+	}
+	if err := os.WriteFile(outAbs, []byte(wl.Program), 0o644); err != nil {
+		fmt.Fprintf(os.Stderr, "writing %s: %v\n", outAbs, err)
+		return 1
+	}
+	fmt.Printf("Wrote program: %s\n", outAbs)
+
+	if *runSim {
+		fmt.Println("\n--- Running co-simulation ---")
+		if code := pnm.RunCompiler(outAbs, layers, bx, by, 0, 0xC0FFEE); code != 0 {
+			return code
+		}
+	}
+	return 0
 }

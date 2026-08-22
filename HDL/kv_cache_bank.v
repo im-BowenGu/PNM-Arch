@@ -372,35 +372,39 @@ module kv_cache_bank #(
             endcase
 
             // =================================================================
-            // Bug fix #6: occupancy tracking — store/load completions only
+            // Bug fix #6: occupancy tracking — priority-encoded to prevent
+            // concurrent store+load from double-firing NBAs
             // =================================================================
-            if (ks_state == KS_DATA) begin
-                if ((kv_store_valid && kv_store_ready && kv_store_eop) ||
-                    (reclaim_valid && reclaim_req && reclaim_eop)) begin
+            begin : occ_track
+                reg store_done, load_done, evict_done;
+                store_done = (ks_state == KS_DATA) &&
+                    ((kv_store_valid && kv_store_ready && kv_store_eop) ||
+                     (reclaim_valid && reclaim_req && reclaim_eop));
+                load_done = (kl_state == KL_DATA) && !evict_req && nob_out_ready && (kl_pos == kl_len - 1);
+                evict_done = (kl_state == KL_DATA) && !evict_req && (kl_pos == kl_len);
+
+                if (store_done && !load_done && !evict_done) begin
                     write_ptr <= (write_ptr == BANK_DEPTH-1) ? 0 : write_ptr + 1;
                     occupancy <= occupancy + 1;
                     full_r    <= (occupancy == BANK_DEPTH - 1);
                     empty_r   <= 0;
                     ks_state  <= KS_IDLE;
+                end else if (load_done) begin
+                    read_ptr <= (read_ptr == BANK_DEPTH-1) ? 0 : read_ptr + 1;
+                    occupancy <= occupancy - 1;
+                    full_r    <= 0;
+                    empty_r   <= (occupancy <= 1);
+                    kl_out_eop       <= 1;
+                    kv_load_sram_eop <= 1;
+                    kl_state  <= KL_IDLE;
+                end else if (evict_done) begin
+                    read_ptr <= (read_ptr == BANK_DEPTH-1) ? 0 : read_ptr + 1;
+                    occupancy <= occupancy - 1;
+                    full_r    <= 0;
+                    empty_r   <= (occupancy <= 1);
+                    evict_done_r <= 1;
+                    kl_state  <= KL_IDLE;
                 end
-            end
-            if (kl_state == KL_DATA && !evict_req && nob_out_ready && kl_pos == kl_len - 1) begin
-                // KV_LOAD completion: last byte sent on NoB
-                read_ptr <= (read_ptr == BANK_DEPTH-1) ? 0 : read_ptr + 1;
-                occupancy <= occupancy - 1;
-                full_r    <= 0;
-                empty_r   <= (occupancy <= 1);
-                kl_out_eop       <= 1;
-                kv_load_sram_eop <= 1;
-                kl_state  <= KL_IDLE;
-            end else if (kl_state == KL_DATA && !evict_req && kl_pos == kl_len) begin
-                // Eviction completion: offload controller deasserted evict_req
-                read_ptr <= (read_ptr == BANK_DEPTH-1) ? 0 : read_ptr + 1;
-                occupancy <= occupancy - 1;
-                full_r    <= 0;
-                empty_r   <= (occupancy <= 1);
-                evict_done_r <= 1;
-                kl_state  <= KL_IDLE;
             end
         end
     end

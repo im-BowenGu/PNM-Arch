@@ -24,6 +24,9 @@ const char *cu_type_name(cu_type_t t) {
         case CU_INT8_MAC:   return "int8_mac";
         case CU_BF16_ARRAY: return "bf16_mac_array";
         case CU_FP16_ARRAY: return "fp16_mac_array";
+        case CU_FP64_ALU:   return "fp64_alu";
+        case CU_FP32_ARRAY: return "fp32_mac_array";
+        case CU_INT8_ALU:   return "int8_alu";
         default:            return "none";
     }
 }

@@ -7,7 +7,8 @@
  * (dense path, MoE gating, top-K expert selection, KV cache).
  *
  * Supports: bf16_fma, fp16_fma, fp32_fma, fp64_fma, fp32_alu,
- *           int8_mac, bf16_mac_array, fp16_mac_array
+ *           int8_mac, bf16_mac_array, fp16_mac_array,
+ *           fp64_alu, fp32_mac_array, int8_alu
  *
  * Hardware targets: ARM Cortex-M/R, RISC-V, or custom microcontroller.
  */
@@ -35,15 +36,18 @@
 /* ── Compute Unit Types ────────────────────────────────────────────── */
 
 typedef enum {
-    CU_NONE     = 0,
-    CU_BF16_FMA = 1,   /* bf16_fma: 16-bit BF16 FMA               */
-    CU_FP16_FMA = 2,   /* fp16_fma: 16-bit IEEE FP16 FMA           */
-    CU_FP32_FMA = 3,   /* fp32_fma: 32-bit FP FMA                  */
-    CU_FP64_FMA = 4,   /* fp64_fma: 64-bit FP FMA                  */
-    CU_FP32_ALU = 5,   /* fp32_alu: FP32 multi-function ALU         */
-    CU_INT8_MAC = 6,   /* int8_mac: INT8 Multiply-Accumulate        */
-    CU_BF16_ARRAY = 7, /* bf16_mac_array: BF16 systolic MAC array   */
-    CU_FP16_ARRAY = 8, /* fp16_mac_array: FP16 systolic MAC array   */
+    CU_NONE      = 0,
+    CU_BF16_FMA  = 1,   /* bf16_fma: 16-bit BF16 FMA               */
+    CU_FP16_FMA  = 2,   /* fp16_fma: 16-bit IEEE FP16 FMA           */
+    CU_FP32_FMA  = 3,   /* fp32_fma: 32-bit FP FMA                  */
+    CU_FP64_FMA  = 4,   /* fp64_fma: 64-bit FP FMA                  */
+    CU_FP32_ALU  = 5,   /* fp32_alu: FP32 multi-function ALU         */
+    CU_INT8_MAC  = 6,   /* int8_mac: INT8 Multiply-Accumulate        */
+    CU_BF16_ARRAY = 7,  /* bf16_mac_array: BF16 systolic MAC array   */
+    CU_FP16_ARRAY = 8,  /* fp16_mac_array: FP16 systolic MAC array   */
+    CU_FP64_ALU  = 9,   /* fp64_alu: FP64 multi-function ALU         */
+    CU_FP32_ARRAY = 10, /* fp32_mac_array: FP32 systolic MAC array   */
+    CU_INT8_ALU  = 11,  /* int8_alu: INT8 ALU (add/sub/shift)        */
 } cu_type_t;
 
 /* Compute unit byte widths */
@@ -51,9 +55,10 @@ static inline int cu_dtype_bytes(cu_type_t t) {
     switch (t) {
         case CU_BF16_FMA: case CU_FP16_FMA:
         case CU_BF16_ARRAY: case CU_FP16_ARRAY: return 2;
-        case CU_FP32_FMA: case CU_FP32_ALU:     return 4;
-        case CU_INT8_MAC:                        return 1;
-        case CU_FP64_FMA:                        return 8;
+        case CU_INT8_MAC: case CU_INT8_ALU:     return 1;
+        case CU_FP32_FMA: case CU_FP32_ALU:
+        case CU_FP32_ARRAY:                      return 4;
+        case CU_FP64_FMA: case CU_FP64_ALU:     return 8;
         default:                                 return 2;
     }
 }

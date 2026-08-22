@@ -340,27 +340,13 @@ func compileHaskellCall(p *HaskellProgram, dest, funcName, args string) error {
 	case "abs":
 		if len(argList) == 1 {
 			src := resolveHaskellAtom(p, argList[0])
-			zero := p.allocReg()
-			p.Regs = append(p.Regs, FP64IR{Op: FP64Const, Dest: zero, Imm: 0.0})
-			p.Regs = append(p.Regs, FP64IR{Op: FP64Max, Dest: dest, Src: []string{src, zero}})
+			emitFP64Abs(p.FP64Program, dest, src)
 			return nil
 		}
 	case "sqrt":
-		// sqrt(x) via 4 iterations of Newton-Raphson: y = 0.5*(y + x/y)
 		if len(argList) == 1 {
 			src := resolveHaskellAtom(p, argList[0])
-			y := p.allocReg()
-			half := p.allocReg()
-			xDivY := p.allocReg()
-			sum := p.allocReg()
-			p.Regs = append(p.Regs, FP64IR{Op: FP64Const, Dest: y, Imm: 1.0})
-			p.Regs = append(p.Regs, FP64IR{Op: FP64Const, Dest: half, Imm: 0.5})
-			for i := 0; i < 4; i++ {
-				p.Regs = append(p.Regs, FP64IR{Op: FP64Div, Dest: xDivY, Src: []string{src, y}})
-				p.Regs = append(p.Regs, FP64IR{Op: FP64Add, Dest: sum, Src: []string{y, xDivY}})
-				p.Regs = append(p.Regs, FP64IR{Op: FP64Mul, Dest: y, Src: []string{sum, half}})
-			}
-			p.Regs = append(p.Regs, FP64IR{Op: FP64Mov, Dest: dest, Src: []string{y}})
+			emitFP64Sqrt(p.FP64Program, dest, src)
 			return nil
 		}
 	case "id":

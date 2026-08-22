@@ -2,17 +2,18 @@ package pnm
 
 import (
 	"fmt"
-	"math"
 	"sort"
 	"strings"
 )
 
-// ModelCompiler transpiles a model (safetensors + config) onto a PNM chassis.
+// ModelCompiler is the populated schema: a ModelIR placed onto a concrete
+// chassis (node assignments, budgets, per-node compute units).
 type ModelCompiler struct {
 	Config *ModelConfig
 	Index  *SafetensorsIndex
 	Tensors map[string]*TensorMeta
 	Dims    Dims
+	IR      *ModelIR
 
 	// Mapping results
 	NodeAssignments map[NodeID]*NodeAssignment
@@ -37,7 +38,7 @@ type NodeAssignment struct {
 type ComputeUnitType int
 
 const (
-	CUTypeNone    ComputeUnitType = iota
+	CUTypeNone     ComputeUnitType = iota
 	CUTypeBF16FMA                  // bf16_fma: 16-bit BF16 Fused Multiply-Accumulate
 	CUTypeFP16FMA                  // fp16_fma: 16-bit IEEE FP16 FMA
 	CUTypeFP32FMA                  // fp32_fma: 32-bit FP FMA
@@ -46,6 +47,9 @@ const (
 	CUTypeINT8MAC                  // int8_mac: INT8 Multiply-Accumulate
 	CUTypeBF16Array                // bf16_mac_array: BF16 systolic MAC array
 	CUTypeFP16Array                // fp16_mac_array: FP16 systolic MAC array
+	CUTypeFP64ALU                  // fp64_alu: FP64 multi-function ALU
+	CUTypeFP32Array                // fp32_mac_array: FP32 systolic MAC array
+	CUTypeINT8ALU                  // int8_alu: INT8 ALU (add/sub/shift)
 )
 
 // String returns the human-readable name of the compute unit type.
@@ -58,7 +62,7 @@ func (t ComputeUnitType) String() string {
 	case CUTypeFP32FMA:
 		return "fp32_fma"
 	case CUTypeFP64FMA:
-	return "fp64_fma"
+		return "fp64_fma"
 	case CUTypeFP32ALU:
 		return "fp32_alu"
 	case CUTypeINT8MAC:
@@ -67,6 +71,12 @@ func (t ComputeUnitType) String() string {
 		return "bf16_mac_array"
 	case CUTypeFP16Array:
 		return "fp16_mac_array"
+	case CUTypeFP64ALU:
+		return "fp64_alu"
+	case CUTypeFP32Array:
+		return "fp32_mac_array"
+	case CUTypeINT8ALU:
+		return "int8_alu"
 	default:
 		return "none"
 	}
@@ -77,11 +87,11 @@ func (t ComputeUnitType) DTypeBytes() int {
 	switch t {
 	case CUTypeBF16FMA, CUTypeFP16FMA, CUTypeBF16Array, CUTypeFP16Array:
 		return 2
-	case CUTypeFP32FMA, CUTypeFP32ALU:
-		return 4
-	case CUTypeINT8MAC:
+	case CUTypeINT8MAC, CUTypeINT8ALU:
 		return 1
-	case CUTypeFP64FMA:
+	case CUTypeFP32FMA, CUTypeFP32ALU, CUTypeFP32Array:
+		return 4
+	case CUTypeFP64FMA, CUTypeFP64ALU:
 		return 8
 	default:
 		return 2 // BF16 default
@@ -99,269 +109,14 @@ type TensorRef struct {
 	DType      string         // "BF16", "FP16", "FP32", "INT8"
 }
 
-// CompileModel performs the full AOT compilation pipeline.
+// CompileModel performs the full AOT compilation pipeline: lower the model to
+// chassis-independent IR, then populate the chassis schema from it.
 func CompileModel(cfg *ModelConfig, idx *SafetensorsIndex, dims Dims) (*ModelCompiler, error) {
-	tensors, totalBytes := CollectTensors(idx, cfg)
-
-	mc := &ModelCompiler{
-		Config:   cfg,
-		Index:    idx,
-		Tensors:  tensors,
-		Dims:     dims,
-		TotalBytes: totalBytes,
-		NodeBudget:     int64(dims.Layers*dims.Bx*dims.By) * 128 * 1024 * 1024 * 1024,
-		PerNodeBudget:  128 * 1024 * 1024 * 1024, // 128 GB per node
-		NodeAssignments: make(map[NodeID]*NodeAssignment),
-	}
-
-	if err := mc.Partition(); err != nil {
+	ir, err := CompileModelIR(cfg, idx)
+	if err != nil {
 		return nil, err
 	}
-
-	// Assign compute units to each tensor based on its role
-	mc.AssignComputeUnits()
-
-	return mc, nil
-}
-
-// Partition assigns model layers and experts to physical nodes.
-func (mc *ModelCompiler) Partition() error {
-	tc := &mc.Config.TextConfig
-	numLayers := tc.NumHiddenLayers
-	nodesPerLayer := mc.Dims.Bx * mc.Dims.By
-
-	// Distribute model layers evenly across physical layers
-	modelLayersPerPhysical := int(math.Ceil(float64(numLayers) / float64(mc.Dims.Layers)))
-
-	// Initialize all nodes
-	for l := 0; l < mc.Dims.Layers; l++ {
-		for x := 0; x < mc.Dims.Bx; x++ {
-			for y := 0; y < mc.Dims.By; y++ {
-				nid := NodeID{L: l, X: x, Y: y}
-				mc.NodeAssignments[nid] = &NodeAssignment{
-					Node:    nid,
-					Layers:  []int{},
-					Kernels: make(map[int]string),
-					Tensors: []TensorRef{},
-				}
-			}
-		}
-	}
-
-	// Phase 1: Assign model layers to physical layers
-	type layerMapping struct {
-		physicalLayer int
-		modelLayers   []int
-	}
-	var mappings []layerMapping
-	for pl := 0; pl < mc.Dims.Layers; pl++ {
-		start := pl * modelLayersPerPhysical
-		end := start + modelLayersPerPhysical
-		if end > numLayers {
-			end = numLayers
-		}
-		if start >= numLayers {
-			break
-		}
-		mls := make([]int, end-start)
-		for i := range mls {
-			mls[i] = start + i
-		}
-		mappings = append(mappings, layerMapping{physicalLayer: pl, modelLayers: mls})
-	}
-
-	// Phase 2: Within each physical layer, distribute experts across nodes
-	for _, m := range mappings {
-		pl := m.physicalLayer
-		for _, ml := range m.modelLayers {
-			layerType := "sliding_attention"
-			if ml < len(tc.LayerTypes) {
-				layerType = tc.LayerTypes[ml]
-			}
-
-			// Assign experts round-robin across nodes on this physical layer
-			for expIdx := 0; expIdx < tc.NumExperts; expIdx++ {
-				nodeIdx := expIdx % nodesPerLayer
-				x := nodeIdx / mc.Dims.By
-				y := nodeIdx % mc.Dims.By
-				nid := NodeID{L: pl, X: x, Y: y}
-				na := mc.NodeAssignments[nid]
-
-				if len(na.Layers) == 0 || na.Layers[len(na.Layers)-1] != ml {
-					na.Layers = append(na.Layers, ml)
-				}
-
-				// Expert gate_up projection
-				na.Tensors = append(na.Tensors, TensorRef{
-					Name:       fmt.Sprintf("layers.%d.experts.gate_up_proj", ml),
-					Role:       "expert_gate_up",
-					ModelLayer: ml,
-					ExpertIdx:  expIdx,
-					SizeBytes:  int64(2*tc.MoEIntermediateSize*tc.HiddenSize) * 2, // BF16
-				})
-
-				// Expert down projection
-				na.Tensors = append(na.Tensors, TensorRef{
-					Name:       fmt.Sprintf("layers.%d.experts.down_proj", ml),
-					Role:       "expert_down",
-					ModelLayer: ml,
-					ExpertIdx:  expIdx,
-					SizeBytes:  int64(tc.MoEIntermediateSize*tc.HiddenSize) * 2,
-				})
-			}
-
-			// Assign attention + dense MLP to a dedicated node (round-robin by model layer)
-			attnNodeIdx := ml % nodesPerLayer
-			x := attnNodeIdx / mc.Dims.By
-			y := attnNodeIdx % mc.Dims.By
-			nid := NodeID{L: pl, X: x, Y: y}
-			na := mc.NodeAssignments[nid]
-
-			na.Tensors = append(na.Tensors, []TensorRef{
-				{Name: fmt.Sprintf("layers.%d.self_attn.q_proj", ml), Role: "attn_q", ModelLayer: ml, SizeBytes: int64(tc.HiddenSize*tc.HiddenSize) * 2},
-				{Name: fmt.Sprintf("layers.%d.self_attn.k_proj", ml), Role: "attn_k", ModelLayer: ml, SizeBytes: int64(tc.NumKeyValueHeads*tc.HeadDim*tc.HiddenSize) * 2},
-				{Name: fmt.Sprintf("layers.%d.self_attn.v_proj", ml), Role: "attn_v", ModelLayer: ml, SizeBytes: int64(tc.NumKeyValueHeads*tc.HeadDim*tc.HiddenSize) * 2},
-				{Name: fmt.Sprintf("layers.%d.self_attn.o_proj", ml), Role: "attn_o", ModelLayer: ml, SizeBytes: int64(tc.HiddenSize*tc.HiddenSize) * 2},
-				{Name: fmt.Sprintf("layers.%d.mlp.gate_proj", ml), Role: "dense_gate", ModelLayer: ml, SizeBytes: int64(tc.IntermediateSize*tc.HiddenSize) * 2},
-				{Name: fmt.Sprintf("layers.%d.mlp.up_proj", ml), Role: "dense_up", ModelLayer: ml, SizeBytes: int64(tc.IntermediateSize*tc.HiddenSize) * 2},
-				{Name: fmt.Sprintf("layers.%d.mlp.down_proj", ml), Role: "dense_down", ModelLayer: ml, SizeBytes: int64(tc.HiddenSize*tc.IntermediateSize) * 2},
-				{Name: fmt.Sprintf("layers.%d.input_layernorm", ml), Role: "layernorm", ModelLayer: ml, SizeBytes: int64(tc.HiddenSize) * 2},
-				{Name: fmt.Sprintf("layers.%d.post_attention_layernorm", ml), Role: "layernorm", ModelLayer: ml, SizeBytes: int64(tc.HiddenSize) * 2},
-			}...)
-			_ = layerType
-		}
-	}
-
-	// Phase 2b: Router weights live on the central router chip (paper §2.1,
-	// §2.8) — not on any compute node.  We mark them with a special sentinel
-	// node (-1, -1, -1) that EmitSchema / EmitProgram can recognise.
-	routerNID := NodeID{L: -1, X: -1, Y: -1}
-	if _, ok := mc.NodeAssignments[routerNID]; !ok {
-		mc.NodeAssignments[routerNID] = &NodeAssignment{
-			Node:    routerNID,
-			Layers:  []int{},
-			Kernels: make(map[int]string),
-			Tensors: []TensorRef{},
-		}
-	}
-	for _, m := range mappings {
-		for _, ml := range m.modelLayers {
-			na := mc.NodeAssignments[routerNID]
-			if len(na.Layers) == 0 || na.Layers[len(na.Layers)-1] != ml {
-				na.Layers = append(na.Layers, ml)
-			}
-			na.Tensors = append(na.Tensors, TensorRef{
-				Name:       fmt.Sprintf("layers.%d.router.proj", ml),
-				Role:       "router_weights",
-				ModelLayer: ml,
-				SizeBytes:  int64(tc.NumExperts*tc.HiddenSize) * 2, // BF16
-			})
-		}
-	}
-
-	// Phase 3: Assign shared tensors (embeddings, final norm)
-	// Shard the embedding table across layer-0 nodes by token-ID range
-	// so no single node is a memory hotspot for the vocabulary.
-	nodesLayer0 := mc.Dims.Bx * mc.Dims.By
-	if nodesLayer0 < 1 {
-		nodesLayer0 = 1
-	}
-	rowsPerNode := tc.VocabSize / nodesLayer0
-	extraRows := tc.VocabSize % nodesLayer0
-	for n := 0; n < nodesLayer0; n++ {
-		x := n / mc.Dims.By
-		y := n % mc.Dims.By
-		nid := NodeID{L: 0, X: x, Y: y}
-		na := mc.NodeAssignments[nid]
-
-		rows := rowsPerNode
-		if n < extraRows {
-			rows++ // distribute remainder to first nodes
-		}
-		embedBytes := int64(rows*tc.HiddenSize) * 2 // BF16
-		na.Tensors = append(na.Tensors, TensorRef{
-			Name:       fmt.Sprintf("embed_tokens.shard_%d", n),
-			Role:       "embedding",
-			ModelLayer: -1,
-			SizeBytes:  embedBytes,
-		})
-	}
-
-	// Final norm is tiny (~5 KB); place on a rotating layer-0 node
-	normNodeIdx := tc.NumHiddenLayers % nodesLayer0
-	xn := normNodeIdx / mc.Dims.By
-	yn := normNodeIdx % mc.Dims.By
-	nidNorm := NodeID{L: 0, X: xn, Y: yn}
-	naNorm := mc.NodeAssignments[nidNorm]
-	naNorm.Tensors = append(naNorm.Tensors, TensorRef{
-		Name:       "norm",
-		Role:       "final_norm",
-		ModelLayer: -1,
-		SizeBytes:  int64(tc.HiddenSize) * 2,
-	})
-
-	// Phase 3b: Reserve KV cache memory on attention nodes
-	// Each attention node stores K/V projections for autoregressive inference.
-	// Reserve 80% of remaining budget for KV cache (20%留给 activation memory).
-	tc = &mc.Config.TextConfig
-	kvEntryBytes := int64(tc.HiddenSize) * 4 // K(2B) + V(2B) per hidden dim
-	for nid, na := range mc.NodeAssignments {
-		if nid.L < 0 || na.TotalBytes == 0 {
-			continue
-		}
-		// Only add KV cache to nodes that have attention weights
-		hasAttn := false
-		for _, t := range na.Tensors {
-			if t.Role == "attn_q" {
-				hasAttn = true
-				break
-			}
-		}
-		if hasAttn {
-			var usedBytes int64
-			for _, t := range na.Tensors {
-				usedBytes += t.SizeBytes
-			}
-			remaining := mc.PerNodeBudget - usedBytes
-			if remaining < 0 {
-				remaining = 0
-			}
-			kvBudgetPerNode := int64(float64(remaining) * 0.80)
-			kvEntriesPerNode := kvBudgetPerNode / kvEntryBytes
-			if kvEntriesPerNode > 16384 {
-				kvEntriesPerNode = 16384 // cap at 16K entries (16K context)
-			}
-			kvBytes := kvEntriesPerNode * kvEntryBytes
-			na.Tensors = append(na.Tensors, TensorRef{
-				Name:       fmt.Sprintf("kv_cache.l%d", nid.L),
-				Role:       "kv_cache",
-				ModelLayer: -1,
-				SizeBytes:  kvBytes,
-			})
-		}
-	}
-
-	// Compute per-node totals and enforce per-node budget
-	for _, na := range mc.NodeAssignments {
-		var total int64
-		for _, t := range na.Tensors {
-			total += t.SizeBytes
-		}
-		na.TotalBytes = total
-
-		// Assign kernel type based on dominant role
-		if total > 0 {
-			na.Kernels[-1] = "dot" // default kernel for compute nodes
-		}
-
-		// Enforce per-node memory budget (skip the router chip node)
-		if na.Node.L >= 0 && total > mc.PerNodeBudget {
-			return fmt.Errorf("node %s: %.1f GB exceeds 128 GB budget",
-				na.Node, float64(total)/1e9)
-		}
-	}
-
-	return nil
+	return ir.PopulateSchema(dims)
 }
 
 // EmitListing prints the compilation listing (the AOT "assembly").
@@ -618,46 +373,6 @@ func (mc *ModelCompiler) EmitSchema() string {
 	b.WriteString(fmt.Sprintf("# spine_aggregate = ~2 TB/s per direction\n"))
 
 	return b.String()
-}
-
-// AssignComputeUnits selects the best compute unit for each tensor on a node.
-func (mc *ModelCompiler) AssignComputeUnits() {
-	for _, na := range mc.NodeAssignments {
-		if na.Node.L < 0 || len(na.Tensors) == 0 {
-			continue
-		}
-		cuSet := map[ComputeUnitType]bool{}
-		for i := range na.Tensors {
-			t := &na.Tensors[i]
-			switch {
-			case t.Role == "expert_gate_up" || t.Role == "expert_down":
-				t.CUType = CUTypeBF16FMA
-				t.DType = "BF16"
-			case t.Role == "attn_q" || t.Role == "attn_k" || t.Role == "attn_v" || t.Role == "attn_o":
-				t.CUType = CUTypeBF16Array
-				t.DType = "BF16"
-			case t.Role == "dense_gate" || t.Role == "dense_up" || t.Role == "dense_down":
-				t.CUType = CUTypeBF16FMA
-				t.DType = "BF16"
-			case t.Role == "layernorm" || t.Role == "final_norm":
-				t.CUType = CUTypeFP32ALU
-				t.DType = "FP32"
-			case t.Role == "embedding":
-				t.CUType = CUTypeBF16FMA
-				t.DType = "BF16"
-			default:
-				t.CUType = CUTypeBF16FMA
-				t.DType = "BF16"
-			}
-			cuSet[t.CUType] = true
-		}
-		var cus []ComputeUnitType
-		for cu := range cuSet {
-			cus = append(cus, cu)
-		}
-		sort.Slice(cus, func(i, j int) bool { return cus[i] < cus[j] })
-		na.ComputeUnits = append(na.ComputeUnits, cus...)
-	}
 }
 
 // ComputeUnitSummary returns a per-type count of compute units across all nodes.

@@ -137,11 +137,11 @@ module router_chip #(
     reg [3:0]  pie_pos;
     reg [7:0]  pie_buf [0:5];
     reg [7:0]  fb_layer;
+    reg        gate_start;  // pulse to start MoE gating computation
 
     // =========================================================================
     // MoE gating unit: systolic-array gated matrix-vector multiply + top-K
     // =========================================================================
-    wire        gate_start;
     wire        gate_done;
     wire [TOP_K*8-1:0]  gate_expert_idx_packed;
     wire [TOP_K*16-1:0] gate_expert_logit_packed;
@@ -162,9 +162,9 @@ module router_chip #(
         .current_layer (fb_layer),
         .hidden_addr   (gate_hidden_addr),
         .hidden_data   (gate_hidden_data),
-        .weight_load   (pie_state == PIE_MOE_H && pie_pos == 3),
-        .weight_addr   (pie_buf[0] * NUM_EXPERTS * HIDDEN_SIZE + pie_buf[1] * HIDDEN_SIZE),
-        .weight_data   ({pie_buf[2], pcie_in_data}),
+        .weight_load   (1'b0),
+        .weight_addr   ({ADDR_BITS{1'b0}}),
+        .weight_data   (16'h0000),
         .moe_layer_in  (moe_layer[pie_buf[0] * MAX_EXPERTS + pie_buf[1]]),
         .moe_module_in (moe_module[pie_buf[0] * MAX_EXPERTS + pie_buf[1]]),
         .expert_idx_packed   (gate_expert_idx_packed),
@@ -279,6 +279,7 @@ module router_chip #(
             post_ping_resp <= 0;
             node_count    <= 0;
             boot_done     <= 0;
+            gate_start    <= 0;
             dispatches    <= 0;
             weight_flits  <= 0;
             errors        <= 0;
@@ -311,6 +312,7 @@ module router_chip #(
             fb_out_valid <= 1'b0;
             fb_out_sop   <= 1'b0;
             fb_out_eop   <= 1'b0;
+            gate_start   <= 1'b0;
 
             // =================================================================
             // Boot FSM
@@ -334,14 +336,16 @@ module router_chip #(
                     if (boot_phase < 255)
                         boot_phase <= boot_phase + 1;
                     else begin
-                        // Count set bits (popcount)
-                        node_count <= 0;
+                        // Count set bits (popcount) — use blocking accumulation
                         begin : popcount
                             integer i;
+                            reg [15:0] cnt;
+                            cnt = 0;
                             for (i = 0; i < NUM_NODES; i = i + 1) begin
                                 if (topology_rdy[i])
-                                    node_count <= node_count + 1;
+                                    cnt = cnt + 1;
                             end
+                            node_count <= cnt;
                         end
                         boot_state <= BOOT_LOAD_RT;
                         boot_phase <= 0;
@@ -451,8 +455,8 @@ module router_chip #(
                                 integer idx;
                                 idx = pie_buf[0] * MAX_EXPERTS + pie_buf[1];
                                 if (idx < NUM_LAYERS * MAX_EXPERTS) begin
-                                    moe_layer[idx]  <= pcie_in_data;
-                                    moe_module[idx] <= pie_buf[2];
+                                    moe_layer[idx]  <= pie_buf[2];
+                                    moe_module[idx] <= pcie_in_data;
                                 end
                             end
                             pie_state <= PIE_IDLE;
@@ -479,6 +483,7 @@ module router_chip #(
                             pie_state <= PIE_INF_TOKEN_P;
                             pie_fwd_cnt <= 0;
                             fb_in_ready_r <= 1;
+                            gate_start    <= 1'b1;  // trigger MoE gating computation
                             dispatches <= dispatches + 1;
                         end
                     end

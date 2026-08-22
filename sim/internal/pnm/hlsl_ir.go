@@ -4,6 +4,7 @@ package pnm
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 )
@@ -368,9 +369,7 @@ func compileHLSLCall(p *HLSLProgram, dest, funcName, argsStr string) error {
 	case "abs":
 		if len(args) == 1 {
 			x := resolveHLSLAtom(p, args[0])
-			zero := p.allocReg()
-			p.Regs = append(p.Regs, HLSLIR{Op: ALUConst, Dest: zero, Imm: 0.0})
-			p.Regs = append(p.Regs, HLSLIR{Op: ALUMax, Dest: dest, Src: []string{x, zero}})
+			emitALUAbs(p, dest, x)
 			return nil
 		}
 	case "min":
@@ -394,21 +393,9 @@ func compileHLSLCall(p *HLSLProgram, dest, funcName, argsStr string) error {
 			return nil
 		}
 	case "sqrt":
-		// sqrt(x) via 4 iterations of Newton-Raphson: y = 0.5*(y + x/y)
 		if len(args) == 1 {
 			x := resolveHLSLAtom(p, args[0])
-			y := p.allocReg()
-			half := p.allocReg()
-			xDivY := p.allocReg()
-			sum := p.allocReg()
-			p.Regs = append(p.Regs, HLSLIR{Op: ALUConst, Dest: y, Imm: 1.0})
-			p.Regs = append(p.Regs, HLSLIR{Op: ALUConst, Dest: half, Imm: 0.5})
-			for i := 0; i < 4; i++ {
-				p.Regs = append(p.Regs, HLSLIR{Op: ALUDiv, Dest: xDivY, Src: []string{x, y}})
-				p.Regs = append(p.Regs, HLSLIR{Op: ALUAdd, Dest: sum, Src: []string{y, xDivY}})
-				p.Regs = append(p.Regs, HLSLIR{Op: ALUMul, Dest: y, Src: []string{sum, half}})
-			}
-			p.Regs = append(p.Regs, HLSLIR{Op: ALUMov, Dest: dest, Src: []string{y}})
+			emitALUSqrt(p, dest, x)
 			return nil
 		}
 	case "step":
@@ -490,4 +477,82 @@ func splitHLSLArgs(s string) []string {
 		args = append(args, strings.TrimSpace(cur.String()))
 	}
 	return args
+}
+
+func emitALUAbs(p *HLSLProgram, dest, src string) {
+	neg := p.allocReg()
+	zero := p.allocReg()
+	p.Regs = append(p.Regs, HLSLIR{Op: ALUConst, Dest: zero, Imm: 0.0})
+	p.Regs = append(p.Regs, HLSLIR{Op: ALUSub, Dest: neg, Src: []string{zero, src}})
+	p.Regs = append(p.Regs, HLSLIR{Op: ALUMax, Dest: dest, Src: []string{src, neg}})
+}
+
+// emitALUSqrt lowers sqrt(x) branchlessly: a binary ladder of compare-select
+// steps rescales x by 2^64 into [1,4) (tracking sqrt of the scale factor),
+// then 5 Newton-Raphson iterations refine y = 0.5*(y + r/y), which converges
+// to full precision for any normalized input. A final select forces exact 0
+// for zero/negative inputs.
+func emitALUSqrt(p *HLSLProgram, dest, src string) {
+	zero := p.allocReg()
+	one := p.allocReg()
+	half := p.allocReg()
+	p.Regs = append(p.Regs, HLSLIR{Op: ALUConst, Dest: zero, Imm: 0.0})
+	p.Regs = append(p.Regs, HLSLIR{Op: ALUConst, Dest: one, Imm: 1.0})
+	p.Regs = append(p.Regs, HLSLIR{Op: ALUConst, Dest: half, Imm: 0.5})
+	x := p.allocReg()
+	p.Regs = append(p.Regs, HLSLIR{Op: ALUMax, Dest: x, Src: []string{src, zero}})
+	k := p.allocReg()
+	p.Regs = append(p.Regs, HLSLIR{Op: ALUConst, Dest: k, Imm: 1.8446744073709552e+19})
+	z := p.allocReg()
+	p.Regs = append(p.Regs, HLSLIR{Op: ALUMul, Dest: z, Src: []string{x, k}})
+	s := p.allocReg()
+	g := p.allocReg()
+	p.Regs = append(p.Regs, HLSLIR{Op: ALUConst, Dest: s, Imm: 1.0})
+	p.Regs = append(p.Regs, HLSLIR{Op: ALUConst, Dest: g, Imm: 1.0})
+	for j := 5; j >= 0; j-- {
+		a := p.allocReg()
+		b := p.allocReg()
+		candS := p.allocReg()
+		f := p.allocReg()
+		inv := p.allocReg()
+		sa := p.allocReg()
+		sb := p.allocReg()
+		candG := p.allocReg()
+		ga := p.allocReg()
+		gb := p.allocReg()
+		p.Regs = append(p.Regs, HLSLIR{Op: ALUConst, Dest: a, Imm: float32(math.Exp2(float64(uint64(1) << uint(j+1))))})
+		p.Regs = append(p.Regs, HLSLIR{Op: ALUConst, Dest: b, Imm: float32(math.Exp2(float64(uint64(1) << uint(j))))})
+		p.Regs = append(p.Regs, HLSLIR{Op: ALUMul, Dest: candS, Src: []string{s, a}})
+		p.Regs = append(p.Regs, HLSLIR{Op: ALUCmp, Dest: f, Src: []string{z, candS}, Cond: ">="})
+		p.Regs = append(p.Regs, HLSLIR{Op: ALUSub, Dest: inv, Src: []string{one, f}})
+		p.Regs = append(p.Regs, HLSLIR{Op: ALUMul, Dest: sa, Src: []string{candS, f}})
+		p.Regs = append(p.Regs, HLSLIR{Op: ALUMul, Dest: sb, Src: []string{s, inv}})
+		p.Regs = append(p.Regs, HLSLIR{Op: ALUAdd, Dest: s, Src: []string{sa, sb}})
+		p.Regs = append(p.Regs, HLSLIR{Op: ALUMul, Dest: candG, Src: []string{g, b}})
+		p.Regs = append(p.Regs, HLSLIR{Op: ALUMul, Dest: ga, Src: []string{candG, f}})
+		p.Regs = append(p.Regs, HLSLIR{Op: ALUMul, Dest: gb, Src: []string{g, inv}})
+		p.Regs = append(p.Regs, HLSLIR{Op: ALUAdd, Dest: g, Src: []string{ga, gb}})
+	}
+	invGK := p.allocReg()
+	gf := p.allocReg()
+	p.Regs = append(p.Regs, HLSLIR{Op: ALUConst, Dest: invGK, Imm: 2.3283064365386963e-10})
+	p.Regs = append(p.Regs, HLSLIR{Op: ALUMul, Dest: gf, Src: []string{g, invGK}})
+	r := p.allocReg()
+	y := p.allocReg()
+	q := p.allocReg()
+	t := p.allocReg()
+	p.Regs = append(p.Regs, HLSLIR{Op: ALUDiv, Dest: r, Src: []string{z, s}})
+	p.Regs = append(p.Regs, HLSLIR{Op: ALUConst, Dest: y, Imm: 1.0})
+	for i := 0; i < 5; i++ {
+		p.Regs = append(p.Regs, HLSLIR{Op: ALUDiv, Dest: q, Src: []string{r, y}})
+		p.Regs = append(p.Regs, HLSLIR{Op: ALUAdd, Dest: t, Src: []string{y, q}})
+		p.Regs = append(p.Regs, HLSLIR{Op: ALUMul, Dest: y, Src: []string{t, half}})
+	}
+	out := p.allocReg()
+	zf := p.allocReg()
+	nz := p.allocReg()
+	p.Regs = append(p.Regs, HLSLIR{Op: ALUMul, Dest: out, Src: []string{y, gf}})
+	p.Regs = append(p.Regs, HLSLIR{Op: ALUCmp, Dest: zf, Src: []string{x, zero}, Cond: "=="})
+	p.Regs = append(p.Regs, HLSLIR{Op: ALUSub, Dest: nz, Src: []string{one, zf}})
+	p.Regs = append(p.Regs, HLSLIR{Op: ALUMul, Dest: dest, Src: []string{out, nz}})
 }

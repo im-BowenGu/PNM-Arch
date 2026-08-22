@@ -4,6 +4,7 @@ package pnm
 
 import (
 	"fmt"
+	"math"
 	"regexp"
 	"strconv"
 	"strings"
@@ -248,33 +249,97 @@ func compileRCall(p *FP64Program, dest, funcName, args string) error {
 	case "c":
 		return nil // vector literal, skip
 	case "sqrt":
-		// sqrt(x) via 4 iterations of Newton-Raphson: y = 0.5*(y + x/y)
 		if len(argList) == 1 {
 			src := resolveRAtom(p, argList[0])
-			y := p.allocReg()
-			half := p.allocReg()
-			xDivY := p.allocReg()
-			sum := p.allocReg()
-			p.Regs = append(p.Regs, FP64IR{Op: FP64Const, Dest: y, Imm: 1.0})
-			p.Regs = append(p.Regs, FP64IR{Op: FP64Const, Dest: half, Imm: 0.5})
-			for i := 0; i < 4; i++ {
-				p.Regs = append(p.Regs, FP64IR{Op: FP64Div, Dest: xDivY, Src: []string{src, y}})
-				p.Regs = append(p.Regs, FP64IR{Op: FP64Add, Dest: sum, Src: []string{y, xDivY}})
-				p.Regs = append(p.Regs, FP64IR{Op: FP64Mul, Dest: y, Src: []string{sum, half}})
-			}
-			p.Regs = append(p.Regs, FP64IR{Op: FP64Mov, Dest: dest, Src: []string{y}})
+			emitFP64Sqrt(p, dest, src)
 			return nil
 		}
 	case "abs":
 		if len(argList) == 1 {
 			src := resolveRAtom(p, argList[0])
-			zero := p.allocReg()
-			p.Regs = append(p.Regs, FP64IR{Op: FP64Const, Dest: zero, Imm: 0.0})
-			p.Regs = append(p.Regs, FP64IR{Op: FP64Max, Dest: dest, Src: []string{src, zero}})
+			emitFP64Abs(p, dest, src)
 			return nil
 		}
 	}
 	return fmt.Errorf("unsupported R function: %s", funcName)
+}
+
+func emitFP64Abs(p *FP64Program, dest, src string) {
+	neg := p.allocReg()
+	zero := p.allocReg()
+	p.Regs = append(p.Regs, FP64IR{Op: FP64Const, Dest: zero, Imm: 0.0})
+	p.Regs = append(p.Regs, FP64IR{Op: FP64Neg, Dest: neg, Src: []string{src}})
+	p.Regs = append(p.Regs, FP64IR{Op: FP64Max, Dest: dest, Src: []string{src, neg}})
+}
+
+// emitFP64Sqrt lowers sqrt(x) branchlessly: a binary ladder of compare-select
+// steps rescales x by 2^64 into [1,4) (tracking sqrt of the scale factor),
+// then 5 Newton-Raphson iterations refine y = 0.5*(y + r/y), which converges
+// to full precision for any normalized input. A final select forces exact 0
+// for zero/negative inputs.
+func emitFP64Sqrt(p *FP64Program, dest, src string) {
+	zero := p.allocReg()
+	one := p.allocReg()
+	half := p.allocReg()
+	p.Regs = append(p.Regs, FP64IR{Op: FP64Const, Dest: zero, Imm: 0.0})
+	p.Regs = append(p.Regs, FP64IR{Op: FP64Const, Dest: one, Imm: 1.0})
+	p.Regs = append(p.Regs, FP64IR{Op: FP64Const, Dest: half, Imm: 0.5})
+	x := p.allocReg()
+	p.Regs = append(p.Regs, FP64IR{Op: FP64Max, Dest: x, Src: []string{src, zero}})
+	k := p.allocReg()
+	p.Regs = append(p.Regs, FP64IR{Op: FP64Const, Dest: k, Imm: 1.8446744073709552e+19})
+	z := p.allocReg()
+	p.Regs = append(p.Regs, FP64IR{Op: FP64Mul, Dest: z, Src: []string{x, k}})
+	s := p.allocReg()
+	g := p.allocReg()
+	p.Regs = append(p.Regs, FP64IR{Op: FP64Const, Dest: s, Imm: 1.0})
+	p.Regs = append(p.Regs, FP64IR{Op: FP64Const, Dest: g, Imm: 1.0})
+	for j := 5; j >= 0; j-- {
+		a := p.allocReg()
+		b := p.allocReg()
+		candS := p.allocReg()
+		f := p.allocReg()
+		inv := p.allocReg()
+		sa := p.allocReg()
+		sb := p.allocReg()
+		candG := p.allocReg()
+		ga := p.allocReg()
+		gb := p.allocReg()
+		p.Regs = append(p.Regs, FP64IR{Op: FP64Const, Dest: a, Imm: math.Exp2(float64(uint64(1) << uint(j+1)))})
+		p.Regs = append(p.Regs, FP64IR{Op: FP64Const, Dest: b, Imm: math.Exp2(float64(uint64(1) << uint(j)))})
+		p.Regs = append(p.Regs, FP64IR{Op: FP64Mul, Dest: candS, Src: []string{s, a}})
+		p.Regs = append(p.Regs, FP64IR{Op: FP64Cmp, Dest: f, Src: []string{z, candS}, Cond: ">="})
+		p.Regs = append(p.Regs, FP64IR{Op: FP64Sub, Dest: inv, Src: []string{one, f}})
+		p.Regs = append(p.Regs, FP64IR{Op: FP64Mul, Dest: sa, Src: []string{candS, f}})
+		p.Regs = append(p.Regs, FP64IR{Op: FP64Mul, Dest: sb, Src: []string{s, inv}})
+		p.Regs = append(p.Regs, FP64IR{Op: FP64Add, Dest: s, Src: []string{sa, sb}})
+		p.Regs = append(p.Regs, FP64IR{Op: FP64Mul, Dest: candG, Src: []string{g, b}})
+		p.Regs = append(p.Regs, FP64IR{Op: FP64Mul, Dest: ga, Src: []string{candG, f}})
+		p.Regs = append(p.Regs, FP64IR{Op: FP64Mul, Dest: gb, Src: []string{g, inv}})
+		p.Regs = append(p.Regs, FP64IR{Op: FP64Add, Dest: g, Src: []string{ga, gb}})
+	}
+	invGK := p.allocReg()
+	gf := p.allocReg()
+	p.Regs = append(p.Regs, FP64IR{Op: FP64Const, Dest: invGK, Imm: 2.3283064365386963e-10})
+	p.Regs = append(p.Regs, FP64IR{Op: FP64Mul, Dest: gf, Src: []string{g, invGK}})
+	r := p.allocReg()
+	y := p.allocReg()
+	q := p.allocReg()
+	t := p.allocReg()
+	p.Regs = append(p.Regs, FP64IR{Op: FP64Div, Dest: r, Src: []string{z, s}})
+	p.Regs = append(p.Regs, FP64IR{Op: FP64Const, Dest: y, Imm: 1.0})
+	for i := 0; i < 5; i++ {
+		p.Regs = append(p.Regs, FP64IR{Op: FP64Div, Dest: q, Src: []string{r, y}})
+		p.Regs = append(p.Regs, FP64IR{Op: FP64Add, Dest: t, Src: []string{y, q}})
+		p.Regs = append(p.Regs, FP64IR{Op: FP64Mul, Dest: y, Src: []string{t, half}})
+	}
+	out := p.allocReg()
+	zf := p.allocReg()
+	nz := p.allocReg()
+	p.Regs = append(p.Regs, FP64IR{Op: FP64Mul, Dest: out, Src: []string{y, gf}})
+	p.Regs = append(p.Regs, FP64IR{Op: FP64Cmp, Dest: zf, Src: []string{x, zero}, Cond: "=="})
+	p.Regs = append(p.Regs, FP64IR{Op: FP64Sub, Dest: nz, Src: []string{one, zf}})
+	p.Regs = append(p.Regs, FP64IR{Op: FP64Mul, Dest: dest, Src: []string{out, nz}})
 }
 
 func compileRAgg(p *FP64Program, dest, op string, args []string) error {

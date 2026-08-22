@@ -1,6 +1,8 @@
 package pnm
 
 import (
+	"fmt"
+	"math"
 	"strings"
 	"testing"
 )
@@ -175,4 +177,98 @@ float s(float lo, float hi, float x) {
 		t.Error("expected alu.clamp in smoothstep expansion")
 	}
 	t.Logf("HLSL smoothstep IR:\n%s", out)
+}
+
+func evalFP64(prog *FP64Program, inputs map[string]float64) map[string]float64 {
+	regs := make(map[string]float64)
+	for name, idx := range prog.Vars {
+		if v, ok := inputs[name]; ok {
+			regs[fmt.Sprintf("r%d", idx)] = v
+		}
+	}
+	for _, inst := range prog.Regs {
+		switch inst.Op {
+		case FP64Const:
+			regs[inst.Dest] = inst.Imm
+		case FP64Mov:
+			regs[inst.Dest] = regs[inst.Src[0]]
+		case FP64Neg:
+			regs[inst.Dest] = -regs[inst.Src[0]]
+		case FP64Add:
+			regs[inst.Dest] = regs[inst.Src[0]] + regs[inst.Src[1]]
+		case FP64Sub:
+			regs[inst.Dest] = regs[inst.Src[0]] - regs[inst.Src[1]]
+		case FP64Mul:
+			regs[inst.Dest] = regs[inst.Src[0]] * regs[inst.Src[1]]
+		case FP64Div:
+			regs[inst.Dest] = regs[inst.Src[0]] / regs[inst.Src[1]]
+		case FP64Min:
+			regs[inst.Dest] = math.Min(regs[inst.Src[0]], regs[inst.Src[1]])
+		case FP64Max:
+			regs[inst.Dest] = math.Max(regs[inst.Src[0]], regs[inst.Src[1]])
+		case FP64Cmp:
+			l, r := regs[inst.Src[0]], regs[inst.Src[1]]
+			var c bool
+			switch inst.Cond {
+			case "==":
+				c = l == r
+			case "!=":
+				c = l != r
+			case "<":
+				c = l < r
+			case ">":
+				c = l > r
+			case "<=":
+				c = l <= r
+			case ">=":
+				c = l >= r
+			}
+			if c {
+				regs[inst.Dest] = 1.0
+			} else {
+				regs[inst.Dest] = 0.0
+			}
+		}
+	}
+	return regs
+}
+
+func TestCompileRSqrtNumerical(t *testing.T) {
+	src := "y <- sqrt(x)\n"
+	for _, x := range []float64{1e6, 1024.0, 2.0, 1.0, 0.25, 1e-10, 0.0, -4.0, 9.9e300} {
+		prog, err := CompileR(src)
+		if err != nil {
+			t.Fatalf("CompileR failed: %v", err)
+		}
+		regs := evalFP64(prog, map[string]float64{"x": x})
+		y := regs[fmt.Sprintf("r%d", prog.Vars["y"])]
+		want := math.Sqrt(math.Max(x, 0))
+		if want == 0 {
+			if y != 0 {
+				t.Errorf("sqrt(%g): got %g, want 0", x, y)
+			}
+			continue
+		}
+		relErr := math.Abs(y-want) / want
+		if relErr > 1e-12 {
+			t.Errorf("sqrt(%g): got %.17g, want %.17g (rel err %g)", x, y, want, relErr)
+		}
+	}
+}
+
+func TestCompileRAbs(t *testing.T) {
+	prog, err := CompileR("y <- abs(x)\n")
+	if err != nil {
+		t.Fatalf("CompileR failed: %v", err)
+	}
+	regs := evalFP64(prog, map[string]float64{"x": -42.5})
+	y := regs[fmt.Sprintf("r%d", prog.Vars["y"])]
+	if y != 42.5 {
+		t.Errorf("abs(-42.5): got %g, want 42.5", y)
+	}
+	regs = evalFP64(prog, map[string]float64{"x": 7.25})
+	y = regs[fmt.Sprintf("r%d", prog.Vars["y"])]
+	if y != 7.25 {
+		t.Errorf("abs(7.25): got %g, want 7.25", y)
+	}
 }

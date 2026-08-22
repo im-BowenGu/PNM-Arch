@@ -4,7 +4,7 @@
 
 ## Overview
 
-This repository contains the working artifacts behind the paper *Bypassing the HBM Wall: A Distributed Spatial Processing-Near-Memory Architecture using DUV ASICs and Deterministic Routing*. It includes the manuscript source, a Go-Verilog co-simulation harness, Verilog HDL for the routing fabric and compute units, and a build pipeline that produces the DOCX submission.
+This repository contains the working artifacts behind the paper *Bypassing the HBM Wall: A Distributed Spatial Processing-Near-Memory Architecture using DUV ASICs and Deterministic Routing*. It includes the manuscript source, a Go-Verilog co-simulation harness, Verilog HDL for the routing fabric and compute units, a RISC-V BMC/router chip SoC, and a build pipeline that produces the DOCX submission.
 
 ## Repository Structure
 
@@ -12,7 +12,7 @@ This repository contains the working artifacts behind the paper *Bypassing the H
 Paper/
   Paper.MD              # Manuscript source (Markdown with LaTeX-escape conventions)
   build.py              # Build pipeline -> submission/paper.docx (+ .pdf, .tex)
-  AGENTS.md             # AI agent guidance for working in this repository
+  AGENTS.md             # Agent guidance for working in this repository
   shell.nix             # Nix shell with the full toolchain
   README.md             # Project overview
   HDL/                  # Verilog-2005 fabric model + compute units
@@ -60,6 +60,21 @@ The fabric is a byte-wide, Verilog-2005 model of the deterministic single-spine 
 | `crc16.v` | CRC-16 | CCITT-FALSE (init 0xFFFF, poly 0x1021) |
 | `pe_tile_stub.v` | PE Tile Stub | MAC stub with bias-add, CRC recompute, AXI-Stream interface |
 
+### BMC/Router Chip (RISC-V SoC)
+
+The central router chip is implemented as a RISC-V System-on-Chip for chassis management, topology discovery, MoE dispatch, and host PCIe.
+
+**Why an SoC, not an MCU:** (1) OS compatibility — NOMMU Linux/Redox requires an RV32IMAFC-class core with sufficient SRAM; MCU silicon typically lacks both. (2) PCIe Gen5 endpoint termination requires dedicated PHY + controller blocks integrated into SoC silicon. (3) MoE gating evaluation at 10^8–10^9 tokens/s demands clock rates beyond typical MCU envelopes. (4) Source-routed routing tables for 512 nodes plus MoE expert maps exceed MCU on-chip SRAM. The current RTL implements RV32IMA as a proof of concept; production upgrades to RV32IMAFC for NOMMU Linux support. For source-language transpilation (R/Haskell/HLSL), the main thread runs on the router chip's CPU: the host compiles source to typed IR and ships it over PCIe, and the router's firmware lowers it onto the chassis (allocating registers, assigning kernels to nodes, computing routes) without round-tripping through the host.
+
+| Module | File | Description |
+|--------|------|-------------|
+| `rv32_core.v` | RV32IMA CPU | Multi-cycle 5-stage FSM core: RV32I base + M extension + Zicsr |
+| `uart.v` | UART | 16550-compatible, 8N1, configurable baud, interrupt output |
+| `clint.v` | CLINT | Machine-mode timer (mtime/mtimecmp) + software interrupt (msip) |
+| `bmc_router_top.v` | SoC Top | CPU + 64KB ROM + 64KB SRAM + UART + CLINT + PNM router engine |
+
+Memory map: ROM@0x00000000, UART@0x10000000, CLINT@0x20000000, SRAM@0x80000000, PNM@0xF0000000.
+
 ### Testbenches
 
 All testbenches are self-checking (scoreboard counters, `errors` integers, $display PASS/FAIL).
@@ -79,6 +94,7 @@ All testbenches are self-checking (scoreboard counters, `errors` integers, $disp
 | `tb_bf16_mac_array.v` | BF16 systolic array | `*** BF16 MAC ARRAY TEST PASSED ***` |
 | `tb_moe_gating.v` | MoE softmax top-k | `*** MoE GATING TEST PASSED ***` |
 | `tb_router_chip.v` | Router chip boot + dispatch | `*** ROUTER CHIP TEST PASSED ***` |
+| `tb_bmc_router.v` | BMC/Router SoC: UART, PNM regs, boot_done | `*** BMC ROUTER CHIP TEST PASSED ***` |
 
 ## Co-Simulation Harness (sim/)
 
@@ -228,8 +244,23 @@ go run ./cmd/pnm --cpuprofile /tmp/pnm.cpu --memprofile /tmp/pnm.mem
 go run ./cmd/pnmc examples/bias_add.pnm -l 8 -x 8 -y 8   # compile + run a program
 go run ./cmd/pnmc compile-model examples/gemma4_test -l 4 -x 4 -y 4   # model compiler
 go run ./cmd/pnmc run-driver examples/gemma4_test -l 4 -x 4 -y 4      # driver + firmware
+go run ./cmd/pnmc workload jacobi5 -l 1 -x 4 -y 4 -run                # workload simulation
+go run ./cmd/pnmc workload matvec -l 4 -x 4 -y 4 -frag 16 -run        # matvec (16-element vectors)
+go run ./cmd/pnmc workload reduction -l 4 -x 4 -y 4 -frag 32          # emit only
+go run ./cmd/pnmc workload broadcast -l 4 -x 4 -y 4 -frag 64 -run     # broadcast fan-out
+go run ./cmd/pnmc workload nbody -l 4 -x 2 -y 2 -frag 8 -run          # all-pairs saturation
 go test ./internal/pnm/                  # all tests
 ```
+
+Workload simulations exercise canonical HPC routing patterns against the gate-level fabric:
+
+| Workload | Algorithm | Routing pattern |
+|----------|-----------|----------------|
+| `jacobi5` | 5-point Jacobi stencil | Intra-layer X→Y dimension-order (no spine) |
+| `matvec` | Matrix-vector product, row-per-node | Spine descent for cross-layer rows |
+| `reduction` | Reverse-path merge tree | Egress → Y-up → X-up → spine ascent |
+| `broadcast` | Weight distribution from root | Spine descent + per-layer X→Y fan-out |
+| `nbody` | All-pairs O(N²) interaction | All paths saturated (upper bound, ≤64 nodes) |
 
 ### .pnm Program Format
 

@@ -221,6 +221,10 @@ module pe_tile_stub #(
     reg [2:0]  fma_out_cnt;         // 0=idle, 1..4=outputting bytes
     reg        fma_out_pending;     // a result is waiting in the SR
 
+    reg [15:0] pos;
+    reg [15:0] plen;
+    wire in_payload = (pos >= 4 && pos < 4 + plen);
+
     bf16_fma u_fma (
         .clk       (clk),
         .rst_n     (rst_n),
@@ -244,7 +248,8 @@ module pe_tile_stub #(
             fma_out_sr[3] <= 8'h00;
             fma_out_pending <= 1'b1;
             fma_out_cnt     <= 3'd2;  // 2 bytes to emit
-        end else if (fma_out_pending && fma_out_cnt != 0) begin
+        end else if (fma_out_pending && fma_out_cnt != 0
+                     && deliver && in_payload) begin
             fma_out_cnt <= fma_out_cnt - 1;
             if (fma_out_cnt == 1) fma_out_pending <= 1'b0;
         end
@@ -254,15 +259,13 @@ module pe_tile_stub #(
     // The DMA body is [DEST, CTRL, LEN_LO, LEN_HI, payload(len), CRC_HI,
     // CRC_LO]; 'pos' counts delivered body bytes, 'plen' is the payload
     // length latched from LEN_LO/LEN_HI as they pass.
-    reg [15:0] pos;
-    reg [15:0] plen;
     reg [15:0] crc_in_acc;     // CRC over the *unmodified* body (incoming check)
     reg [15:0] crc_out_acc;    // CRC over the *transformed* body (recomputed)
     reg        crc_mismatch_q; // incoming CRC_HI/LO comparison latch
 
     // the computed result byte: FMA path or bias-add on payload, recomputed CRC on tail
-    wire [7:0] fma_out_byte = fma_out_sr[fma_out_cnt[1:0]];
-    wire in_payload = (pos >= 4 && pos < 4 + plen);
+    wire [7:0] fma_out_byte = (fma_out_cnt == 3'd1) ? fma_out_sr[1]
+                                                    : fma_out_sr[0];
     wire [7:0] out_byte =
         (USE_FMA && fma_out_pending && in_payload) ? fma_out_byte
       : (in_payload && !USE_FMA) ? (s1_data + KERNEL_CONST)

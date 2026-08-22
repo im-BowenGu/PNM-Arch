@@ -30,12 +30,21 @@ This architecture turns the problem around:
   machine is a physical dataflow graph (no mutable state, no coherency protocols).
 
 The whole system is four kinds of hardware: **DRAM, MACs, repeaters, and one central
-router chip** that handles the MoE router, POST discovery, PCIe, and coordinate mapping.
-Everything on the data path is pure transport; everything with state lives in that one
-chip at the spine root.
+router chip** that handles MoE routing, POST discovery, PCIe, and coordinate mapping.
+The router chip is a RISC-V BMC/SoC (Linux and Redox compatible) — the only
+programmable silicon in the machine. Everything on the data path is pure transport;
+everything with state lives in that one chip at the spine root. The SoC (not an MCU)
+choice is deliberate: OS compatibility requires NOMMU Linux on an RV32IMAFC core,
+PCIe Gen5 endpoint termination needs SoC-class PHY silicon, MoE gating throughput
+(10^8–10^9 tokens/s) demands CPU performance beyond MCU envelopes, and routing tables
+for 512 nodes exceed MCU SRAM. For source-language transpilation (R, Haskell, HLSL),
+the main thread runs on the router chip's CPU — the host ships IR over PCIe and never
+touches the spine directly.
 
 A 512-node reference chassis delivers **64 TB** attached memory at **131 TB/s** aggregate
-node-local bandwidth (**≈197 TFLOPS FP64**).
+node-local bandwidth (**≈197 TFLOPS FP64**), targeting capacity-bound workloads: MoE
+transformer inference, FP64 stencil computation for scientific HPC (climate modeling,
+CFD, seismic imaging), and large-scale numerical simulation.
 
 ## Architecture
 
@@ -152,8 +161,8 @@ flowchart LR
 | `TLDR.md` | Quick overview: problem, solution, key numbers, how it works |
 | `docs.md` | Comprehensive documentation: HDL, co-sim harness, compiler, wire format, build commands |
 | `build.py` | Build pipeline → single submission DOCX |
-| `HDL/` | Verilog fabric: HFR, `xyz_repeater`, XY turn, eject, CRC-16 + doorbell DMA + compute units (FP16/BF16/FP32/FP64 FMA, FP32 ALU, INT8 MAC, systolic arrays) + testbenches |
-| `sim/` | Co-simulation harness: topology/tb generators, virtual execution units, LLM inference client |
+| `HDL/` | Verilog fabric: HFR, `xyz_repeater`, XY turn, eject, CRC-16 + doorbell DMA + compute units (FP16/BF16/FP32/FP64 FMA, FP32 ALU, INT8 MAC, systolic arrays) + RISC-V BMC/Router SoC (`rv32_core.v`, `uart.v`, `clint.v`, `bmc_router_top.v`) + testbenches |
+| `sim/` | Co-simulation harness: topology/tb generators, virtual execution units, model compiler, inference client |
 | `sim/internal/pnm/safetensors.go` | Safetensors index parser + model config reader + tensor shape inference |
 | `sim/internal/pnm/model_compiler.go` | Model-to-PNM compiler: 5-stage AOT pipeline (ingest → partition → map → route → emit) |
 | `sim/fw/` | C firmware port for MCU targets (ARM Cortex-M/R, RISC-V) |
@@ -223,6 +232,10 @@ iverilog -g2005 -o tb_fp64_fma.out fp64_fma.v tb_fp64_fma.v && vvp tb_fp64_fma.o
 
 # INT8 MAC unit
 iverilog -g2005 -o tb_int8_mac.out int8_mac.v tb_int8_mac.v && vvp tb_int8_mac.out
+
+# RISC-V BMC/Router SoC (RV32IMA core + UART + CLINT + PNM router engine)
+iverilog -g2005 -o tb_bmc_router.out \
+  rv32_core.v uart.v clint.v bmc_router_top.v tb_bmc_router.v && vvp tb_bmc_router.out
 ```
 
 The load test scoreboards every packet end-to-end: destination packet counts, SOP/EOP
@@ -303,6 +316,42 @@ verilator --lint-only -Wno-MULTITOP \
 
 ### 6. Model compiler: safetensors → PNM
 
+### 5b. Workload simulations: canonical HPC algorithms
+
+Five built-in workloads exercise distinct routing patterns against the
+co-simulation harness — each maps a well-known algorithm class onto the fabric
+and verifies byte-exact delivery:
+
+```bash
+cd sim
+
+# 5-point Jacobi stencil: intra-layer X→Y dimension-order routing only
+go run ./cmd/pnmc workload jacobi5 -l 1 -x 4 -y 4 -run
+
+# Matrix-vector product (weight-stationary): spine descent for cross-layer rows
+go run ./cmd/pnmc workload matvec -l 4 -x 4 -y 4 -frag 16 -run
+
+# Reverse-path merge tree: leaves → root through the arbitrated egress path
+go run ./cmd/pnmc workload reduction -l 4 -x 4 -y 4 -frag 32 -run
+
+# Weight distribution broadcast: spine descent + per-layer X→Y fan-out
+go run ./cmd/pnmc workload broadcast -l 4 -x 4 -y 4 -frag 64 -run
+
+# All-pairs O(N²) saturation benchmark (capped at 64 nodes)
+go run ./cmd/pnmc workload nbody -l 4 -x 2 -y 2 -frag 8 -run
+```
+
+Each workload emits a `.pnm` program and optionally runs it against the gate-level
+fabric. The `-o` flag redirects output; without `-run` the program is emitted only.
+
+| Workload | Routing pattern | Use case |
+|----------|----------------|----------|
+| `jacobi5` | Intra-layer X→Y dimension-order | Stencil / halo exchange |
+| `matvec` | Spine descent + intra-layer | Weight-stationary linear algebra |
+| `reduction` | Reverse-path merge (egress→Y→X→spine) | Reduction trees, aggregation |
+| `broadcast` | Spine descent + per-layer fan-out | Weight upload, distribution |
+| `nbody` | All paths saturated (worst case) | Upper-bound benchmark |
+
 The model compiler transpiles a HuggingFace model (safetensors + config.json) onto
 a PNM chassis. It parses the safetensors index, computes tensor sizes from shapes,
 partitions model layers across physical layers, distributes experts across nodes,
@@ -361,11 +410,12 @@ load, weight upload, MoE gating load) and runtime dispatch loop (30 dense +
 240 MoE dispatches per token for Gemma-4) as the Go firmware, plus full
 KV cache management with LRU eviction.
 
-### 8. LLM inference client
+### 8. Inference client
 
 For FP16/BF16 models, the co-simulation harness includes an inference client
 that handles tokenization, prefill, autoregressive generation, and
-temperature/nucleus sampling.
+temperature/nucleus sampling. The client supports both transformer inference
+and serves as a driver for MoE dispatch verification.
 
 ```bash
 cd sim

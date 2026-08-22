@@ -1,7 +1,6 @@
 temp/
 .venv/
 submission/
-build.py
 *.out
 *.vcd
 
