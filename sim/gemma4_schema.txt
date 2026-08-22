@@ -1,0 +1,84 @@
+# PNM Schema: Gemma-4-26B-A4B-it
+# chassis: 4x4x4 = 64 nodes
+
+# Coordinate Map
+# L  X  Y  | MODULE_ID | ROUTE_BITMAP | ROLE
+# ---------+-----------+--------------+------
+# central router chip: 4 layers, 4 tensors, 0 MB
+  0  0  0  |   0x00    |   0x080      | compute (12 tensors, 0 MB)
+  0  0  1  |   0x01    |   0x081      | compute (3 tensors, 0 MB)
+  0  0  2  |   0x02    |   0x082      | compute (3 tensors, 0 MB)
+  0  0  3  |   0x03    |   0x083      | compute (3 tensors, 0 MB)
+  0  1  0  |   0x10    |   0x080      | compute (4 tensors, 0 MB)
+  0  1  1  |   0x11    |   0x081      | compute (3 tensors, 0 MB)
+  0  1  2  |   0x12    |   0x082      | compute (3 tensors, 0 MB)
+  0  1  3  |   0x13    |   0x083      | compute (3 tensors, 0 MB)
+  0  2  0  |   0x20    |   0x080      | compute (3 tensors, 0 MB)
+  0  2  1  |   0x21    |   0x081      | compute (3 tensors, 0 MB)
+  0  2  2  |   0x22    |   0x082      | compute (3 tensors, 0 MB)
+  0  2  3  |   0x23    |   0x083      | compute (3 tensors, 0 MB)
+  0  3  0  |   0x30    |   0x080      | compute (3 tensors, 0 MB)
+  0  3  1  |   0x31    |   0x081      | compute (3 tensors, 0 MB)
+  0  3  2  |   0x32    |   0x082      | compute (3 tensors, 0 MB)
+  0  3  3  |   0x33    |   0x083      | compute (3 tensors, 0 MB)
+  1  0  0  |   0x00    |   0x100      | empty
+  1  0  1  |   0x01    |   0x101      | compute (11 tensors, 0 MB)
+  1  0  2  |   0x02    |   0x102      | empty
+  1  0  3  |   0x03    |   0x103      | empty
+  1  1  0  |   0x10    |   0x100      | empty
+  1  1  1  |   0x11    |   0x101      | empty
+  1  1  2  |   0x12    |   0x102      | empty
+  1  1  3  |   0x13    |   0x103      | empty
+  1  2  0  |   0x20    |   0x100      | empty
+  1  2  1  |   0x21    |   0x101      | empty
+  1  2  2  |   0x22    |   0x102      | empty
+  1  2  3  |   0x23    |   0x103      | empty
+  1  3  0  |   0x30    |   0x100      | empty
+  1  3  1  |   0x31    |   0x101      | empty
+  1  3  2  |   0x32    |   0x102      | empty
+  1  3  3  |   0x33    |   0x103      | empty
+  2  0  0  |   0x00    |   0x180      | empty
+  2  0  1  |   0x01    |   0x181      | empty
+  2  0  2  |   0x02    |   0x182      | compute (11 tensors, 0 MB)
+  2  0  3  |   0x03    |   0x183      | empty
+  2  1  0  |   0x10    |   0x180      | empty
+  2  1  1  |   0x11    |   0x181      | empty
+  2  1  2  |   0x12    |   0x182      | empty
+  2  1  3  |   0x13    |   0x183      | empty
+  2  2  0  |   0x20    |   0x180      | empty
+  2  2  1  |   0x21    |   0x181      | empty
+  2  2  2  |   0x22    |   0x182      | empty
+  2  2  3  |   0x23    |   0x183      | empty
+  2  3  0  |   0x30    |   0x180      | empty
+  2  3  1  |   0x31    |   0x181      | empty
+  2  3  2  |   0x32    |   0x182      | empty
+  2  3  3  |   0x33    |   0x183      | empty
+  3  0  0  |   0x00    |   0x200      | empty
+  3  0  1  |   0x01    |   0x201      | empty
+  3  0  2  |   0x02    |   0x202      | empty
+  3  0  3  |   0x03    |   0x203      | compute (11 tensors, 0 MB)
+  3  1  0  |   0x10    |   0x200      | empty
+  3  1  1  |   0x11    |   0x201      | empty
+  3  1  2  |   0x12    |   0x202      | empty
+  3  1  3  |   0x13    |   0x203      | empty
+  3  2  0  |   0x20    |   0x200      | empty
+  3  2  1  |   0x21    |   0x201      | empty
+  3  2  2  |   0x22    |   0x202      | empty
+  3  2  3  |   0x23    |   0x203      | empty
+  3  3  0  |   0x30    |   0x200      | empty
+  3  3  1  |   0x31    |   0x201      | empty
+  3  3  2  |   0x32    |   0x202      | empty
+  3  3  3  |   0x33    |   0x203      | empty
+
+# Routing Bitmaps (for xyz_repeater and HFR load)
+# Each repeater/hfr receives: 11-bit bitmap [LAYER:4][AXIS:1][SIGN:1][DIST:5]
+# layer_bits = (LAYER_ID) << 7, AXIS=0 (X), SIGN=0 (+), DIST=0
+# layer 0: xyz_repeater bitmap = 11'h080
+# layer 1: xyz_repeater bitmap = 11'h100
+# layer 2: xyz_repeater bitmap = 11'h180
+# layer 3: xyz_repeater bitmap = 11'h200
+
+# Spine Sizing
+# spine_layers = 4
+# link_rate = 16 GB/s per lane
+# spine_aggregate = ~2 TB/s per direction

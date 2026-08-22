@@ -85,6 +85,7 @@ module tb_load;
     reg  [7:0] inj_data;
     reg        inj_valid, inj_sop, inj_eop;
     wire       inj_ready;
+    reg  [1:0] inj_vc = 2'b10;   // class 2: spine descent
 
     // ---- spine ----
     wire [7:0] i1p_d; wire i1p_v, i1p_s, i1p_e, i1p_r;
@@ -92,33 +93,55 @@ module tb_load;
     wire [7:0] h1_d;  wire h1_v,  h1_s,  h1_e,  h1_r;
     wire [7:0] i2p_d; wire i2p_v, i2p_s, i2p_e, i2p_r;
     wire [7:0] n2_d;  wire n2_v,  n2_s,  n2_e,  n2_r;
+    wire [1:0] i1p_vc, n1_vc, h1_vc, i2p_vc, n2_vc;
 
-    xyz_repeater #(.LOCAL_LAYER(8'h01)) rpt1 (
+    xyz_repeater rpt1 (
         .clk(clk), .rst_n(rst_n),
+        .route_bitmap(11'h080),   // layer 1: {0001, X, +, 0}
         .spin_data(inj_data), .spin_valid(inj_valid), .spin_sop(inj_sop),
         .spin_eop(inj_eop), .spin_ready(inj_ready),
+        .spin_vc(inj_vc),
         .spout_data(i1p_d), .spout_valid(i1p_v), .spout_sop(i1p_s),
         .spout_eop(i1p_e), .spout_ready(i1p_r),
+        .spout_vc(i1p_vc),
         .nob_data(n1_d), .nob_valid(n1_v), .nob_sop(n1_s),
-        .nob_eop(n1_e), .nob_ready(n1_r)
+        .nob_eop(n1_e), .nob_ready(n1_r),
+        .nob_vc(n1_vc),
+        .nob_up_data(8'h00), .nob_up_valid(1'b0), .nob_up_sop(1'b0), .nob_up_eop(1'b0),
+        .nob_up_ready(), .nob_up_vc(2'b00),
+        .spup_in_data(8'h00), .spup_in_valid(1'b0), .spup_in_sop(1'b0), .spup_in_eop(1'b0),
+        .spup_in_ready(), .spup_in_vc(2'b01),
+        .spup_data(), .spup_valid(), .spup_sop(), .spup_eop(), .spup_ready(1'b0), .spup_vc()
     );
 
     hfr h_spine (
         .clk(clk), .rst_n(rst_n),
+        .route_bitmap(11'h080),   // layer 1 (spine stage of board 1)
         .in_data(i1p_d), .in_valid(i1p_v), .in_sop(i1p_s),
         .in_eop(i1p_e), .in_ready(i1p_r),
+        .in_vc(i1p_vc),
         .out_data(h1_d), .out_valid(h1_v), .out_sop(h1_s),
-        .out_eop(h1_e), .out_ready(h1_r)
+        .out_eop(h1_e), .out_ready(h1_r),
+        .out_vc(h1_vc)
     );
 
-    xyz_repeater #(.LOCAL_LAYER(8'h02)) rpt2 (
+    xyz_repeater rpt2 (
         .clk(clk), .rst_n(rst_n),
+        .route_bitmap(11'h100),   // layer 2: {0010, X, +, 0}
         .spin_data(h1_d), .spin_valid(h1_v), .spin_sop(h1_s),
         .spin_eop(h1_e), .spin_ready(h1_r),
+        .spin_vc(h1_vc),
         .spout_data(i2p_d), .spout_valid(i2p_v), .spout_sop(i2p_s),
         .spout_eop(i2p_e), .spout_ready(i2p_r),
+        .spout_vc(i2p_vc),
         .nob_data(n2_d), .nob_valid(n2_v), .nob_sop(n2_s),
-        .nob_eop(n2_e), .nob_ready(n2_r)
+        .nob_eop(n2_e), .nob_ready(n2_r),
+        .nob_vc(n2_vc),
+        .nob_up_data(8'h00), .nob_up_valid(1'b0), .nob_up_sop(1'b0), .nob_up_eop(1'b0),
+        .nob_up_ready(), .nob_up_vc(2'b00),
+        .spup_in_data(8'h00), .spup_in_valid(1'b0), .spup_in_sop(1'b0), .spup_in_eop(1'b0),
+        .spup_in_ready(), .spup_in_vc(2'b01),
+        .spup_data(), .spup_valid(), .spup_sop(), .spup_eop(), .spup_ready(1'b0), .spup_vc()
     );
 
     // ---- board fabric for layer 1 (from n1_*) ----
@@ -131,53 +154,70 @@ module tb_load;
     wire [7:0] l1ej5_d; wire l1ej5_v, l1ej5_s, l1ej5_e, l1ej5_r;
     wire [7:0] l1n25_d; wire l1n25_v, l1n25_s, l1n25_e, l1n25_r;
     wire [7:0] l1n53_d; wire l1n53_v, l1n53_s, l1n53_e, l1n53_r;
+    wire [1:0] l1t2x_vc, l1t2y_vc, l1hb_vc, l1t5x_vc, l1t5y_vc;
+    wire [1:0] l1ej2_vc, l1ej5_vc, l1n25_vc, l1n53_vc;
 
     xy_turn #(.LOCAL_X(4'h2)) l1_turn2 (
         .clk(clk), .rst_n(rst_n),
         .xin_data(n1_d), .xin_valid(n1_v), .xin_sop(n1_s),
         .xin_eop(n1_e), .xin_ready(n1_r),
+        .xin_vc(n1_vc),
         .xout_data(l1t2x_d), .xout_valid(l1t2x_v), .xout_sop(l1t2x_s),
         .xout_eop(l1t2x_e), .xout_ready(l1t2x_r),
+        .xout_vc(l1t2x_vc),
         .yout_data(l1t2y_d), .yout_valid(l1t2y_v), .yout_sop(l1t2y_s),
-        .yout_eop(l1t2y_e), .yout_ready(l1t2y_r)
+        .yout_eop(l1t2y_e), .yout_ready(l1t2y_r),
+        .yout_vc(l1t2y_vc)
     );
 
     node_eject #(.LOCAL_MODULE(8'h25)) l1_ej25 (
         .clk(clk), .rst_n(rst_n),
         .yin_data(l1t2y_d), .yin_valid(l1t2y_v), .yin_sop(l1t2y_s),
         .yin_eop(l1t2y_e), .yin_ready(l1t2y_r),
+        .yin_vc(l1t2y_vc),
         .yout_data(l1ej2_d), .yout_valid(l1ej2_v), .yout_sop(l1ej2_s),
         .yout_eop(l1ej2_e), .yout_ready(1'b1),
+        .yout_vc(l1ej2_vc),
         .node_data(l1n25_d), .node_valid(l1n25_v), .node_sop(l1n25_s),
-        .node_eop(l1n25_e), .node_ready(l1n25_r)
+        .node_eop(l1n25_e), .node_ready(l1n25_r),
+        .node_vc(l1n25_vc)
     );
 
     hfr l1_hx (
         .clk(clk), .rst_n(rst_n),
+        .route_bitmap(11'h080),   // board 1 X-lane
         .in_data(l1t2x_d), .in_valid(l1t2x_v), .in_sop(l1t2x_s),
         .in_eop(l1t2x_e), .in_ready(l1t2x_r),
+        .in_vc(l1t2x_vc),
         .out_data(l1hb_d), .out_valid(l1hb_v), .out_sop(l1hb_s),
-        .out_eop(l1hb_e), .out_ready(l1hb_r)
+        .out_eop(l1hb_e), .out_ready(l1hb_r),
+        .out_vc(l1hb_vc)
     );
 
     xy_turn #(.LOCAL_X(4'h5)) l1_turn5 (
         .clk(clk), .rst_n(rst_n),
         .xin_data(l1hb_d), .xin_valid(l1hb_v), .xin_sop(l1hb_s),
         .xin_eop(l1hb_e), .xin_ready(l1hb_r),
+        .xin_vc(l1hb_vc),
         .xout_data(l1t5x_d), .xout_valid(l1t5x_v), .xout_sop(l1t5x_s),
         .xout_eop(l1t5x_e), .xout_ready(l1t5x_r),
+        .xout_vc(l1t5x_vc),
         .yout_data(l1t5y_d), .yout_valid(l1t5y_v), .yout_sop(l1t5y_s),
-        .yout_eop(l1t5y_e), .yout_ready(l1t5y_r)
+        .yout_eop(l1t5y_e), .yout_ready(l1t5y_r),
+        .yout_vc(l1t5y_vc)
     );
 
     node_eject #(.LOCAL_MODULE(8'h53)) l1_ej53 (
         .clk(clk), .rst_n(rst_n),
         .yin_data(l1t5y_d), .yin_valid(l1t5y_v), .yin_sop(l1t5y_s),
         .yin_eop(l1t5y_e), .yin_ready(l1t5y_r),
+        .yin_vc(l1t5y_vc),
         .yout_data(l1ej5_d), .yout_valid(l1ej5_v), .yout_sop(l1ej5_s),
         .yout_eop(l1ej5_e), .yout_ready(1'b1),
+        .yout_vc(l1ej5_vc),
         .node_data(l1n53_d), .node_valid(l1n53_v), .node_sop(l1n53_s),
-        .node_eop(l1n53_e), .node_ready(l1n53_r)
+        .node_eop(l1n53_e), .node_ready(l1n53_r),
+        .node_vc(l1n53_vc)
     );
 
     // ---- board fabric for layer 2 (from n2_*) ----
@@ -188,15 +228,20 @@ module tb_load;
     wire [7:0] l2t5y_d; wire l2t5y_v, l2t5y_s, l2t5y_e, l2t5y_r;
     wire [7:0] l2n25_d; wire l2n25_v, l2n25_s, l2n25_e, l2n25_r;
     wire [7:0] l2n53_d; wire l2n53_v, l2n53_s, l2n53_e, l2n53_r;
+    wire [1:0] l2t2x_vc, l2t2y_vc, l2hb_vc, l2t5x_vc, l2t5y_vc;
+    wire [1:0] l2ej2_vc, l2ej5_vc, l2n25_vc, l2n53_vc;
 
     xy_turn #(.LOCAL_X(4'h2)) l2_turn2 (
         .clk(clk), .rst_n(rst_n),
         .xin_data(n2_d), .xin_valid(n2_v), .xin_sop(n2_s),
         .xin_eop(n2_e), .xin_ready(n2_r),
+        .xin_vc(n2_vc),
         .xout_data(l2t2x_d), .xout_valid(l2t2x_v), .xout_sop(l2t2x_s),
         .xout_eop(l2t2x_e), .xout_ready(l2t2x_r),
+        .xout_vc(l2t2x_vc),
         .yout_data(l2t2y_d), .yout_valid(l2t2y_v), .yout_sop(l2t2y_s),
-        .yout_eop(l2t2y_e), .yout_ready(l2t2y_r)
+        .yout_eop(l2t2y_e), .yout_ready(l2t2y_r),
+        .yout_vc(l2t2y_vc)
     );
 
     wire [7:0] l2ej2_d; wire l2ej2_v, l2ej2_s, l2ej2_e;
@@ -204,28 +249,37 @@ module tb_load;
         .clk(clk), .rst_n(rst_n),
         .yin_data(l2t2y_d), .yin_valid(l2t2y_v), .yin_sop(l2t2y_s),
         .yin_eop(l2t2y_e), .yin_ready(l2t2y_r),
+        .yin_vc(l2t2y_vc),
         .yout_data(l2ej2_d), .yout_valid(l2ej2_v), .yout_sop(l2ej2_s),
         .yout_eop(l2ej2_e), .yout_ready(1'b1),
+        .yout_vc(l2ej2_vc),
         .node_data(l2n25_d), .node_valid(l2n25_v), .node_sop(l2n25_s),
-        .node_eop(l2n25_e), .node_ready(l2n25_r)
+        .node_eop(l2n25_e), .node_ready(l2n25_r),
+        .node_vc(l2n25_vc)
     );
 
     hfr l2_hx (
         .clk(clk), .rst_n(rst_n),
+        .route_bitmap(11'h100),   // board 2 X-lane
         .in_data(l2t2x_d), .in_valid(l2t2x_v), .in_sop(l2t2x_s),
         .in_eop(l2t2x_e), .in_ready(l2t2x_r),
+        .in_vc(l2t2x_vc),
         .out_data(l2hb_d), .out_valid(l2hb_v), .out_sop(l2hb_s),
-        .out_eop(l2hb_e), .out_ready(l2hb_r)
+        .out_eop(l2hb_e), .out_ready(l2hb_r),
+        .out_vc(l2hb_vc)
     );
 
     xy_turn #(.LOCAL_X(4'h5)) l2_turn5 (
         .clk(clk), .rst_n(rst_n),
         .xin_data(l2hb_d), .xin_valid(l2hb_v), .xin_sop(l2hb_s),
         .xin_eop(l2hb_e), .xin_ready(l2hb_r),
+        .xin_vc(l2hb_vc),
         .xout_data(l2t5x_d), .xout_valid(l2t5x_v), .xout_sop(l2t5x_s),
         .xout_eop(l2t5x_e), .xout_ready(l2t5x_r),
+        .xout_vc(l2t5x_vc),
         .yout_data(l2t5y_d), .yout_valid(l2t5y_v), .yout_sop(l2t5y_s),
-        .yout_eop(l2t5y_e), .yout_ready(l2t5y_r)
+        .yout_eop(l2t5y_e), .yout_ready(l2t5y_r),
+        .yout_vc(l2t5y_vc)
     );
 
     wire [7:0] l2ej5_d; wire l2ej5_v, l2ej5_s, l2ej5_e;
@@ -233,10 +287,13 @@ module tb_load;
         .clk(clk), .rst_n(rst_n),
         .yin_data(l2t5y_d), .yin_valid(l2t5y_v), .yin_sop(l2t5y_s),
         .yin_eop(l2t5y_e), .yin_ready(l2t5y_r),
+        .yin_vc(l2t5y_vc),
         .yout_data(l2ej5_d), .yout_valid(l2ej5_v), .yout_sop(l2ej5_s),
         .yout_eop(l2ej5_e), .yout_ready(1'b1),
+        .yout_vc(l2ej5_vc),
         .node_data(l2n53_d), .node_valid(l2n53_v), .node_sop(l2n53_s),
-        .node_eop(l2n53_e), .node_ready(l2n53_r)
+        .node_eop(l2n53_e), .node_ready(l2n53_r),
+        .node_vc(l2n53_vc)
     );
 
     // ---- sinks with varied backpressure (0=100%, 1=50%, 2=25%) ----
@@ -252,27 +309,37 @@ module tb_load;
     wire [7:0] l1n25b_d; wire l1n25b_v, l1n25b_s, l1n25b_e, l1n25b_r;
     wire [7:0] l1n53b_d; wire l1n53b_v, l1n53b_s, l1n53b_e, l1n53b_r;
     wire [7:0] l2n53b_d; wire l2n53b_v, l2n53b_s, l2n53b_e, l2n53b_r;
+    wire [1:0] l1n25b_vc, l1n53b_vc, l2n53b_vc;
 
     hfr h_l1_25 (
         .clk(clk), .rst_n(rst_n),
+        .route_bitmap(11'h080),   // board 1 node sink
         .in_data(l1n25_d), .in_valid(l1n25_v), .in_sop(l1n25_s),
         .in_eop(l1n25_e), .in_ready(l1n25_r),
+        .in_vc(l1n25_vc),
         .out_data(l1n25b_d), .out_valid(l1n25b_v), .out_sop(l1n25b_s),
-        .out_eop(l1n25b_e), .out_ready(l1n25b_r)
+        .out_eop(l1n25b_e), .out_ready(l1n25b_r),
+        .out_vc(l1n25b_vc)
     );
     hfr h_l1_53 (
         .clk(clk), .rst_n(rst_n),
+        .route_bitmap(11'h080),   // board 1 node sink
         .in_data(l1n53_d), .in_valid(l1n53_v), .in_sop(l1n53_s),
         .in_eop(l1n53_e), .in_ready(l1n53_r),
+        .in_vc(l1n53_vc),
         .out_data(l1n53b_d), .out_valid(l1n53b_v), .out_sop(l1n53b_s),
-        .out_eop(l1n53b_e), .out_ready(l1n53b_r)
+        .out_eop(l1n53b_e), .out_ready(l1n53b_r),
+        .out_vc(l1n53b_vc)
     );
     hfr h_l2_53 (
         .clk(clk), .rst_n(rst_n),
+        .route_bitmap(11'h100),   // board 2 node sink
         .in_data(l2n53_d), .in_valid(l2n53_v), .in_sop(l2n53_s),
         .in_eop(l2n53_e), .in_ready(l2n53_r),
+        .in_vc(l2n53_vc),
         .out_data(l2n53b_d), .out_valid(l2n53b_v), .out_sop(l2n53b_s),
-        .out_eop(l2n53b_e), .out_ready(l2n53b_r)
+        .out_eop(l2n53b_e), .out_ready(l2n53b_r),
+        .out_vc(l2n53b_vc)
     );
 
     load_sink #(.BP_MODE(0)) sk_pass (
@@ -501,7 +568,7 @@ module tb_load;
         for (i = 0; i < 500; i = i + 1) begin
             dest_idx = i % 5;
             pay_len  = 1 + (i % 16); // 1..16
-            ctrl_b   = 8'h40 | (i[3:0]); // vary ctrl low nibble
+            ctrl_b   = 8'h80 | (i[3:0]); // class 2 spine descent + vary low nibble
             case (dest_idx)
                 0: begin layer_b = 8'h01; mod_b = 8'h25; end
                 1: begin layer_b = 8'h01; mod_b = 8'h53; end
