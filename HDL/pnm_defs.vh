@@ -36,12 +36,12 @@
 
 // CTRL.vc_class — the four virtual-channel classes of paper §4.3.  The CTRL
 // field carries the class a flit was assembled with (its origin class: 2 for
-// router-injected requests and pass-through, 0 for node-egress results); it
+// orchestrator-injected requests and pass-through, 0 for node-egress results); it
 // is CRC-protected and fixed for the flit's whole journey.  Every fabric
 // link additionally carries a 2-bit VC sideband (vc[1:0], alongside
 // data/valid/sop/eop/ready) holding the class the flit occupies on that
 // link, which transitions 2->3 (spine descent -> on-board delivery) and
-// 0->1 (board egress -> spine ascent) at the xyz_repeater attachment.
+// 0->1 (board egress -> spine ascent) at the lxy_repeater attachment.
 `define VC_BOARD_EGRESS    2'b00
 `define VC_SPINE_ASCENT    2'b01
 `define VC_SPINE_DESCENT   2'b10
@@ -49,11 +49,11 @@
 
 // Routing bitmap (11 bits) — one pre-loaded routing-table entry carried by
 // every repeater and node (paper §2.1, §2.8).  Describes a destination
-// relative to the board's xyz_repeater:
+// relative to the board's lxy_repeater:
 //   [10:7] LAYER : 4-bit layer ID (1-based, matches LAYER_ID low nibble)
 //   [6]    AXIS  : 0 = X, 1 = Y
 //   [5]    SIGN  : 0 = +, 1 = -
-//   [4:0]  DIST  : hop distance from the xyz_repeater (0..31)
+//   [4:0]  DIST  : hop distance from the lxy_repeater (0..31)
 `define RBM_LAYER_HI  10
 `define RBM_LAYER_LO  7
 `define RBM_AXIS      6

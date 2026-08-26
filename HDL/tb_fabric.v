@@ -2,7 +2,7 @@
 `include "pnm_defs.vh"
 
 // =============================================================================
-// tb_fabric — self-checking test of xyz_repeater, hfr, xy_turn, node_eject
+// tb_fabric — self-checking test of lxy_repeater, hfr, xy_turn, node_eject
 // =============================================================================
 
 module byte_sink #(
@@ -73,7 +73,7 @@ module tb_fabric;
     wire [7:0]  n1_first, n2_first, pass_first, up1_first;
     wire [7:0]  n1_second, n2_second, pass_second, up1_second;
 
-    xyz_repeater rpt1 (
+    lxy_repeater rpt1 (
         .clk(clk), .rst_n(rst_n),
         .route_bitmap(11'h080),   // layer 1: {0001, X, +, 0}
         .spin_data(s_data), .spin_valid(s_valid), .spin_sop(s_sop),
@@ -104,7 +104,7 @@ module tb_fabric;
         .out_vc(h1_vc)
     );
 
-    xyz_repeater rpt2 (
+    lxy_repeater rpt2 (
         .clk(clk), .rst_n(rst_n),
         .route_bitmap(11'h100),   // layer 2: {0010, X, +, 0}
         .spin_data(h1_data), .spin_valid(h1_valid), .spin_sop(h1_sop),

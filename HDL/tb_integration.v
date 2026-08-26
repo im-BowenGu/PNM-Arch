@@ -19,7 +19,7 @@ module tb_integration;
     wire        hfr_out_valid, hfr_out_sop, hfr_out_eop;
     wire        hfr_layer_match;
 
-    // xyz_repeater -> nob (downward, layer matched)
+    // lxy_repeater -> nob (downward, layer matched)
     wire [7:0]  nob_data;
     wire        nob_valid, nob_sop, nob_eop;
     wire        nob_ready;
@@ -75,7 +75,7 @@ module tb_integration;
         .route_bitmap(11'h0080), .layer_match(hfr_layer_match)
     );
 
-    xyz_repeater rpt (
+    lxy_repeater rpt (
         .clk(clk), .rst_n(rst_n),
         .route_bitmap(11'h0080),
         .spin_data(hfr_out_data), .spin_valid(hfr_out_valid),
@@ -266,7 +266,7 @@ module tb_integration;
         @(negedge clk);
         $display("[INT] T4: activations=%0d rejections=%0d (expect +2)", activations, rejections);
 
-        // T5: Layer mismatch -> xyz_repeater passes through (no delivery)
+        // T5: Layer mismatch -> lxy_repeater passes through (no delivery)
         $display("\n[INT] Test 5: Layer mismatch");
         send_packet(8'h02, 8'h25, 8'h40, 2, 0);
         repeat (50) @(posedge clk);

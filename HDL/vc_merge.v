@@ -5,7 +5,7 @@
 // Paper §2.9 (result egress) / §4.3 (classes 0 and 1)
 //
 // The forward fabric is a demux tree (flit_gate); the reverse path is a pure
-// merge tree — node TX -> Y-up -> X-up -> xyz_repeater -> up-spine — with no
+// merge tree — node TX -> Y-up -> X-up -> lxy_repeater -> up-spine — with no
 // routing decisions anywhere.  Each merge is this module: it grants one of
 // its two upstream ports for a whole packet (decision held until eop, so
 // packets are never torn), round-robin between the ports, and forwards that

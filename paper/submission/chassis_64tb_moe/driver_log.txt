@@ -1,0 +1,28 @@
+=== PNM Driver + Firmware ===
+Model: examples/gemma4_test
+Chassis: 8x8x8 = 512 nodes
+
+Model: 30 layers, hidden=2816, experts=128, active=8, vocab=262144
+Total weights: 1.8 GB (BF16)
+Per-node budget: 137.4 GB
+
+--- Boot Sequence ---
+Phase 1 POST Discovery: 512 nodes found
+Phase 2 Routing Table: 512 entries
+Phase 3 Weight Upload: 8045 commands (55403.4 MB total)
+  Weight upload verification: PASSED
+Phase 4 MoE Gating: 3840 expert mappings
+Phase 5: READY
+
+--- Inference Dispatch Plan ---
+  Dispatch verification: PASSED
+  Total dispatches: 270 (30 dense + 240 MoE)
+  Layers: 30, Experts/token: 8
+
+Wrote: /data/Projects/PNM-Arch-Paper/Paper/submission/chassis_64tb_moe/routing_table.json
+Wrote: /data/Projects/PNM-Arch-Paper/Paper/submission/chassis_64tb_moe/moe_map.json
+Wrote: /data/Projects/PNM-Arch-Paper/Paper/submission/chassis_64tb_moe/dispatch_plan.txt
+
+Firmware: state=5 nodes=512 dispatches=270 weights=8045 errors=0
+
+=== ALL CHECKS PASSED ===

@@ -7,7 +7,7 @@ package pnm
 //
 // Model. The fabric is a pipeline network: pipe REGISTERS (the HFRs, the PE
 // MAC pipe, the up-spine HFRs) separated by COMBINATIONAL gate clouds (the
-// xyz_repeater demux+strip, xy_turn, node_eject, and the vc_merge
+// lxy_repeater demux+strip, xy_turn, node_eject, and the vc_merge
 // arbitration trees). A byte occupying a register is presented to its gate
 // cloud every cycle; the cloud routes it to the next register, which latches
 // it at the next cycle. This reproduces the closed-form latency exactly:
@@ -134,7 +134,7 @@ type desPkt struct {
 type desByte struct {
 	data byte
 	sop  bool // spine-wire sop (the segment the byte currently rides)
-	bsop bool // on-board sop: set by the strip at the xyz_repeater (NoB head)
+	bsop bool // on-board sop: set by the strip at the lxy_repeater (NoB head)
 	eop  bool
 	vc   byte
 	pkt  *desPkt
@@ -351,7 +351,7 @@ func (m *desModel) rptCloud(li int, b *desByte, c int) (int, bool) {
 		}
 	} else if m.rptMatch[li] && b.pkt != nil && b.pkt.li == li {
 		// matched-packet body: the first byte after the strip carries the NoB
-		// sop and the 2->3 class cut (xyz_repeater nob_vc, paper §4.3)
+		// sop and the 2->3 class cut (lxy_repeater nob_vc, paper §4.3)
 		b.bsop = m.rptStrip[li]
 		if b.bsop {
 			b.vc = VC_ONBOARD_DELIVER

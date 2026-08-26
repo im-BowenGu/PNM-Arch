@@ -14,10 +14,10 @@ import (
 // The driver runs on the PCIe-attached CPU and orchestrates:
 //   1. Model loading: parse config.json + safetensors index
 //   2. Compilation: AOT-compile the model onto the chassis (ModelCompiler)
-//   3. Weight upload: stream weight blobs through the router chip to node LPDDR6
+//   3. Weight upload: stream weight blobs through the orchestrator chip to node LPDDR6
 //   4. Inference: dispatch tokens through the MoE fabric
 //
-// In production, steps 3-4 communicate with the router chip over PCIe Gen5 x16.
+// In production, steps 3-4 communicate with the orchestrator chip over PCIe Gen5 x16.
 // In co-simulation, the driver constructs flits directly (bypassing the actual
 // PCIe link) and feeds them into the Verilog fabric via the harness.
 // ============================================================================
@@ -30,11 +30,12 @@ type Driver struct {
 	Index   *SafetensorsIndex
 	Tensors map[string]*TensorMeta
 
-	// Routing tables (pre-computed by AOT, loaded into router chip SRAM)
+	// Routing tables (pre-computed by AOT, loaded into orchestrator chip SRAM)
 	RouteBitmaps map[NodeID]uint16
 
-	// MoE expert map: (model_layer, expert_idx) → (physical_layer, module_id)
-	MoeMap map[MoeKey]NodeID
+	// MoE expert map: (model_layer, expert_idx) → all nodes hosting that expert
+	// The first entry is the primary; additional entries are replicas for hot experts.
+	MoeMap map[MoeKey][]NodeID
 
 	// Firmware state
 	FW *Firmware
@@ -108,10 +109,10 @@ func (d *Driver) computeRouteBitmaps() map[NodeID]uint16 {
 	bitmaps := make(map[NodeID]uint16)
 	for nid := range d.MC.NodeAssignments {
 		if nid.L < 0 {
-			continue // skip router chip
+			continue // skip orchestrator chip
 		}
 		layerBits := uint16(nid.L+1) << 7  // 1-based layer ID
-		distBits := uint16(nid.Y) & 0x1F   // Y distance from xyz_repeater
+		distBits := uint16(nid.Y) & 0x1F   // Y distance from lxy_repeater
 		bitmaps[nid] = layerBits | (1 << 6) | distBits  // bit 6 = Y-axis
 	}
 	return bitmaps
@@ -122,10 +123,10 @@ func (d *Driver) computeRouteBitmaps() map[NodeID]uint16 {
 // ============================================================================
 
 // computeMoeMap builds the expert→coordinate mapping from the AOT compilation.
-// For each (model_layer, expert_idx), it records which physical node holds
-// that expert's weights.
-func (d *Driver) computeMoeMap() map[MoeKey]NodeID {
-	m := make(map[MoeKey]NodeID)
+// For each (model_layer, expert_idx), it records all physical nodes that
+// hold that expert's weights (primary + any replicas).
+func (d *Driver) computeMoeMap() map[MoeKey][]NodeID {
+	m := make(map[MoeKey][]NodeID)
 	for nid, na := range d.MC.NodeAssignments {
 		if nid.L < 0 {
 			continue
@@ -133,7 +134,7 @@ func (d *Driver) computeMoeMap() map[MoeKey]NodeID {
 		for _, t := range na.Tensors {
 			if t.Role == "expert_gate_up" {
 				key := MoeKey{ModelLayer: t.ModelLayer, ExpertIdx: t.ExpertIdx}
-				m[key] = nid
+				m[key] = append(m[key], nid)
 			}
 		}
 	}
@@ -144,7 +145,7 @@ func (d *Driver) computeMoeMap() map[MoeKey]NodeID {
 // Weight upload protocol
 // ============================================================================
 
-// WeightUploadCommand is one weight blob to upload via the router chip.
+// WeightUploadCommand is one weight blob to upload via the orchestrator chip.
 // Wire format over PCIe:
 //
 //	CMD(0x01) | LAYER | MODULE | LEN_HI | LEN_LO | payload... | CRC_HI | CRC_LO
@@ -163,6 +164,11 @@ type WeightUploadCommand struct {
 // commands, preserving the AOT-assigned placement.
 func (d *Driver) BuildWeightCommands() ([]WeightUploadCommand, error) {
 	var cmds []WeightUploadCommand
+
+	type payloadKey struct {
+		layer, expert, size int
+	}
+	payloads := map[payloadKey][]byte{}
 
 	// Sort nodes for deterministic upload order
 	var nodes []NodeID
@@ -206,7 +212,12 @@ func (d *Driver) BuildWeightCommands() ([]WeightUploadCommand, error) {
 		for _, ml := range layerIndices {
 			for _, t := range byLayer[ml] {
 				// Generate synthetic weight bytes (in production, read from safetensors)
-				payload := d.generateWeightPayload(t)
+				key := payloadKey{t.ModelLayer, t.ExpertIdx, int(t.SizeBytes)}
+				payload, ok := payloads[key]
+				if !ok {
+					payload = d.generateWeightPayload(t)
+					payloads[key] = payload
+				}
 
 				cmds = append(cmds, WeightUploadCommand{
 					TargetLayer:  nid.L,
@@ -232,11 +243,17 @@ func (d *Driver) generateWeightPayload(t TensorRef) []byte {
 	if nbytes == 0 {
 		return nil
 	}
-	payload := make([]byte, nbytes)
-	for i := range payload {
-		// Deterministic pattern based on tensor identity
-		payload[i] = byte((t.ModelLayer*7 + t.ExpertIdx*3 + i*5) & 0xFF)
+	var tmpl [256]byte
+	base := (t.ModelLayer*7 + t.ExpertIdx*3) & 0xFF
+	for j := range tmpl {
+		tmpl[j] = byte((base + j*5) & 0xFF)
 	}
+	payload := make([]byte, nbytes)
+	full := nbytes / len(tmpl)
+	for k := 0; k < full; k++ {
+		copy(payload[k*len(tmpl):], tmpl[:])
+	}
+	copy(payload[full*len(tmpl):], tmpl[:nbytes%len(tmpl)])
 	return payload
 }
 
@@ -258,7 +275,7 @@ func BuildWeightFlit(cmd WeightUploadCommand) []StreamByte {
 // ============================================================================
 
 // InferDispatch is one token dispatch through the MoE fabric.
-// The driver sends the token to the router chip, which evaluates the gating
+// The driver sends the token to the orchestrator chip, which evaluates the gating
 // network and dispatches to the top-k experts.
 type InferDispatch struct {
 	TokenPayload []byte    // input hidden state
@@ -368,14 +385,17 @@ func (d *Driver) WriteRoutingTable(path string) error {
 // WriteMoeMap writes the MoE expert map as JSON.
 func (d *Driver) WriteMoeMap(path string) error {
 	schema := MoeMapSchema{}
-	for key, nid := range d.MoeMap {
-		schema.Entries = append(schema.Entries, MoeEntrySchema{
-			ModelLayer:    key.ModelLayer,
-			ExpertIdx:     key.ExpertIdx,
-			PhysicalLayer: nid.L,
-			X:             nid.X,
-			Y:             nid.Y,
-		})
+	for key, nodes := range d.MoeMap {
+		for i, nid := range nodes {
+			schema.Entries = append(schema.Entries, MoeEntrySchema{
+				ModelLayer:    key.ModelLayer,
+				ExpertIdx:     key.ExpertIdx,
+				PhysicalLayer: nid.L,
+				X:             nid.X,
+				Y:             nid.Y,
+			})
+			_ = i // primary is index 0, replicas are 1+
+		}
 	}
 	sort.Slice(schema.Entries, func(i, j int) bool {
 		a, b := schema.Entries[i], schema.Entries[j]

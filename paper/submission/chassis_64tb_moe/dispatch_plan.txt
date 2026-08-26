@@ -1,0 +1,306 @@
+# Firmware dispatch plan
+# Total dispatches: 270
+# KV cache: KV Cache: 8 layers × 4 banks × 4096 entries = 131072 total, 0 used (0.0%), 0.0 MB used / 1476.4 MB capacity, 0 evictions, 0 reloads
+#
+# Layer | Phase     | Target       | Expert | FlitBytes | CU            | KV
+#-------+-----------+--------------+--------+-----------+---------------+------
+#
+#    0  | dense     | (0, 0, 0)    | dense  |        39 | bf16_mac_array | store
+#    0  | moe       | (0, 0, 0)    | exp_0  |        39 | bf16_fma      | -
+#    0  | moe       | (0, 0, 1)    | exp_1  |        39 | bf16_fma      | -
+#    0  | moe       | (0, 0, 2)    | exp_2  |        39 | bf16_fma      | -
+#    0  | moe       | (0, 0, 3)    | exp_3  |        39 | bf16_fma      | -
+#    0  | moe       | (0, 0, 4)    | exp_4  |        39 | bf16_fma      | -
+#    0  | moe       | (0, 0, 5)    | exp_5  |        39 | bf16_fma      | -
+#    0  | moe       | (0, 0, 6)    | exp_6  |        39 | bf16_fma      | -
+#    0  | moe       | (0, 0, 7)    | exp_7  |        39 | bf16_fma      | -
+#
+#    1  | dense     | (0, 0, 1)    | dense  |        39 | bf16_mac_array | store
+#    1  | moe       | (0, 0, 0)    | exp_0  |        39 | bf16_fma      | -
+#    1  | moe       | (0, 0, 1)    | exp_1  |        39 | bf16_fma      | -
+#    1  | moe       | (0, 0, 2)    | exp_2  |        39 | bf16_fma      | -
+#    1  | moe       | (0, 0, 3)    | exp_3  |        39 | bf16_fma      | -
+#    1  | moe       | (0, 0, 4)    | exp_4  |        39 | bf16_fma      | -
+#    1  | moe       | (0, 0, 5)    | exp_5  |        39 | bf16_fma      | -
+#    1  | moe       | (0, 0, 6)    | exp_6  |        39 | bf16_fma      | -
+#    1  | moe       | (0, 0, 7)    | exp_7  |        39 | bf16_fma      | -
+#
+#    2  | dense     | (0, 0, 2)    | dense  |        39 | bf16_mac_array | store
+#    2  | moe       | (0, 0, 0)    | exp_0  |        39 | bf16_fma      | -
+#    2  | moe       | (0, 0, 1)    | exp_1  |        39 | bf16_fma      | -
+#    2  | moe       | (0, 0, 2)    | exp_2  |        39 | bf16_fma      | -
+#    2  | moe       | (0, 0, 3)    | exp_3  |        39 | bf16_fma      | -
+#    2  | moe       | (0, 0, 4)    | exp_4  |        39 | bf16_fma      | -
+#    2  | moe       | (0, 0, 5)    | exp_5  |        39 | bf16_fma      | -
+#    2  | moe       | (0, 0, 6)    | exp_6  |        39 | bf16_fma      | -
+#    2  | moe       | (0, 0, 7)    | exp_7  |        39 | bf16_fma      | -
+#
+#    3  | dense     | (0, 0, 3)    | dense  |        39 | bf16_mac_array | store
+#    3  | moe       | (0, 0, 0)    | exp_0  |        39 | bf16_fma      | -
+#    3  | moe       | (0, 0, 1)    | exp_1  |        39 | bf16_fma      | -
+#    3  | moe       | (0, 0, 2)    | exp_2  |        39 | bf16_fma      | -
+#    3  | moe       | (0, 0, 3)    | exp_3  |        39 | bf16_fma      | -
+#    3  | moe       | (0, 0, 4)    | exp_4  |        39 | bf16_fma      | -
+#    3  | moe       | (0, 0, 5)    | exp_5  |        39 | bf16_fma      | -
+#    3  | moe       | (0, 0, 6)    | exp_6  |        39 | bf16_fma      | -
+#    3  | moe       | (0, 0, 7)    | exp_7  |        39 | bf16_fma      | -
+#
+#    4  | dense     | (1, 0, 4)    | dense  |        39 | bf16_mac_array | store
+#    4  | moe       | (1, 0, 0)    | exp_0  |        39 | bf16_fma      | -
+#    4  | moe       | (1, 0, 1)    | exp_1  |        39 | bf16_fma      | -
+#    4  | moe       | (1, 0, 2)    | exp_2  |        39 | bf16_fma      | -
+#    4  | moe       | (1, 0, 3)    | exp_3  |        39 | bf16_fma      | -
+#    4  | moe       | (1, 0, 4)    | exp_4  |        39 | bf16_fma      | -
+#    4  | moe       | (1, 0, 5)    | exp_5  |        39 | bf16_fma      | -
+#    4  | moe       | (1, 0, 6)    | exp_6  |        39 | bf16_fma      | -
+#    4  | moe       | (1, 0, 7)    | exp_7  |        39 | bf16_fma      | -
+#
+#    5  | dense     | (1, 0, 5)    | dense  |        39 | bf16_mac_array | store
+#    5  | moe       | (1, 0, 0)    | exp_0  |        39 | bf16_fma      | -
+#    5  | moe       | (1, 0, 1)    | exp_1  |        39 | bf16_fma      | -
+#    5  | moe       | (1, 0, 2)    | exp_2  |        39 | bf16_fma      | -
+#    5  | moe       | (1, 0, 3)    | exp_3  |        39 | bf16_fma      | -
+#    5  | moe       | (1, 0, 4)    | exp_4  |        39 | bf16_fma      | -
+#    5  | moe       | (1, 0, 5)    | exp_5  |        39 | bf16_fma      | -
+#    5  | moe       | (1, 0, 6)    | exp_6  |        39 | bf16_fma      | -
+#    5  | moe       | (1, 0, 7)    | exp_7  |        39 | bf16_fma      | -
+#
+#    6  | dense     | (1, 0, 6)    | dense  |        39 | bf16_mac_array | store
+#    6  | moe       | (1, 0, 0)    | exp_0  |        39 | bf16_fma      | -
+#    6  | moe       | (1, 0, 1)    | exp_1  |        39 | bf16_fma      | -
+#    6  | moe       | (1, 0, 2)    | exp_2  |        39 | bf16_fma      | -
+#    6  | moe       | (1, 0, 3)    | exp_3  |        39 | bf16_fma      | -
+#    6  | moe       | (1, 0, 4)    | exp_4  |        39 | bf16_fma      | -
+#    6  | moe       | (1, 0, 5)    | exp_5  |        39 | bf16_fma      | -
+#    6  | moe       | (1, 0, 6)    | exp_6  |        39 | bf16_fma      | -
+#    6  | moe       | (1, 0, 7)    | exp_7  |        39 | bf16_fma      | -
+#
+#    7  | dense     | (1, 0, 7)    | dense  |        39 | bf16_mac_array | store
+#    7  | moe       | (1, 0, 0)    | exp_0  |        39 | bf16_fma      | -
+#    7  | moe       | (1, 0, 1)    | exp_1  |        39 | bf16_fma      | -
+#    7  | moe       | (1, 0, 2)    | exp_2  |        39 | bf16_fma      | -
+#    7  | moe       | (1, 0, 3)    | exp_3  |        39 | bf16_fma      | -
+#    7  | moe       | (1, 0, 4)    | exp_4  |        39 | bf16_fma      | -
+#    7  | moe       | (1, 0, 5)    | exp_5  |        39 | bf16_fma      | -
+#    7  | moe       | (1, 0, 6)    | exp_6  |        39 | bf16_fma      | -
+#    7  | moe       | (1, 0, 7)    | exp_7  |        39 | bf16_fma      | -
+#
+#    8  | dense     | (2, 1, 0)    | dense  |        39 | bf16_mac_array | store
+#    8  | moe       | (2, 0, 0)    | exp_0  |        39 | bf16_fma      | -
+#    8  | moe       | (2, 0, 1)    | exp_1  |        39 | bf16_fma      | -
+#    8  | moe       | (2, 0, 2)    | exp_2  |        39 | bf16_fma      | -
+#    8  | moe       | (2, 0, 3)    | exp_3  |        39 | bf16_fma      | -
+#    8  | moe       | (2, 0, 4)    | exp_4  |        39 | bf16_fma      | -
+#    8  | moe       | (2, 0, 5)    | exp_5  |        39 | bf16_fma      | -
+#    8  | moe       | (2, 0, 6)    | exp_6  |        39 | bf16_fma      | -
+#    8  | moe       | (2, 0, 7)    | exp_7  |        39 | bf16_fma      | -
+#
+#    9  | dense     | (2, 1, 1)    | dense  |        39 | bf16_mac_array | store
+#    9  | moe       | (2, 0, 0)    | exp_0  |        39 | bf16_fma      | -
+#    9  | moe       | (2, 0, 1)    | exp_1  |        39 | bf16_fma      | -
+#    9  | moe       | (2, 0, 2)    | exp_2  |        39 | bf16_fma      | -
+#    9  | moe       | (2, 0, 3)    | exp_3  |        39 | bf16_fma      | -
+#    9  | moe       | (2, 0, 4)    | exp_4  |        39 | bf16_fma      | -
+#    9  | moe       | (2, 0, 5)    | exp_5  |        39 | bf16_fma      | -
+#    9  | moe       | (2, 0, 6)    | exp_6  |        39 | bf16_fma      | -
+#    9  | moe       | (2, 0, 7)    | exp_7  |        39 | bf16_fma      | -
+#
+#   10  | dense     | (2, 1, 2)    | dense  |        39 | bf16_mac_array | store
+#   10  | moe       | (2, 0, 0)    | exp_0  |        39 | bf16_fma      | -
+#   10  | moe       | (2, 0, 1)    | exp_1  |        39 | bf16_fma      | -
+#   10  | moe       | (2, 0, 2)    | exp_2  |        39 | bf16_fma      | -
+#   10  | moe       | (2, 0, 3)    | exp_3  |        39 | bf16_fma      | -
+#   10  | moe       | (2, 0, 4)    | exp_4  |        39 | bf16_fma      | -
+#   10  | moe       | (2, 0, 5)    | exp_5  |        39 | bf16_fma      | -
+#   10  | moe       | (2, 0, 6)    | exp_6  |        39 | bf16_fma      | -
+#   10  | moe       | (2, 0, 7)    | exp_7  |        39 | bf16_fma      | -
+#
+#   11  | dense     | (2, 1, 3)    | dense  |        39 | bf16_mac_array | store
+#   11  | moe       | (2, 0, 0)    | exp_0  |        39 | bf16_fma      | -
+#   11  | moe       | (2, 0, 1)    | exp_1  |        39 | bf16_fma      | -
+#   11  | moe       | (2, 0, 2)    | exp_2  |        39 | bf16_fma      | -
+#   11  | moe       | (2, 0, 3)    | exp_3  |        39 | bf16_fma      | -
+#   11  | moe       | (2, 0, 4)    | exp_4  |        39 | bf16_fma      | -
+#   11  | moe       | (2, 0, 5)    | exp_5  |        39 | bf16_fma      | -
+#   11  | moe       | (2, 0, 6)    | exp_6  |        39 | bf16_fma      | -
+#   11  | moe       | (2, 0, 7)    | exp_7  |        39 | bf16_fma      | -
+#
+#   12  | dense     | (3, 1, 4)    | dense  |        39 | bf16_mac_array | store
+#   12  | moe       | (3, 0, 0)    | exp_0  |        39 | bf16_fma      | -
+#   12  | moe       | (3, 0, 1)    | exp_1  |        39 | bf16_fma      | -
+#   12  | moe       | (3, 0, 2)    | exp_2  |        39 | bf16_fma      | -
+#   12  | moe       | (3, 0, 3)    | exp_3  |        39 | bf16_fma      | -
+#   12  | moe       | (3, 0, 4)    | exp_4  |        39 | bf16_fma      | -
+#   12  | moe       | (3, 0, 5)    | exp_5  |        39 | bf16_fma      | -
+#   12  | moe       | (3, 0, 6)    | exp_6  |        39 | bf16_fma      | -
+#   12  | moe       | (3, 0, 7)    | exp_7  |        39 | bf16_fma      | -
+#
+#   13  | dense     | (3, 1, 5)    | dense  |        39 | bf16_mac_array | store
+#   13  | moe       | (3, 0, 0)    | exp_0  |        39 | bf16_fma      | -
+#   13  | moe       | (3, 0, 1)    | exp_1  |        39 | bf16_fma      | -
+#   13  | moe       | (3, 0, 2)    | exp_2  |        39 | bf16_fma      | -
+#   13  | moe       | (3, 0, 3)    | exp_3  |        39 | bf16_fma      | -
+#   13  | moe       | (3, 0, 4)    | exp_4  |        39 | bf16_fma      | -
+#   13  | moe       | (3, 0, 5)    | exp_5  |        39 | bf16_fma      | -
+#   13  | moe       | (3, 0, 6)    | exp_6  |        39 | bf16_fma      | -
+#   13  | moe       | (3, 0, 7)    | exp_7  |        39 | bf16_fma      | -
+#
+#   14  | dense     | (3, 1, 6)    | dense  |        39 | bf16_mac_array | store
+#   14  | moe       | (3, 0, 0)    | exp_0  |        39 | bf16_fma      | -
+#   14  | moe       | (3, 0, 1)    | exp_1  |        39 | bf16_fma      | -
+#   14  | moe       | (3, 0, 2)    | exp_2  |        39 | bf16_fma      | -
+#   14  | moe       | (3, 0, 3)    | exp_3  |        39 | bf16_fma      | -
+#   14  | moe       | (3, 0, 4)    | exp_4  |        39 | bf16_fma      | -
+#   14  | moe       | (3, 0, 5)    | exp_5  |        39 | bf16_fma      | -
+#   14  | moe       | (3, 0, 6)    | exp_6  |        39 | bf16_fma      | -
+#   14  | moe       | (3, 0, 7)    | exp_7  |        39 | bf16_fma      | -
+#
+#   15  | dense     | (3, 1, 7)    | dense  |        39 | bf16_mac_array | store
+#   15  | moe       | (3, 0, 0)    | exp_0  |        39 | bf16_fma      | -
+#   15  | moe       | (3, 0, 1)    | exp_1  |        39 | bf16_fma      | -
+#   15  | moe       | (3, 0, 2)    | exp_2  |        39 | bf16_fma      | -
+#   15  | moe       | (3, 0, 3)    | exp_3  |        39 | bf16_fma      | -
+#   15  | moe       | (3, 0, 4)    | exp_4  |        39 | bf16_fma      | -
+#   15  | moe       | (3, 0, 5)    | exp_5  |        39 | bf16_fma      | -
+#   15  | moe       | (3, 0, 6)    | exp_6  |        39 | bf16_fma      | -
+#   15  | moe       | (3, 0, 7)    | exp_7  |        39 | bf16_fma      | -
+#
+#   16  | dense     | (4, 2, 0)    | dense  |        39 | bf16_mac_array | store
+#   16  | moe       | (4, 0, 0)    | exp_0  |        39 | bf16_fma      | -
+#   16  | moe       | (4, 0, 1)    | exp_1  |        39 | bf16_fma      | -
+#   16  | moe       | (4, 0, 2)    | exp_2  |        39 | bf16_fma      | -
+#   16  | moe       | (4, 0, 3)    | exp_3  |        39 | bf16_fma      | -
+#   16  | moe       | (4, 0, 4)    | exp_4  |        39 | bf16_fma      | -
+#   16  | moe       | (4, 0, 5)    | exp_5  |        39 | bf16_fma      | -
+#   16  | moe       | (4, 0, 6)    | exp_6  |        39 | bf16_fma      | -
+#   16  | moe       | (4, 0, 7)    | exp_7  |        39 | bf16_fma      | -
+#
+#   17  | dense     | (4, 2, 1)    | dense  |        39 | bf16_mac_array | store
+#   17  | moe       | (4, 0, 0)    | exp_0  |        39 | bf16_fma      | -
+#   17  | moe       | (4, 0, 1)    | exp_1  |        39 | bf16_fma      | -
+#   17  | moe       | (4, 0, 2)    | exp_2  |        39 | bf16_fma      | -
+#   17  | moe       | (4, 0, 3)    | exp_3  |        39 | bf16_fma      | -
+#   17  | moe       | (4, 0, 4)    | exp_4  |        39 | bf16_fma      | -
+#   17  | moe       | (4, 0, 5)    | exp_5  |        39 | bf16_fma      | -
+#   17  | moe       | (4, 0, 6)    | exp_6  |        39 | bf16_fma      | -
+#   17  | moe       | (4, 0, 7)    | exp_7  |        39 | bf16_fma      | -
+#
+#   18  | dense     | (4, 2, 2)    | dense  |        39 | bf16_mac_array | store
+#   18  | moe       | (4, 0, 0)    | exp_0  |        39 | bf16_fma      | -
+#   18  | moe       | (4, 0, 1)    | exp_1  |        39 | bf16_fma      | -
+#   18  | moe       | (4, 0, 2)    | exp_2  |        39 | bf16_fma      | -
+#   18  | moe       | (4, 0, 3)    | exp_3  |        39 | bf16_fma      | -
+#   18  | moe       | (4, 0, 4)    | exp_4  |        39 | bf16_fma      | -
+#   18  | moe       | (4, 0, 5)    | exp_5  |        39 | bf16_fma      | -
+#   18  | moe       | (4, 0, 6)    | exp_6  |        39 | bf16_fma      | -
+#   18  | moe       | (4, 0, 7)    | exp_7  |        39 | bf16_fma      | -
+#
+#   19  | dense     | (4, 2, 3)    | dense  |        39 | bf16_mac_array | store
+#   19  | moe       | (4, 0, 0)    | exp_0  |        39 | bf16_fma      | -
+#   19  | moe       | (4, 0, 1)    | exp_1  |        39 | bf16_fma      | -
+#   19  | moe       | (4, 0, 2)    | exp_2  |        39 | bf16_fma      | -
+#   19  | moe       | (4, 0, 3)    | exp_3  |        39 | bf16_fma      | -
+#   19  | moe       | (4, 0, 4)    | exp_4  |        39 | bf16_fma      | -
+#   19  | moe       | (4, 0, 5)    | exp_5  |        39 | bf16_fma      | -
+#   19  | moe       | (4, 0, 6)    | exp_6  |        39 | bf16_fma      | -
+#   19  | moe       | (4, 0, 7)    | exp_7  |        39 | bf16_fma      | -
+#
+#   20  | dense     | (5, 2, 4)    | dense  |        39 | bf16_mac_array | store
+#   20  | moe       | (5, 0, 0)    | exp_0  |        39 | bf16_fma      | -
+#   20  | moe       | (5, 0, 1)    | exp_1  |        39 | bf16_fma      | -
+#   20  | moe       | (5, 0, 2)    | exp_2  |        39 | bf16_fma      | -
+#   20  | moe       | (5, 0, 3)    | exp_3  |        39 | bf16_fma      | -
+#   20  | moe       | (5, 0, 4)    | exp_4  |        39 | bf16_fma      | -
+#   20  | moe       | (5, 0, 5)    | exp_5  |        39 | bf16_fma      | -
+#   20  | moe       | (5, 0, 6)    | exp_6  |        39 | bf16_fma      | -
+#   20  | moe       | (5, 0, 7)    | exp_7  |        39 | bf16_fma      | -
+#
+#   21  | dense     | (5, 2, 5)    | dense  |        39 | bf16_mac_array | store
+#   21  | moe       | (5, 0, 0)    | exp_0  |        39 | bf16_fma      | -
+#   21  | moe       | (5, 0, 1)    | exp_1  |        39 | bf16_fma      | -
+#   21  | moe       | (5, 0, 2)    | exp_2  |        39 | bf16_fma      | -
+#   21  | moe       | (5, 0, 3)    | exp_3  |        39 | bf16_fma      | -
+#   21  | moe       | (5, 0, 4)    | exp_4  |        39 | bf16_fma      | -
+#   21  | moe       | (5, 0, 5)    | exp_5  |        39 | bf16_fma      | -
+#   21  | moe       | (5, 0, 6)    | exp_6  |        39 | bf16_fma      | -
+#   21  | moe       | (5, 0, 7)    | exp_7  |        39 | bf16_fma      | -
+#
+#   22  | dense     | (5, 2, 6)    | dense  |        39 | bf16_mac_array | store
+#   22  | moe       | (5, 0, 0)    | exp_0  |        39 | bf16_fma      | -
+#   22  | moe       | (5, 0, 1)    | exp_1  |        39 | bf16_fma      | -
+#   22  | moe       | (5, 0, 2)    | exp_2  |        39 | bf16_fma      | -
+#   22  | moe       | (5, 0, 3)    | exp_3  |        39 | bf16_fma      | -
+#   22  | moe       | (5, 0, 4)    | exp_4  |        39 | bf16_fma      | -
+#   22  | moe       | (5, 0, 5)    | exp_5  |        39 | bf16_fma      | -
+#   22  | moe       | (5, 0, 6)    | exp_6  |        39 | bf16_fma      | -
+#   22  | moe       | (5, 0, 7)    | exp_7  |        39 | bf16_fma      | -
+#
+#   23  | dense     | (5, 2, 7)    | dense  |        39 | bf16_mac_array | store
+#   23  | moe       | (5, 0, 0)    | exp_0  |        39 | bf16_fma      | -
+#   23  | moe       | (5, 0, 1)    | exp_1  |        39 | bf16_fma      | -
+#   23  | moe       | (5, 0, 2)    | exp_2  |        39 | bf16_fma      | -
+#   23  | moe       | (5, 0, 3)    | exp_3  |        39 | bf16_fma      | -
+#   23  | moe       | (5, 0, 4)    | exp_4  |        39 | bf16_fma      | -
+#   23  | moe       | (5, 0, 5)    | exp_5  |        39 | bf16_fma      | -
+#   23  | moe       | (5, 0, 6)    | exp_6  |        39 | bf16_fma      | -
+#   23  | moe       | (5, 0, 7)    | exp_7  |        39 | bf16_fma      | -
+#
+#   24  | dense     | (6, 3, 0)    | dense  |        39 | bf16_mac_array | store
+#   24  | moe       | (6, 0, 0)    | exp_0  |        39 | bf16_fma      | -
+#   24  | moe       | (6, 0, 1)    | exp_1  |        39 | bf16_fma      | -
+#   24  | moe       | (6, 0, 2)    | exp_2  |        39 | bf16_fma      | -
+#   24  | moe       | (6, 0, 3)    | exp_3  |        39 | bf16_fma      | -
+#   24  | moe       | (6, 0, 4)    | exp_4  |        39 | bf16_fma      | -
+#   24  | moe       | (6, 0, 5)    | exp_5  |        39 | bf16_fma      | -
+#   24  | moe       | (6, 0, 6)    | exp_6  |        39 | bf16_fma      | -
+#   24  | moe       | (6, 0, 7)    | exp_7  |        39 | bf16_fma      | -
+#
+#   25  | dense     | (6, 3, 1)    | dense  |        39 | bf16_mac_array | store
+#   25  | moe       | (6, 0, 0)    | exp_0  |        39 | bf16_fma      | -
+#   25  | moe       | (6, 0, 1)    | exp_1  |        39 | bf16_fma      | -
+#   25  | moe       | (6, 0, 2)    | exp_2  |        39 | bf16_fma      | -
+#   25  | moe       | (6, 0, 3)    | exp_3  |        39 | bf16_fma      | -
+#   25  | moe       | (6, 0, 4)    | exp_4  |        39 | bf16_fma      | -
+#   25  | moe       | (6, 0, 5)    | exp_5  |        39 | bf16_fma      | -
+#   25  | moe       | (6, 0, 6)    | exp_6  |        39 | bf16_fma      | -
+#   25  | moe       | (6, 0, 7)    | exp_7  |        39 | bf16_fma      | -
+#
+#   26  | dense     | (6, 3, 2)    | dense  |        39 | bf16_mac_array | store
+#   26  | moe       | (6, 0, 0)    | exp_0  |        39 | bf16_fma      | -
+#   26  | moe       | (6, 0, 1)    | exp_1  |        39 | bf16_fma      | -
+#   26  | moe       | (6, 0, 2)    | exp_2  |        39 | bf16_fma      | -
+#   26  | moe       | (6, 0, 3)    | exp_3  |        39 | bf16_fma      | -
+#   26  | moe       | (6, 0, 4)    | exp_4  |        39 | bf16_fma      | -
+#   26  | moe       | (6, 0, 5)    | exp_5  |        39 | bf16_fma      | -
+#   26  | moe       | (6, 0, 6)    | exp_6  |        39 | bf16_fma      | -
+#   26  | moe       | (6, 0, 7)    | exp_7  |        39 | bf16_fma      | -
+#
+#   27  | dense     | (6, 3, 3)    | dense  |        39 | bf16_mac_array | store
+#   27  | moe       | (6, 0, 0)    | exp_0  |        39 | bf16_fma      | -
+#   27  | moe       | (6, 0, 1)    | exp_1  |        39 | bf16_fma      | -
+#   27  | moe       | (6, 0, 2)    | exp_2  |        39 | bf16_fma      | -
+#   27  | moe       | (6, 0, 3)    | exp_3  |        39 | bf16_fma      | -
+#   27  | moe       | (6, 0, 4)    | exp_4  |        39 | bf16_fma      | -
+#   27  | moe       | (6, 0, 5)    | exp_5  |        39 | bf16_fma      | -
+#   27  | moe       | (6, 0, 6)    | exp_6  |        39 | bf16_fma      | -
+#   27  | moe       | (6, 0, 7)    | exp_7  |        39 | bf16_fma      | -
+#
+#   28  | dense     | (7, 3, 4)    | dense  |        39 | bf16_mac_array | store
+#   28  | moe       | (7, 0, 0)    | exp_0  |        39 | bf16_fma      | -
+#   28  | moe       | (7, 0, 1)    | exp_1  |        39 | bf16_fma      | -
+#   28  | moe       | (7, 0, 2)    | exp_2  |        39 | bf16_fma      | -
+#   28  | moe       | (7, 0, 3)    | exp_3  |        39 | bf16_fma      | -
+#   28  | moe       | (7, 0, 4)    | exp_4  |        39 | bf16_fma      | -
+#   28  | moe       | (7, 0, 5)    | exp_5  |        39 | bf16_fma      | -
+#   28  | moe       | (7, 0, 6)    | exp_6  |        39 | bf16_fma      | -
+#   28  | moe       | (7, 0, 7)    | exp_7  |        39 | bf16_fma      | -
+#
+#   29  | dense     | (7, 3, 5)    | dense  |        39 | bf16_mac_array | store
+#   29  | moe       | (7, 0, 0)    | exp_0  |        39 | bf16_fma      | -
+#   29  | moe       | (7, 0, 1)    | exp_1  |        39 | bf16_fma      | -
+#   29  | moe       | (7, 0, 2)    | exp_2  |        39 | bf16_fma      | -
+#   29  | moe       | (7, 0, 3)    | exp_3  |        39 | bf16_fma      | -
+#   29  | moe       | (7, 0, 4)    | exp_4  |        39 | bf16_fma      | -
+#   29  | moe       | (7, 0, 5)    | exp_5  |        39 | bf16_fma      | -
+#   29  | moe       | (7, 0, 6)    | exp_6  |        39 | bf16_fma      | -
+#   29  | moe       | (7, 0, 7)    | exp_7  |        39 | bf16_fma      | -

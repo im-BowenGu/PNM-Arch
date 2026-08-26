@@ -105,6 +105,12 @@ typedef struct {
 
 /* ── KV Cache ──────────────────────────────────────────────────────── */
 
+typedef enum {
+    KV_EVICT_NONE   = 0,   /* discard evicted entries (lossy)            */
+    KV_EVICT_DMA_BMC = 1,  /* DMA to host BMC via spine (moderate BW)    */
+    KV_EVICT_NVME   = 2,   /* write to NVMe via PCIe (persistent, high BW) */
+} kv_eviction_mode_t;
+
 typedef struct {
     uint8_t *entries;           /* flat buffer: depth * entry_bytes   */
     int      depth;
@@ -166,6 +172,9 @@ typedef struct {
 
     /* KV cache */
     kv_cache_t      kv;
+    kv_eviction_mode_t eviction_mode; /* where evicted entries go     */
+    uint64_t        nvme_kv_lba;     /* next NVMe LBA for KV overflow */
+    uint64_t        nvme_kv_lba_end; /* last LBA (exclusive)          */
 
     /* Dispatch counters */
     int dispatch_count;
@@ -222,7 +231,8 @@ void kv_cache_init(kv_cache_t *kv, int num_layers, int hidden_size);
 bool kv_store(kv_layer_t *layer, int seq_pos, const uint8_t *entry, int entry_len);
 bool kv_load(kv_layer_t *layer, int seq_pos, uint8_t *entry, int entry_len);
 bool kv_needs_offload(kv_layer_t *layer, int threshold_pct);
-int  kv_evict_oldest(kv_layer_t *layer, uint8_t *entry, int entry_len);
+int  kv_evict_oldest(kv_layer_t *layer, uint8_t *entry, int entry_len,
+                     kv_eviction_mode_t mode, firmware_t *fw);
 
 /* Compute unit helpers */
 const char *cu_type_name(cu_type_t t);

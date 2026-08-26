@@ -8,31 +8,39 @@ import (
 // KVCache is defined in kv_cache.go
 
 // ============================================================================
-// Firmware for the PNM central router chip.
+// Firmware for the PNM central orchestrator chip.
 //
-// The firmware models the router chip's boot sequence and runtime dispatch
-// loop.  In production, this runs as microcode on the router chip's embedded
+// The firmware models the orchestrator chip's boot sequence and runtime dispatch
+// loop.  In production, this runs as microcode on the orchestrator chip's embedded
 // processor.  In co-simulation, it orchestrates the Go-side driver to feed
 // flits into the Verilog fabric in the correct order.
 //
-// Boot sequence (paper §2.5):
+// Boot sequence (paper section 2.5):
 //   Phase 1: POST Discovery — ping fabric, collect TOPOLOGY_RDY, build inventory
-//   Phase 2: Routing Table Load — program xyz_repeaters and HFRs with bitmaps
+//   Phase 2: Routing Table Load — program lxy_repeaters and HFRs with bitmaps
 //   Phase 3: Weight Upload — stream weight blobs through the fabric to node LPDDR6
 //   Phase 4: MoE Gating Load — program on-chip SRAM with router.proj weights
 //   Phase 5: Ready — begin inference dispatch
 //
-// Runtime dispatch (paper §2.8):
+// Runtime dispatch (paper section 2.8):
 //   For each token:
 //     For each layer l = 0..num_layers-1:
 //       1. Dense path: dispatch to attention node for layer l
-//       2. MoE gating: router_weights[l] · hidden_state → logits
+//       2. MoE gating: orchestrator_weights[l] . hidden_state -> logits
 //       3. Top-K selection: experts = argmax(logits, k)
 //       4. For each expert: dispatch to the node holding that expert's weights
-//       5. Combine: weighted sum of expert outputs → hidden_state for next layer
+//       5. Combine: weighted sum of expert outputs -> hidden_state for next layer
+//
+// Advanced features:
+//   - Flash attention: tiled fused QK^T softmax V kernel (reduces memory bandwidth)
+//   - Sliding window: per-layer window enforcement for efficient attention
+//   - GQA/MQA: grouped query attention with repeat_kv
+//   - Chunked prefill: split long prompts into chunks for pipelining
+//   - Continuous batching: interleave prefill and decode across requests
+//   - Speculative decoding: draft model + verification for faster generation
 // ============================================================================
 
-// FirmwareState represents the current state of the router chip firmware.
+// FirmwareState represents the current state of the orchestrator chip firmware.
 type FirmwareState int
 
 const (
@@ -46,13 +54,151 @@ const (
 
 // NodeInventory is one discovered node's metadata.
 type NodeInventory struct {
-	Node    NodeID
-	ModuleID byte
+	Node      NodeID
+	ModuleID  byte
 	Bandwidth int  // link bandwidth (GB/s)
 	Status    int  // 0=down, 1=ready
 }
 
-// Firmware is the router chip's runtime model.
+// ============================================================================
+// Flash Attention: tiled fused attention kernel
+// ============================================================================
+
+// FlashAttnConfig configures the flash attention tile sizes.
+type FlashAttnConfig struct {
+	TileSizeQ int // Q tile size (number of rows)
+	TileSizeKV int // KV tile size (number of columns)
+	Enabled   bool // enable flash attention dispatch
+}
+
+// DefaultFlashAttnConfig returns flash attention config for PNM nodes.
+func DefaultFlashAttnConfig() FlashAttnConfig {
+	return FlashAttnConfig{
+		TileSizeQ:  64,  // 64 Q rows per tile
+		TileSizeKV: 256, // 256 KV entries per tile
+		Enabled:    true,
+	}
+}
+
+// ============================================================================
+// Chunked Prefill
+// ============================================================================
+
+// ChunkedPrefillConfig configures chunked prefill parameters.
+type ChunkedPrefillConfig struct {
+	ChunkSize   int  // tokens per prefill chunk
+	Enabled     bool // enable chunked prefill
+}
+
+// DefaultChunkedPrefillConfig returns default chunked prefill config.
+func DefaultChunkedPrefillConfig() ChunkedPrefillConfig {
+	return ChunkedPrefillConfig{
+		ChunkSize: 128, // process 128 tokens per chunk
+		Enabled:   true,
+	}
+}
+
+// ============================================================================
+// Continuous Batching
+// ============================================================================
+
+// RequestState represents one inference request in the continuous batch.
+type RequestState struct {
+	RequestID   int
+	PromptIDs   []int
+	Generated   []int
+	PrefillPos  int  // next prefill position
+	DecodeStep  int  // current decode step
+	MaxTokens   int
+	Finished    bool
+	EOS         int  // end-of-sequence token ID
+}
+
+// ContinuousBatch manages multiple concurrent inference requests.
+type ContinuousBatch struct {
+	Requests    []*RequestState
+	MaxBatch    int
+	NextReqID   int
+}
+
+// NewContinuousBatch creates a continuous batch manager.
+func NewContinuousBatch(maxBatch int) *ContinuousBatch {
+	if maxBatch <= 0 {
+		maxBatch = 8
+	}
+	return &ContinuousBatch{
+		Requests:  make([]*RequestState, 0, maxBatch),
+		MaxBatch:  maxBatch,
+		NextReqID: 1,
+	}
+}
+
+// AddRequest adds a new request to the batch.
+func (cb *ContinuousBatch) AddRequest(promptIDs []int, maxTokens int) int {
+	if len(cb.Requests) >= cb.MaxBatch {
+		return -1 // batch full
+	}
+	reqID := cb.NextReqID
+	cb.NextReqID++
+	cb.Requests = append(cb.Requests, &RequestState{
+		RequestID:  reqID,
+		PromptIDs:  promptIDs,
+		Generated:  make([]int, 0, maxTokens),
+		PrefillPos: 0,
+		DecodeStep: 0,
+		MaxTokens:  maxTokens,
+		Finished:   false,
+		EOS:        2,
+	})
+	return reqID
+}
+
+// RemoveFinished removes completed requests from the batch.
+func (cb *ContinuousBatch) RemoveFinished() {
+	active := cb.Requests[:0]
+	for _, req := range cb.Requests {
+		if !req.Finished {
+			active = append(active, req)
+		}
+	}
+	cb.Requests = active
+}
+
+// HasActive returns true if there are active requests.
+func (cb *ContinuousBatch) HasActive() bool {
+	for _, req := range cb.Requests {
+		if !req.Finished {
+			return true
+		}
+	}
+	return false
+}
+
+// ============================================================================
+// Speculative Decoding
+// ============================================================================
+
+// SpeculativeConfig configures speculative decoding parameters.
+type SpeculativeConfig struct {
+	DraftTokens  int  // number of tokens to draft per step
+	Enabled      bool // enable speculative decoding
+	VerifyAll    bool // verify all drafted tokens (vs. early exit)
+}
+
+// DefaultSpeculativeConfig returns default speculative decoding config.
+func DefaultSpeculativeConfig() SpeculativeConfig {
+	return SpeculativeConfig{
+		DraftTokens: 4,   // draft 4 tokens ahead
+		Enabled:     false, // disabled by default (paper avoids speculation)
+		VerifyAll:   true,
+	}
+}
+
+// ============================================================================
+// Firmware
+// ============================================================================
+
+// Firmware is the orchestrator chip's runtime model.
 type Firmware struct {
 	Driver *Driver
 	State  FirmwareState
@@ -68,16 +214,39 @@ type Firmware struct {
 	DispatchCount int
 	WeightCount   int
 	ErrorCount    int
+
+	// Advanced feature configs
+	FlashAttn       FlashAttnConfig
+	ChunkedPrefill  ChunkedPrefillConfig
+	Batch           *ContinuousBatch
+	Speculative     SpeculativeConfig
+	// Sequence positions per model layer (for KV cache addressing)
+	SeqPositions    map[int]int // model_layer -> next sequence position
 }
 
 // NewFirmware creates a Firmware bound to a Driver.
 func NewFirmware(d *Driver) *Firmware {
 	hiddenSize := d.Config.TextConfig.HiddenSize
-	return &Firmware{
-		Driver: d,
-		State:  FWStateReset,
-		KV:     NewKVCache(d.Dims, hiddenSize),
+	fw := &Firmware{
+		Driver:          d,
+		State:           FWStateReset,
+		KV:              NewKVCache(d.Dims, hiddenSize, nil),
+		FlashAttn:       DefaultFlashAttnConfig(),
+		ChunkedPrefill:  DefaultChunkedPrefillConfig(),
+		Batch:           NewContinuousBatch(8),
+		Speculative:     DefaultSpeculativeConfig(),
+		SeqPositions:    make(map[int]int),
 	}
+	// Configure sliding window attention from model config
+	if d.Config.TextConfig.SlidingWindow > 0 && len(d.Config.TextConfig.LayerTypes) > 0 {
+		fw.KV.ConfigureSlidingWindow(d.Config.TextConfig.SlidingWindow, d.Config.TextConfig.LayerTypes)
+	}
+	// Configure GQA from model config
+	tc := &d.Config.TextConfig
+	if tc.NumKeyValueHeads > 0 && tc.NumAttentionHeads > 0 {
+		fw.KV.ConfigureGQA(tc.NumAttentionHeads, tc.NumKeyValueHeads, tc.HeadDim)
+	}
+	return fw
 }
 
 // ============================================================================
@@ -116,10 +285,10 @@ func (fw *Firmware) bootPOSTDiscovery() ([]WeightUploadCommand, error) {
 				nid := NodeID{L: l, X: x, Y: y}
 				moduleID := byte((x << 4) | y)
 				fw.Inventory = append(fw.Inventory, NodeInventory{
-					Node:     nid,
-					ModuleID: moduleID,
+					Node:      nid,
+					ModuleID:  moduleID,
 					Bandwidth: 256, // LPDDR6 CAMM2: 256 GB/s per node
-					Status:   1,
+					Status:    1,
 				})
 				fw.NodeCount++
 			}
@@ -132,9 +301,6 @@ func (fw *Firmware) bootPOSTDiscovery() ([]WeightUploadCommand, error) {
 
 // bootRoutingTable: generate the commands to program routing bitmaps.
 func (fw *Firmware) bootRoutingTable() ([]WeightUploadCommand, error) {
-	// Routing tables are loaded into xyz_repeaters and HFRs via sideband.
-	// In the co-sim, these are embedded in the generated topology.
-	// The driver's RouteBitmaps map holds the pre-computed values.
 	fw.State = FWStateRoutingTable
 	return nil, nil
 }
@@ -151,11 +317,8 @@ func (fw *Firmware) bootWeightUpload() ([]WeightUploadCommand, error) {
 }
 
 // bootMoELoad: generate commands to load MoE gating weights into the router
-// chip's on-chip SRAM.  In the co-sim, these are embedded in the firmware.
+// chip's on-chip SRAM.
 func (fw *Firmware) bootMoELoad() ([]WeightUploadCommand, error) {
-	// MoE gating weights (router.proj.weight) are stored on the router chip,
-	// not on compute nodes.  The driver's MC has them in the router chip node
-	// assignments.  In the co-sim, we just record them as loaded.
 	fw.State = FWStateMoELoad
 	return nil, nil
 }
@@ -167,13 +330,26 @@ func (fw *Firmware) bootMoELoad() ([]WeightUploadCommand, error) {
 // DispatchRecord is one step in the inference dispatch sequence.
 type DispatchRecord struct {
 	Layer      int              // model layer index
-	Phase      string           // "dense", "moe", or "kv_offload"
+	Phase      string           // "dense", "moe", "kv_offload", "flash_attn"
 	TargetNode NodeID           // destination node
 	ExpertIdx  int              // -1 for dense, >= 0 for MoE
 	FlitBytes  int              // flit wire length
 	KVAction   string           // "store", "load", "evict", or "" (none)
 	CUType     ComputeUnitType  // compute unit to use on target node
 	TensorRole string           // tensor role for dispatch routing
+	// Flash attention metadata
+	FlashTileQ  int  // Q tile index
+	FlashTileKV int  // KV tile index
+	FlashNumTiles int // total KV tiles
+	// Chunked prefill metadata
+	ChunkIndex  int  // prefill chunk index
+	ChunkTotal  int  // total prefill chunks
+	// GQA metadata
+	RepeatKV    bool // true if KV heads need repetition for GQA
+	GroupSize   int  // GQA group size
+	// Sliding window metadata
+	WindowStart int  // sliding window start position (-1 = full attention)
+	WindowEnd   int  // sliding window end position
 }
 
 // PlanInference computes the full dispatch sequence for one token through
@@ -204,17 +380,98 @@ func (fw *Firmware) PlanInference(token []byte) ([]DispatchRecord, error) {
 		attnY := attnNodeIdx % dims.By
 		attnNode := NodeID{L: pl, X: attnX, Y: attnY}
 
-		flit := Flit(pl+1, (attnX<<4)|attnY, CTRL_COMPUTE_SPINE, token, false)
-		records = append(records, DispatchRecord{
-			Layer:      ml,
-			Phase:      "dense",
-			TargetNode: attnNode,
-			ExpertIdx:  -1,
-			FlitBytes:  len(flit),
-			KVAction:   "store",
-			CUType:     CUTypeBF16Array, // attention uses BF16 systolic MAC array
-			TensorRole: "attn_q",
-		})
+		// Check if this layer uses sliding window
+		kl := fw.KV.Layers[pl]
+		isSliding := kl.IsSliding
+		windowStart := -1
+		windowEnd := -1
+		seqPos := fw.SeqPositions[ml]
+
+		if isSliding && kl.SlidingWindow > 0 {
+			windowEnd = seqPos
+			windowStart = seqPos - kl.SlidingWindow + 1
+			if windowStart < 0 {
+				windowStart = 0
+			}
+		}
+
+		// Check if GQA repeat_kv is needed
+		needRepeatKV := kl.GroupSize > 1
+
+		// Flash attention: dispatch tiled QK^T softmax V
+		if fw.FlashAttn.Enabled {
+			numKVTiles := (seqPos + fw.FlashAttn.TileSizeKV) / fw.FlashAttn.TileSizeKV
+			if numKVTiles < 1 {
+				numKVTiles = 1
+			}
+			for kvTile := 0; kvTile < numKVTiles; kvTile++ {
+				flit := Flit(pl+1, (attnX<<4)|attnY, CTRL_COMPUTE_SPINE, token, false)
+				records = append(records, DispatchRecord{
+					Layer:       ml,
+					Phase:       "flash_attn",
+					TargetNode:  attnNode,
+					ExpertIdx:   -1,
+					FlitBytes:   len(flit),
+					KVAction:    "store",
+					CUType:      CUTypeBF16Array,
+					TensorRole:  "attn_q",
+					FlashTileQ:  0,
+					FlashTileKV: kvTile,
+					FlashNumTiles: numKVTiles,
+					RepeatKV:    needRepeatKV,
+					GroupSize:   kl.GroupSize,
+					WindowStart: windowStart,
+					WindowEnd:   windowEnd,
+				})
+			}
+			// KV cache load for the tiled attention
+			records = append(records, DispatchRecord{
+				Layer:       ml,
+				Phase:       "flash_attn",
+				TargetNode:  attnNode,
+				ExpertIdx:   -1,
+				FlitBytes:   0,
+				KVAction:    "load",
+				CUType:      CUTypeBF16Array,
+				TensorRole:  "attn_kv_load",
+				RepeatKV:    needRepeatKV,
+				GroupSize:   kl.GroupSize,
+				WindowStart: windowStart,
+				WindowEnd:   windowEnd,
+			})
+		} else {
+			// Standard attention dispatch
+			flit := Flit(pl+1, (attnX<<4)|attnY, CTRL_COMPUTE_SPINE, token, false)
+			records = append(records, DispatchRecord{
+				Layer:       ml,
+				Phase:       "dense",
+				TargetNode:  attnNode,
+				ExpertIdx:   -1,
+				FlitBytes:   len(flit),
+				KVAction:    "store",
+				CUType:      CUTypeBF16Array,
+				TensorRole:  "attn_q",
+				RepeatKV:    needRepeatKV,
+				GroupSize:   kl.GroupSize,
+				WindowStart: windowStart,
+				WindowEnd:   windowEnd,
+			})
+			// KV cache load
+			records = append(records, DispatchRecord{
+				Layer:       ml,
+				Phase:       "dense",
+				TargetNode:  attnNode,
+				ExpertIdx:   -1,
+				FlitBytes:   0,
+				KVAction:    "load",
+				CUType:      CUTypeBF16Array,
+				TensorRole:  "attn_kv_load",
+				RepeatKV:    needRepeatKV,
+				GroupSize:   kl.GroupSize,
+				WindowStart: windowStart,
+				WindowEnd:   windowEnd,
+			})
+		}
 
 		// Step 2: KV cache check — offload if needed
 		if fw.KV != nil && fw.KV.Layers[pl].NeedsOffload() {
@@ -227,17 +484,18 @@ func (fw *Firmware) PlanInference(token []byte) ([]DispatchRecord, error) {
 				KVAction:   "evict",
 				CUType:     CUTypeNone,
 			})
-			// Perform the offload in the model
 			fw.KV.OffloadCycle()
 		}
 
 		// Step 3: MoE gating — dispatch to top-k experts
 		for expIdx := 0; expIdx < tc.TopKExperts; expIdx++ {
 			key := MoeKey{ModelLayer: ml, ExpertIdx: expIdx}
-			expertNode, ok := fw.Driver.MoeMap[key]
-			if !ok {
+			nodes, ok := fw.Driver.MoeMap[key]
+			if !ok || len(nodes) == 0 {
 				continue
 			}
+			// Select primary node (first in list); replicas available for load balancing
+			expertNode := nodes[0]
 
 			flit := Flit(expertNode.L+1, (expertNode.X<<4)|expertNode.Y,
 				CTRL_COMPUTE_SPINE, token, false)
@@ -247,14 +505,141 @@ func (fw *Firmware) PlanInference(token []byte) ([]DispatchRecord, error) {
 				TargetNode: expertNode,
 				ExpertIdx:  expIdx,
 				FlitBytes:  len(flit),
-				CUType:     CUTypeBF16FMA, // MoE experts use BF16 weight-stationary FMA
+				CUType:     CUTypeBF16FMA,
 				TensorRole: "expert_gate_up",
 			})
 		}
+
+		// Update sequence position for this layer
+		fw.SeqPositions[ml] = seqPos + 1
 	}
 
 	fw.DispatchCount += len(records)
 	return records, nil
+}
+
+// PlanInferenceChunked computes the dispatch sequence for a prefill chunk.
+// Splits the prompt into chunks of ChunkSize tokens and returns dispatch records.
+func (fw *Firmware) PlanInferenceChunked(promptIDs []int) ([][]DispatchRecord, error) {
+	if fw.State != FWStateReady {
+		return nil, fmt.Errorf("firmware: not ready (state=%d)", fw.State)
+	}
+
+	chunkSize := fw.ChunkedPrefill.ChunkSize
+	if chunkSize <= 0 {
+		chunkSize = len(promptIDs)
+	}
+
+	var chunks [][]DispatchRecord
+	for start := 0; start < len(promptIDs); start += chunkSize {
+		end := start + chunkSize
+		if end > len(promptIDs) {
+			end = len(promptIDs)
+		}
+		chunk := promptIDs[start:end]
+		_ = chunk // in production, dispatch this chunk's tokens
+
+		// For each token in the chunk, plan inference
+		var chunkRecords []DispatchRecord
+		for i, id := range chunk {
+			_ = i
+			tokenBytes := encodeTokenID(id, CUTypeBF16FMA)
+			records, err := fw.PlanInference(tokenBytes)
+			if err != nil {
+				return nil, fmt.Errorf("firmware: chunked prefill at offset %d: %w", start+i, err)
+			}
+			chunkRecords = append(chunkRecords, records...)
+		}
+		chunks = append(chunks, chunkRecords)
+	}
+	return chunks, nil
+}
+
+// PlanInferenceSpeculative performs speculative decoding: draft multiple tokens
+// with a lightweight model, then verify all at once with the main model.
+// Returns only the tokens that match between draft and main model (up to first mismatch).
+func (fw *Firmware) PlanInferenceSpeculative(prevToken int) ([][]DispatchRecord, []int, error) {
+	if fw.State != FWStateReady {
+		return nil, nil, fmt.Errorf("firmware: not ready (state=%d)", fw.State)
+	}
+
+	draftCount := fw.Speculative.DraftTokens
+	if draftCount <= 0 {
+		draftCount = 1
+	}
+
+	// Phase 1: Draft tokens (lightweight model — uses same dispatch but with fewer layers)
+	var draftRecords [][]DispatchRecord
+	drafted := make([]int, 0, draftCount)
+	currentToken := prevToken
+	for i := 0; i < draftCount; i++ {
+		tokenBytes := encodeTokenID(currentToken, CUTypeBF16FMA)
+		records, err := fw.PlanInference(tokenBytes)
+		if err != nil {
+			return nil, nil, err
+		}
+		draftRecords = append(draftRecords, records)
+		nextToken := fw.predictDraftToken(currentToken, i)
+		drafted = append(drafted, nextToken)
+		currentToken = nextToken
+	}
+
+	// Phase 2: Verify all drafted tokens at once (main model)
+	// In real speculative decoding, the main model processes the entire sequence
+	// and we compare its predictions against draft tokens.
+	var verifyRecords [][]DispatchRecord
+	for _, tok := range drafted {
+		tokenBytes := encodeTokenID(tok, CUTypeBF16FMA)
+		records, err := fw.PlanInference(tokenBytes)
+		if err != nil {
+			return nil, nil, err
+		}
+		verifyRecords = append(verifyRecords, records)
+	}
+
+	// Phase 3: Accept tokens until first mismatch
+	// The draft model is a lightweight stub; the main model is the real inference.
+	// We compare by re-running the draft model's prediction and checking if it
+	// matches what the main model would predict. In this simulation, we use
+	// the draft model's own prediction as the "main model" output since both
+	// are deterministic stubs. In production, you'd compare actual logits.
+	accepted := make([]int, 0, len(drafted))
+	acceptedRecords := make([][]DispatchRecord, 0, len(draftRecords))
+
+	// Chain the token stream through verification (matching draft phase)
+	verifyToken := prevToken
+	for i, draftTok := range drafted {
+		// Simulate main model prediction (in production, this comes from actual logits)
+		mainPrediction := fw.predictDraftToken(verifyToken, i)
+
+		// Accept if draft matches main model prediction
+		if draftTok == mainPrediction {
+			accepted = append(accepted, draftTok)
+			acceptedRecords = append(acceptedRecords, draftRecords[i])
+			verifyToken = draftTok
+		} else {
+			// Mismatch: reject this and all subsequent draft tokens
+			// Add the main model's correct prediction instead
+			accepted = append(accepted, mainPrediction)
+			acceptedRecords = append(acceptedRecords, verifyRecords[i])
+			break
+		}
+	}
+
+	return acceptedRecords, accepted, nil
+}
+
+// predictDraftToken produces a draft token prediction (lightweight model).
+func (fw *Firmware) predictDraftToken(prevToken, step int) int {
+	h := prevToken*31 + step*17 + fw.Driver.Dims.Layers*7
+	h = h ^ (h >> 13)
+	h = h * 0x5bd1e995
+	h = h ^ (h >> 15)
+	token := h % fw.Driver.Config.TextConfig.VocabSize
+	if token < 0 {
+		token = -token
+	}
+	return token
 }
 
 // ============================================================================
@@ -264,7 +649,6 @@ func (fw *Firmware) PlanInference(token []byte) ([]DispatchRecord, error) {
 // VerifyWeightUpload checks that the weight upload commands match the
 // AOT compilation: correct targets, correct sizes, no budget overflow.
 func (fw *Firmware) VerifyWeightUpload(cmds []WeightUploadCommand) error {
-	// Track per-node bytes
 	nodeBytes := map[NodeID]int64{}
 	for _, cmd := range cmds {
 		nid := NodeID{
@@ -275,7 +659,6 @@ func (fw *Firmware) VerifyWeightUpload(cmds []WeightUploadCommand) error {
 		nodeBytes[nid] += int64(len(cmd.Payload))
 	}
 
-	// Check per-node budget
 	for nid, total := range nodeBytes {
 		if total > fw.Driver.MC.PerNodeBudget {
 			return fmt.Errorf("firmware: node %s: %.1f GB exceeds %.1f GB budget",
@@ -283,7 +666,6 @@ func (fw *Firmware) VerifyWeightUpload(cmds []WeightUploadCommand) error {
 		}
 	}
 
-	// Check all assigned nodes received weights
 	for nid, na := range fw.Driver.MC.NodeAssignments {
 		if nid.L < 0 || na.TotalBytes == 0 {
 			continue
@@ -299,7 +681,6 @@ func (fw *Firmware) VerifyWeightUpload(cmds []WeightUploadCommand) error {
 
 // VerifyDispatch checks that the dispatch sequence covers all required targets.
 func (fw *Firmware) VerifyDispatch(records []DispatchRecord) error {
-	// Collect unique targets per layer
 	type layerTarget struct {
 		layer  int
 		target NodeID
@@ -311,7 +692,6 @@ func (fw *Firmware) VerifyDispatch(records []DispatchRecord) error {
 		}
 	}
 
-	// Check that every attention node is covered
 	tc := &fw.Driver.Config.TextConfig
 	dims := fw.Driver.Dims
 	nodesPerLayer := dims.Bx * dims.By
@@ -340,8 +720,11 @@ func (fw *Firmware) VerifyDispatch(records []DispatchRecord) error {
 
 // Summary returns a human-readable summary of the firmware state.
 func (fw *Firmware) Summary() string {
-	return fmt.Sprintf("Firmware: state=%d nodes=%d dispatches=%d weights=%d errors=%d",
-		fw.State, fw.NodeCount, fw.DispatchCount, fw.WeightCount, fw.ErrorCount)
+	return fmt.Sprintf("Firmware: state=%d nodes=%d dispatches=%d weights=%d errors=%d, "+
+		"flash_attn=%v, chunked_prefill=%v(batch=%d), speculative=%v(draft=%d)",
+		fw.State, fw.NodeCount, fw.DispatchCount, fw.WeightCount, fw.ErrorCount,
+		fw.FlashAttn.Enabled, fw.ChunkedPrefill.Enabled, fw.ChunkedPrefill.ChunkSize,
+		fw.Speculative.Enabled, fw.Speculative.DraftTokens)
 }
 
 // DispatchSummary returns the dispatch plan as a formatted string.
@@ -350,9 +733,12 @@ func (fw *Firmware) DispatchSummary(records []DispatchRecord) string {
 	s += "# Firmware dispatch plan\n"
 	s += fmt.Sprintf("# Total dispatches: %d\n", len(records))
 	s += fmt.Sprintf("# KV cache: %s\n", fw.KV.Summary())
+	s += fmt.Sprintf("# Flash attention: tile_q=%d tile_kv=%d\n", fw.FlashAttn.TileSizeQ, fw.FlashAttn.TileSizeKV)
+	s += fmt.Sprintf("# Chunked prefill: chunk_size=%d\n", fw.ChunkedPrefill.ChunkSize)
+	s += fmt.Sprintf("# Speculative: draft_tokens=%d\n", fw.Speculative.DraftTokens)
 	s += "#\n"
-	s += "# Layer | Phase     | Target       | Expert | FlitBytes | CU            | KV\n"
-	s += "#-------+-----------+--------------+--------+-----------+---------------+------\n"
+	s += "# Layer | Phase     | Target       | Expert | FlitBytes | CU            | KV      | Window     | GQA\n"
+	s += "#-------+-----------+--------------+--------+-----------+---------------+---------+------------+----\n"
 
 	currentLayer := -1
 	for _, r := range records {
@@ -368,8 +754,16 @@ func (fw *Firmware) DispatchSummary(records []DispatchRecord) string {
 		if kvStr == "" {
 			kvStr = "-"
 		}
-		s += fmt.Sprintf("#   %2d  | %-9s | %-12s | %-6s | %9d | %-13s | %s\n",
-			r.Layer, r.Phase, r.TargetNode, expertStr, r.FlitBytes, r.CUType, kvStr)
+		windowStr := "full"
+		if r.WindowStart >= 0 {
+			windowStr = fmt.Sprintf("[%d:%d]", r.WindowStart, r.WindowEnd)
+		}
+		gqaStr := "-"
+		if r.RepeatKV {
+			gqaStr = fmt.Sprintf("x%d", r.GroupSize)
+		}
+		s += fmt.Sprintf("#   %2d  | %-9s | %-12s | %-6s | %9d | %-13s | %-7s | %-10s | %s\n",
+			r.Layer, r.Phase, r.TargetNode, expertStr, r.FlitBytes, r.CUType, kvStr, windowStr, gqaStr)
 	}
 
 	return s

@@ -1,6 +1,6 @@
 # PNM Fabric HDL Sketch
 
-Verilog-2005 model of the **routing fabric**, **compute units**, and **co-simulation harness** from the paper *Bypassing the HBM Wall*.
+Verilog-2005 model of the **routing fabric**, **compute units**, and **co-simulation harness** from the paper *Breaking the HBM wall*.
 
 ## Modules
 
@@ -9,8 +9,8 @@ Verilog-2005 model of the **routing fabric**, **compute units**, and **co-simula
 | `pnm_defs.vh` | Packet format, VC constants, routing-bitmap layout |
 | `hfr.v` | Hardware Flit Repeater (1-stage elastic pipe) + layer bit-mask comparator (monitor) |
 | `flit_gate.v` | Combinational-match wormhole demux (shared core); match value/mask are runtime inputs (pre-loaded routing table) |
-| `vc_merge.v` | 2-in/1-out round-robin packet-atomic merge for the reverse (egress) paths — node TX → Y-up → X-up → xyz_repeater → up-spine (paper §2.9/§4.3) |
-| `xyz_repeater.v` | Z-axis repeater (layer ID compare + strip); compare driven by the routing bitmap's LAYER field; egress port wraps `vc_merge` |
+| `vc_merge.v` | 2-in/1-out round-robin packet-atomic merge for the reverse (egress) paths — node TX → Y-up → X-up → lxy_repeater → up-spine (paper §2.9/§4.3) |
+| `lxy_repeater.v` | Z-axis repeater (layer ID compare + strip); compare driven by the routing bitmap's LAYER field; egress port wraps `vc_merge` |
 | `xy_turn.v` | X→Y dimension-order turn gate |
 | `node_eject.v` | Y-lane → node DMA eject gate (forwards `MODULE_ID` as DEST) |
 | `crc16.v` | Byte-wise CRC-16/CCITT-FALSE (init `0xFFFF`, poly `0x1021`) |
@@ -31,6 +31,11 @@ Verilog-2005 model of the **routing fabric**, **compute units**, and **co-simula
 | `kv_cache_bank.v` | KV cache bank (on-node) |
 | `kv_offload.v` | KV cache offload engine |
 | `moe_gating.v` | MoE expert gating (top-K selection) |
+| **Memory \& interconnect** | |
+| `lpddr6_camm.v` | Behavioral LPCAMM2/LPDDR6 module (banked array, CAS-latency wait, refresh scheduler); parameterized across DDR4/DDR5 SODIMM timing generations |
+| `sodimm_ctrl.v` | Banked DDR SODIMM memory controller — per-bank open-row tracker + ACT/PRE/CAS FSM (ST\_WAIT\_RAS → ST\_PRE → ST\_RCD → ST\_CAS), tRAS enforcement, byte-enable masking, refresh storms; same bus contract as `lpddr6_camm` |
+| `pcb_link.v` | PCB trace model — shift-register delay line of ⌈DELAY\_NS/10⌉ cycles, SOP/EOP/data bit-exact; `pcb_triple_link` wraps three for X/Y/spine populations |
+| `optical_link.v` | Optical inter-chassis link — dual-clock async elastic FIFO (gray-coded pointers, 2-FF syncs) + propagation pipe (E/O + fiber at 4.9 ns/m + O/E); SOP/EOP preserved end-to-end; write-side occupancy-threshold flow control; `optical_pair` composes two links into one bidirectional port |
 | **Testbenches** | |
 | `tb_fabric.v` | Functional smoke test |
 | `tb_load.v` | 500-packet load test with backpressure + real CRC-16 injection |
@@ -45,6 +50,11 @@ Verilog-2005 model of the **routing fabric**, **compute units**, and **co-simula
 | `tb_int8_mac.v` | INT8 MAC testbench |
 | `tb_router_chip.v` | Router chip testbench |
 | `tb_moe_gating.v` | MoE gating testbench |
+| `tb_dma_lpddr6.v` | Host→BMC→DMA→LPDDR6 roundtrip with mid-transfer refresh stalls |
+| `tb_sodimm_lpddr.v` | Same protocol stack across DDR4/DDR5/LPDDR6 timing generations |
+| `tb_pcb_link.v` | PCB links: passthrough, exact latency, 200-packet stream, triple-link counter |
+| `tb_sodimm_ctrl.v` | Banked DDR controller: cold/hit/conflict latencies in closed form, tRAS wait insertion, BE masking, refresh storm, DDR4 vs DDR5 sweep (`*** SODIMM CTRL TEST PASSED ***`) |
+| `tb_optical_link.v` | Optical links: idle latency (PROP\_CYCLES+5), burst SOP/EOP alignment, flood zero-loss, gapped packets, async 100↔80 MHz CDC with ready deassertion, bidirectional pair (`*** OPTICAL LINK TEST PASSED ***`) |
 
 ## Compute units
 
@@ -70,7 +80,7 @@ bias-add (0) and BF16 FMA (1) compute paths.
 
 ```
 wire format:
-byte 0 : LAYER_ID            (stripped by xyz_repeater)
+byte 0 : LAYER_ID            (stripped by lxy_repeater)
 byte 1 : MODULE_ID = {X[3:0], Y[3:0]}   (forwarded to DMA as DEST)
 byte 2 : CTRL      = {vc_class[1:0], op[1:0], rsvd[3:0]}
 byte 3 : LEN_LO
@@ -81,7 +91,7 @@ last 2 : CRC-16, covers [MODULE_ID, CTRL, LEN_LO, LEN_HI, payload]
 node DMA stream (= wire[1:]): DEST | CTRL | LEN_LO | LEN_HI | payload | CRC_HI | CRC_LO
 ```
 
-The `xyz_repeater` strips `LAYER_ID`; `node_eject` **forwards** `MODULE_ID` unchanged,
+The `lxy_repeater` strips `LAYER_ID`; `node_eject` **forwards** `MODULE_ID` unchanged,
 so the DMA stream's DEST byte and the two trailing CRC bytes are all inside CRC
 coverage. The doorbell requires the landed byte count to equal `LEN+6` (DEST + CTRL +
 2 length + payload + 2 CRC), the CRC to validate, and DEST to equal the node's own
@@ -96,10 +106,10 @@ that drives its bit-mask comparator:
 bit [10:7] LAYER : 4-bit layer ID, 1-based (matches LAYER_ID low nibble)
 bit [6]    AXIS  : 0 = X, 1 = Y
 bit [5]    SIGN  : 0 = +, 1 = -
-bit [4:0]  DIST  : hop distance from the xyz_repeater
+bit [4:0]  DIST  : hop distance from the lxy_repeater
 ```
 
-- `xyz_repeater` masks `in_data ^ {4'h0, LAYER}` with `0x0F` to gate flits onto the
+- `lxy_repeater` masks `in_data ^ {4'h0, LAYER}` with `0x0F` to gate flits onto the
   board (spine `LAYER_ID` bytes are 1..8, so the low nibble is the value).
 - `hfr` repeats the same layer mask as a pure-combinational monitor (`layer_match`);
   the data path stays a stateless pipe.
@@ -147,26 +157,104 @@ Requires [Icarus Verilog](https://steveicarus.github.io/iverilog/) (`iverilog`, 
 ```bash
 # smoke test
 iverilog -g2005 -o tb_fabric.out \
-  hfr.v flit_gate.v vc_merge.v xyz_repeater.v xy_turn.v node_eject.v tb_fabric.v
+  hfr.v flit_gate.v vc_merge.v lxy_repeater.v xy_turn.v node_eject.v tb_fabric.v
 vvp tb_fabric.out
 
 # load test (500 packets, mixed destinations, 25–100% sink ready, real CRC-16)
 iverilog -g2005 -o tb_load.out \
-  hfr.v flit_gate.v vc_merge.v xyz_repeater.v xy_turn.v node_eject.v tb_load.v
+  hfr.v flit_gate.v vc_merge.v lxy_repeater.v xy_turn.v node_eject.v tb_load.v
 vvp tb_load.out
 
 # doorbell DMA (pe_tile_stub → doorbell, CRC-16 end-to-end)
 iverilog -g2005 -o tb_doorbell.out \
   tb_doorbell.v pe_tile_stub.v doorbell.v crc16.v
 vvp tb_doorbell.out
+
+# banked DDR SODIMM controller (row hit/miss/conflict latencies, refresh)
+iverilog -g2005 -o tb_sodimm_ctrl.out sodimm_ctrl.v tb_sodimm_ctrl.v
+vvp tb_sodimm_ctrl.out
+
+# optical inter-chassis links (async CDC FIFO + fiber propagation pipe)
+iverilog -g2005 -o tb_optical_link.out optical_link.v tb_optical_link.v
+vvp tb_optical_link.out
 ```
 
 On NixOS:
 
 ```bash
 nix-shell -p iverilog --run \
-  'iverilog -g2005 -o tb_load.out hfr.v flit_gate.v vc_merge.v xyz_repeater.v xy_turn.v node_eject.v tb_load.v && vvp tb_load.out'
+  'iverilog -g2005 -o tb_load.out hfr.v flit_gate.v vc_merge.v lxy_repeater.v xy_turn.v node_eject.v tb_load.v && vvp tb_load.out'
 ```
+
+## Memory and interconnect models
+
+### SODIMM memory controller (`sodimm_ctrl.v`)
+
+Unlike the behavioral `lpddr6_camm`, this is a real banked DDR controller. A
+per-bank tracker holds each bank's open row and tRAS countdown and drives an
+ACT/PRE/CAS micro-FSM (`ST_WAIT_RAS → ST_PRE → ST_RCD → ST_CAS`):
+
+| Access type | Latency |
+|-------------|---------|
+| Row hit (bank open, row matches) | CL |
+| Cold access (bank closed) | tRCD + CL |
+| Row conflict (bank open, different row) | tRP + tRCD + CL |
+
+tRAS is enforced between activate and precharge: a conflict arriving before
+tRAS expires waits out the remainder first, so latencies stay deterministic
+under any command order.
+
+Byte-enable write masking, a refresh scheduler that closes all banks and drops
+`bus_ready` for `REFRESH_BURST` cycles every `REFRESH_CYCLES` (accepted
+commands are never dropped), and rd/wr/refresh activity counters complete the
+model. The bus interface is pin-compatible with `lpddr6_camm` (valid/ready,
+byte address, ready-down-until-complete), so it sits behind `pnm_arb`
+unchanged. The testbench drives three profiles — DDR4-like (CL/tRCD/tRP 15,
+tRAS 38), DDR5-like (36/36/36/44), and a short-interval refresh-storm stress
+unit — and checks exact closed-form latencies, tRAS wait insertion under
+immediate conflict, 64-word readback integrity, partial-byte-write masking
+(expects `DE11BE11`), stall accounting through the storm, and the DDR4-vs-DDR5
+cold-latency ordering.
+
+### Optical inter-chassis link (`optical_link.v`)
+
+The physical realization of the paper's multi-chassis scale-out path
+(§3.7/§4.4). Each unidirectional link is:
+
+```
+tx domain                          rx domain
+-----------                        ----------
+tx_data/valid/sop/eop ──▶ [async elastic FIFO] ──▶ [prop pipe ×PROP_CYCLES] ──▶ rx_data/valid/sop/eop
+        ▲              gray ptrs, 2-FF syncs      E/O + fiber + O/E          registered output
+        │
+   tx_ready = (gray-synced occupancy < READY_LIMIT)
+   READY_LIMIT = FIFO_DEPTH − PROP_CYCLES − 2
+```
+
+- **Framing**: every entry packs `{sop, eop, data}`, so packet delimiters
+  survive the hop bit-exactly and the fabric wire format is unchanged on both
+  sides.
+- **Clocking**: write and read pointers cross domains as Gray codes through
+  two-flop synchronizers; the read side pops unconditionally whenever
+  non-empty, keeping the return path entirely out of the crossing domain.
+- **Flow control**: all backpressure is write-side. `tx_ready` deasserts at
+  the occupancy threshold, which guarantees no overflow for any
+  ready-respecting producer; a protocol violation latches sticky
+  `overflow_err`. Word and packet counters instrument both directions.
+- **Latency**: `PROP_CYCLES = ceil((E_O_NS + FIBER_M×4.9 + O_E_NS)/10)` models
+  conversion + transit at the physical speed of light in glass (≈4.9 ns/m) +
+  recovery. Measured idle-link latency is `PROP_CYCLES + 5` cycles at 100 MHz
+  (synchronizer visibility + pop + pipe + output register): 7 cycles for the
+  default 2 m span.
+- **`optical_pair`**: two links sharing one reset form a bidirectional
+  chassis-to-chassis port with an aggregate packet counter.
+
+`tb_optical_link.v` instantiates a same-clock unit, an asynchronous 100↔80 MHz
+pair, and a bidirectional pair, and verifies: exact idle latency, a 200-word
+burst byte-exact with SOP/EOP alignment, a 600-word back-to-back flood with
+zero loss and no overflow flag, sparse packets across idle gaps held in order,
+the async crossing under sustained overload (observing `tx_ready` deassert),
+and simultaneous bidirectional traffic.
 
 ## Scope / non-goals
 
@@ -304,7 +392,7 @@ BOOT_RESET → BOOT_POST_PING → BOOT_POST_WAIT → BOOT_LOAD_RT
 |-------|-------|-------------|
 | POST discovery | `BOOT_POST_PING` | Sends ping flits to all nodes, latches `topology_rdy` bits for 256 cycles |
 | | `BOOT_POST_WAIT` | Popcount of latched bits → node count |
-| Routing table | `BOOT_LOAD_RT` | Programs xyz_repeaters/HFRs with 11-bit routing bitmaps via PCIe cmd `0x02` |
+| Routing table | `BOOT_LOAD_RT` | Programs lxy_repeaters/HFRs with 11-bit routing bitmaps via PCIe cmd `0x02` |
 | Weight upload | `BOOT_LOAD_WT` | Receives weight blobs from host via PCIe cmd `0x01`, wraps in wormhole flits, injects into spine |
 | MoE gating | `BOOT_LOAD_MOE` | Loads `router.proj.weight` into on-chip SRAM + expert→(layer, module) map via PCIe cmd `0x03` |
 | Ready | `BOOT_READY` | Normal operation; `boot_done` asserted |

@@ -50,6 +50,8 @@ const (
 	CUTypeFP64ALU                  // fp64_alu: FP64 multi-function ALU
 	CUTypeFP32Array                // fp32_mac_array: FP32 systolic MAC array
 	CUTypeINT8ALU                  // int8_alu: INT8 ALU (add/sub/shift)
+	CUTypeINT4MAC                  // int4_mac: INT4 Multiply-Accumulate (2x density vs INT8)
+	CUTypeINT4Array                // int4_mac_array: INT4 systolic MAC array (4x density vs BF16)
 )
 
 // String returns the human-readable name of the compute unit type.
@@ -77,6 +79,10 @@ func (t ComputeUnitType) String() string {
 		return "fp32_mac_array"
 	case CUTypeINT8ALU:
 		return "int8_alu"
+	case CUTypeINT4MAC:
+		return "int4_mac"
+	case CUTypeINT4Array:
+		return "int4_mac_array"
 	default:
 		return "none"
 	}
@@ -89,6 +95,8 @@ func (t ComputeUnitType) DTypeBytes() int {
 		return 2
 	case CUTypeINT8MAC, CUTypeINT8ALU:
 		return 1
+	case CUTypeINT4MAC, CUTypeINT4Array:
+		return 1 // 4-bit values packed 2 per byte
 	case CUTypeFP32FMA, CUTypeFP32ALU, CUTypeFP32Array:
 		return 4
 	case CUTypeFP64FMA, CUTypeFP64ALU:
@@ -258,7 +266,7 @@ func (mc *ModelCompiler) EmitProgram() string {
 	for _, nid := range nodes {
 		na := mc.NodeAssignments[nid]
 		if na.TotalBytes == 0 || nid.L == -1 {
-			continue // skip empty nodes and the router chip
+			continue // skip empty nodes and the orchestrator chip
 		}
 
 		// Emit kernel directives for each model layer on this node
@@ -344,7 +352,7 @@ func (mc *ModelCompiler) EmitSchema() string {
 	for _, nid := range nodes {
 		na := mc.NodeAssignments[nid]
 		if nid.L == -1 {
-			b.WriteString(fmt.Sprintf("# central router chip: %d layers, %d tensors, %.0f MB\n",
+			b.WriteString(fmt.Sprintf("# central orchestrator chip: %d layers, %d tensors, %.0f MB\n",
 				len(na.Layers), len(na.Tensors), float64(na.TotalBytes)/1e6))
 			continue
 		}
@@ -359,12 +367,12 @@ func (mc *ModelCompiler) EmitSchema() string {
 			nid.L, nid.X, nid.Y, moduleID, routeBitmap, role))
 	}
 
-	b.WriteString("\n# Routing Bitmaps (for xyz_repeater and HFR load)\n")
+	b.WriteString("\n# Routing Bitmaps (for lxy_repeater and HFR load)\n")
 	b.WriteString("# Each repeater/hfr receives: 11-bit bitmap [LAYER:4][AXIS:1][SIGN:1][DIST:5]\n")
 	b.WriteString("# layer_bits = (LAYER_ID) << 7, AXIS=0 (X), SIGN=0 (+), DIST=0\n")
 	for l := 0; l < mc.Dims.Layers; l++ {
 		bitmap := (l + 1) << 7
-		b.WriteString(fmt.Sprintf("# layer %d: xyz_repeater bitmap = 11'h%03x\n", l, bitmap))
+		b.WriteString(fmt.Sprintf("# layer %d: lxy_repeater bitmap = 11'h%03x\n", l, bitmap))
 	}
 
 	b.WriteString("\n# Spine Sizing\n")

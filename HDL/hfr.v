@@ -12,7 +12,7 @@
 // Carries a bit-mask comparator as a read-only monitor: it compares the
 // packet head byte's low nibble against the LAYER field of the pre-loaded
 // routing bitmap (paper §2.1).  On the spine it flags a flit for this board
-// leaking past its xyz_repeater; on-board streams it is informational.  The
+// leaking past its lxy_repeater; on-board streams it is informational.  The
 // comparator never affects the data path — the HFR stays a stateless pipe.
 // =============================================================================
 module hfr (
@@ -39,7 +39,7 @@ module hfr (
     //   [10:7] LAYER : 4-bit layer ID, 1-based
     //   [6]    AXIS  : 0 = X, 1 = Y
     //   [5]    SIGN  : 0 = +, 1 = -
-    //   [4:0]  DIST  : hop distance from the xyz_repeater
+    //   [4:0]  DIST  : hop distance from the lxy_repeater
     input  wire [10:0] route_bitmap,
     // bit-mask comparator output (monitor only): asserts on the head byte
     // when (in_data[3:0] == route_bitmap[10:7])

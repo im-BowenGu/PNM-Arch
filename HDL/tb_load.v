@@ -95,7 +95,7 @@ module tb_load;
     wire [7:0] n2_d;  wire n2_v,  n2_s,  n2_e,  n2_r;
     wire [1:0] i1p_vc, n1_vc, h1_vc, i2p_vc, n2_vc;
 
-    xyz_repeater rpt1 (
+    lxy_repeater rpt1 (
         .clk(clk), .rst_n(rst_n),
         .route_bitmap(11'h080),   // layer 1: {0001, X, +, 0}
         .spin_data(inj_data), .spin_valid(inj_valid), .spin_sop(inj_sop),
@@ -125,7 +125,7 @@ module tb_load;
         .out_vc(h1_vc)
     );
 
-    xyz_repeater rpt2 (
+    lxy_repeater rpt2 (
         .clk(clk), .rst_n(rst_n),
         .route_bitmap(11'h100),   // layer 2: {0010, X, +, 0}
         .spin_data(h1_d), .spin_valid(h1_v), .spin_sop(h1_s),

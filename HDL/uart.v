@@ -43,6 +43,7 @@ module uart #(
 
     // Baud rate generator
     localparam BAUD_DIV = CLK_FREQ / BAUD_RATE;
+    localparam [15:0] BAUD_MAX = BAUD_DIV[15:0] - 16'd1;
     reg [15:0] baud_cnt;
     reg        baud_tick;
 
@@ -51,7 +52,7 @@ module uart #(
             baud_cnt  <= 16'h0;
             baud_tick <= 1'b0;
         end else begin
-            if (baud_cnt >= BAUD_DIV[$clog2(BAUD_DIV)-1:0] - 1) begin
+            if (baud_cnt >= BAUD_MAX) begin
                 baud_cnt  <= 0;
                 baud_tick <= 1'b1;
             end else begin
@@ -130,8 +131,12 @@ module uart #(
             rx_bit_cnt <= rx_bit_cnt + 1;
             rx_shift[rx_bit_cnt[2:0]] <= rx_pin;
             if (rx_bit_cnt == 4'd8) begin
-                rdr       <= rx_shift;
-                lsr[0]    <= 1'b1;  // data ready
+                if (rx_pin) begin  // stop bit check
+                    rdr       <= rx_shift;
+                    lsr[0]    <= 1'b1;  // data ready
+                end else begin
+                    lsr[3]    <= 1'b1;  // framing error
+                end
                 rx_busy   <= 1'b0;
             end
         end
@@ -160,7 +165,7 @@ module uart #(
                 case (addr[4:0])
                     5'h00: rdata <= {24'h0, rdr};     // RDR read
                     5'h04: rdata <= {24'h0, ier};     // IER read
-                    5'h08: rdata <= {24'h0, 6'h0, lsr[7:6], lsr[4:3], lsr[0]};  // IIR
+                    5'h08: rdata <= {24'h0, lsr[7:6], 2'b00, 3'b000, lsr[0]};  // IIR
                     5'h0C: rdata <= {24'h0, lcr};     // LCR read
                     5'h10: rdata <= {24'h0, mcr};    // MCR read
                     5'h14: rdata <= {24'h0, lsr};    // LSR read
@@ -184,6 +189,9 @@ module uart #(
             // Clear data-ready when RDR is read
             if (valid && !we && addr[4:0] == 5'h00)
                 lsr[0] <= 1'b0;
+            // Clear framing error when LSR is read
+            if (valid && !we && addr[4:0] == 5'h14)
+                lsr[3] <= 1'b0;
         end
     end
 

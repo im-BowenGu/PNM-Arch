@@ -50,8 +50,9 @@ func SimDir() string {
 	return "."
 }
 
-var FABRIC = []string{"flit_gate.v", "hfr.v", "xyz_repeater.v", "xy_turn.v",
-	"node_eject.v", "vc_merge.v", "crc16.v", "bf16_fma.v", "pe_tile_stub.v", "kv_cache_bank.v"}
+var FABRIC = []string{"flit_gate.v", "hfr.v", "lxy_repeater.v", "xy_turn.v",
+	"node_eject.v", "vc_merge.v", "core/crc16.v", "core/bf16_fma.v", "core/pe_tile_stub.v",
+	"core/weight_dequant.v", "core/int8_mac.v", "core/int4_mac_array.v", "kv_cache_bank.v"}
 
 // PE_PIPE_DELAY: the generated node MAC stub (pe_tile_stub.v,
 // MULT_LATENCY=2) adds two pipe cycles between the eject and the node DMA
@@ -62,7 +63,7 @@ const PE_PIPE_DELAY = 2
 // CTRL field: {vc_class[7:6], op[5:4], rsvd[3:0]}  (HDL/pnm_defs.vh)
 //
 // The CTRL field carries the class a flit was ASSEMBLED with (its origin
-// class, paper §4.3): 2 for router-injected requests and pass-through
+// class, paper §4.3): 2 for orchestrator-injected requests and pass-through
 // (spine descent), 0 for node-egress results. rsvd[0] is the return flag:
 // when set, pe_tile_stub re-emits the transformed body as a result flit
 // (paper §2.9 result egress).
@@ -76,7 +77,7 @@ const (
 const (
 	VC_BOARD_EGRESS    = 0 // class 0: node TX onto the board egress merge
 	VC_SPINE_ASCENT    = 1 // class 1: up-spine after the repeater merge
-	VC_SPINE_DESCENT   = 2 // class 2: spine descent (router injection)
+	VC_SPINE_DESCENT   = 2 // class 2: spine descent (orchestrator injection)
 	VC_ONBOARD_DELIVER = 3 // class 3: on-board X/Y lanes after the 2->3 cut
 )
 
@@ -357,7 +358,7 @@ func (p *Program) InjectPassthrough(payload []byte) {
 }
 
 // InjectPassthroughVC injects a pass-through flit on the given origin class.
-// Class-3 flits never eject (xyz_repeater vc_accept is class 2) — they ride
+// Class-3 flits never eject (lxy_repeater vc_accept is class 2) — they ride
 // to the chassis tail unchanged: the fabric's VC isolation check (paper §4.3).
 func (p *Program) InjectPassthroughVC(payload []byte, vc byte) {
 	wf := WithVC(Flit(0xFF, 0xEE, CTRL_FORWARD_SPINE, payload, false), vc)
@@ -446,7 +447,7 @@ func ScenarioSweep(layers, bx, by int, seed int64) *Program {
 // flag, so the egress merge trees and the class 0->1 ascent deliver result
 // echoes to the chassis root — interleaved with class-2 and class-3
 // pass-through flits that must ride the spine to the tail unchanged (class
-// 3 never ejects: xyz_repeater vc_accept is class 2). prog.MixedVC disables
+// 3 never ejects: lxy_repeater vc_accept is class 2). prog.MixedVC disables
 // the blanket class-2 inject assertion; the per-port class checks in Verify
 // cover the isolation claim. Echoes are layer-0 only: non-root slices'
 // tail_up is a physical dead-end that must stay empty.
@@ -803,7 +804,7 @@ func Verify(delivered *Delivery, prog *Program, nodes []NodeID, lBase int, expec
 	}
 
 	// byte conservation: every injected byte delivered exactly once or
-	// stripped as a source-routing header byte (LAYER at the xyz_repeater --
+	// stripped as a source-routing header byte (LAYER at the lxy_repeater --
 	// the MODULE_ID is forwarded to the DMA as the CRC-protected DEST field,
 	// so exactly 1 byte per routed packet is stripped)
 	totalDelivered := 0

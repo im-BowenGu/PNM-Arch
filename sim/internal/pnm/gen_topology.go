@@ -10,7 +10,7 @@ import (
 //
 // Mirrors Paper.MD §2.1–2.2:
 //
-//   - a single vertical spine of xyz_repeater gates (LAYER_ID compare), each
+//   - a single vertical spine of lxy_repeater gates (LAYER_ID compare), each
 //     stage HFR-repeatered
 //   - a thin X/Y board per layer, hung off the spine via the repeater NoB port
 //   - dimension-order on-board routing: an X-lane of xy_turn gates; every
@@ -24,7 +24,7 @@ import (
 //     spine descent, 2->3 at the repeater attachment, class 0 on board
 //     egress, 0->1 at the up-spine merge
 //   - optional KV cache banks per layer (paper §2.6, §3.3): when kvcache is
-//     true, a kv_cache_bank sits between each xyz_repeater's NoB output and
+//     true, a kv_cache_bank sits between each lxy_repeater's NoB output and
 //     the first xy_turn gate, providing per-layer FIFO KV storage with
 //     offload/reclaim interfaces tied off (active control via kv_offload.v)
 //
@@ -120,7 +120,7 @@ func GenTopology(layerIDs []int, bx, by int, biases map[NodeID]int, kvcache bool
 	a(fmt.Sprintf("// layers=%s  board_x=%d  board_y=%d  nodes=%d", pyIntList(layerIDs), bx, by, nodes))
 	a("//")
 	a("// Architecture (Paper.MD §2.1–2.2):")
-	a("//   single-spine tree fabric: xyz_repeater (LAYER_ID compare) repeatered by HFR")
+	a("//   single-spine tree fabric: lxy_repeater (LAYER_ID compare) repeatered by HFR")
 	a("//   on-board dimension-order: X-lane of xy_turn gates -> Y-lanes of node_eject")
 	a("//   every (layer, x, y) ejects to a node DMA / virtual execution unit port")
 	a("//   reverse path: node TX echoes -> vc_merge trees -> spine ascent -> root")
@@ -130,7 +130,7 @@ func GenTopology(layerIDs []int, bx, by int, biases map[NodeID]int, kvcache bool
 	a(");")
 	a("")
 	a("    // ================= spine =================================")
-	a("    // each stage: xyz_repeater compares LAYER_ID; HFR repeats the pass path")
+	a("    // each stage: lxy_repeater compares LAYER_ID; HFR repeats the pass path")
 
 	for _, l := range layerIDs {
 		a(fmt.Sprintf("    wire [7:0] sp_%d_data;  wire sp_%d_valid, sp_%d_sop, sp_%d_eop, sp_%d_ready; wire [1:0] sp_%d_vc;", l, l, l, l, l, l))
@@ -150,7 +150,7 @@ func GenTopology(layerIDs []int, bx, by int, biases map[NodeID]int, kvcache bool
 			spin = fmt.Sprintf("q_%d", layerIDs[pos-1])
 		}
 		a(fmt.Sprintf("    // -- layer %d repeater (strips LAYER_ID on match) -----------", l))
-		a(fmt.Sprintf("    xyz_repeater u_rpt_%d (", l))
+		a(fmt.Sprintf("    lxy_repeater u_rpt_%d (", l))
 		a(fmt.Sprintf("        .route_bitmap(11'h%03x),  // layer %d, X, +, 0", (l+1)<<7, l+1))
 		a("        .clk(clk), .rst_n(rst_n),")
 		a(fmt.Sprintf("        .spin_data(%s_data), .spin_valid(%s_valid), .spin_sop(%s_sop),", spin, spin, spin))

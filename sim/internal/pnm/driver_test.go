@@ -96,18 +96,25 @@ func TestDriverFirmware(t *testing.T) {
 		t.Errorf("dispatch verification: %v", err)
 	}
 
-	// Check dispatch counts: 30 dense + 30*8 MoE = 270
-	denseCount := 0
+	// Check dispatch counts: flash_attn store + load + 30*8 MoE = 30+30+240 = 300
+	storeCount := 0
+	loadCount := 0
 	moeCount := 0
 	for _, r := range records {
-		if r.Phase == "dense" {
-			denseCount++
-		} else {
+		switch {
+		case r.KVAction == "load":
+			loadCount++
+		case r.KVAction == "store":
+			storeCount++
+		default:
 			moeCount++
 		}
 	}
-	if denseCount != tc.NumHiddenLayers {
-		t.Errorf("expected %d dense dispatches, got %d", tc.NumHiddenLayers, denseCount)
+	if storeCount != tc.NumHiddenLayers {
+		t.Errorf("expected %d KV store dispatches, got %d", tc.NumHiddenLayers, storeCount)
+	}
+	if loadCount != tc.NumHiddenLayers {
+		t.Errorf("expected %d KV load dispatches, got %d", tc.NumHiddenLayers, loadCount)
 	}
 	if moeCount != tc.NumHiddenLayers*tc.TopKExperts {
 		t.Errorf("expected %d MoE dispatches, got %d",
