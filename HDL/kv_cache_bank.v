@@ -3,7 +3,7 @@
 // =============================================================================
 // kv_cache_bank — Per-direction KV cache bank (Paper §2.6, §3.3)
 //
-// Attached between the xyz_repeater's NoB output and the first xy_turn gate.
+// Attached between the lxy_repeater's NoB output and the first xy_turn gate.
 // Each layer has 4 banks (one per board direction: X+, X-, Y+, Y-) to provide
 // distributed KV storage with low-latency access from the fabric.
 //
@@ -62,6 +62,7 @@ module kv_cache_bank #(
     output wire        kv_full,
     output wire        kv_empty,
     output wire [ADDR_BITS-1:0] kv_occupancy,
+    output wire [ADDR_BITS-1:0] kv_read_ptr,
     input  wire        evict_req,
     input  wire [ADDR_BITS-1:0] evict_addr,
     output wire        evict_done,
@@ -93,6 +94,7 @@ module kv_cache_bank #(
     assign kv_full  = full_r;
     assign kv_empty = empty_r;
     assign kv_occupancy = occupancy;
+assign kv_read_ptr = read_ptr;
 
     // =========================================================================
     // KV store SRAM
@@ -168,7 +170,7 @@ module kv_cache_bank #(
     assign kv_load_eop   = kv_load_sram_eop;
 
     assign kv_store_ready = (ks_state == KS_DATA);
-    assign reclaim_ready = (ks_state == KS_IDLE) && !full_r;
+    assign reclaim_ready = (ks_state == KS_IDLE);
 
     // Eviction interface
     reg        evict_done_r;
@@ -381,7 +383,7 @@ module kv_cache_bank #(
                     ((kv_store_valid && kv_store_ready && kv_store_eop) ||
                      (reclaim_valid && reclaim_req && reclaim_eop));
                 load_done = (kl_state == KL_DATA) && !evict_req && nob_out_ready && (kl_pos == kl_len - 1);
-                evict_done = (kl_state == KL_DATA) && !evict_req && (kl_pos == kl_len);
+                evict_done = (kl_state == KL_DATA) && evict_req && (kl_pos == kl_len - 1);
 
                 if (store_done && !load_done && !evict_done) begin
                     write_ptr <= (write_ptr == BANK_DEPTH-1) ? 0 : write_ptr + 1;
@@ -390,10 +392,7 @@ module kv_cache_bank #(
                     empty_r   <= 0;
                     ks_state  <= KS_IDLE;
                 end else if (load_done) begin
-                    read_ptr <= (read_ptr == BANK_DEPTH-1) ? 0 : read_ptr + 1;
-                    occupancy <= occupancy - 1;
-                    full_r    <= 0;
-                    empty_r   <= (occupancy <= 1);
+                    // KV_LOAD is a read — does NOT decrement occupancy
                     kl_out_eop       <= 1;
                     kv_load_sram_eop <= 1;
                     kl_state  <= KL_IDLE;

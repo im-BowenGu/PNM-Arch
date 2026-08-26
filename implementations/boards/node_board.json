@@ -1,0 +1,79 @@
+{
+  "schema": "pnm-assembly/v1",
+  "name": "node_board",
+  "description": "One compute node: 40mm ingress trace, MAC stub with gated clock + synced reset, 20mm egress trace. Exercises pcb_link profiles, clk_gate, rst_sync, and pe_tile_stub.",
+
+  "clock": { "period_ns": 10 },
+  "reset_cycles": 4,
+  "run_cycles": 2000,
+
+  "external": [
+    { "name": "clk",          "dir": "input",  "width": 1 },
+    { "name": "rst_n",        "dir": "input",  "width": 1 },
+    { "name": "scan_en",      "dir": "input",  "width": 1 },
+    { "name": "in_tdata",     "dir": "input",  "width": 8 },
+    { "name": "in_tvalid",    "dir": "input",  "width": 1 },
+    { "name": "in_tsop",      "dir": "input",  "width": 1 },
+    { "name": "in_teop",      "dir": "input",  "width": 1 },
+    { "name": "out_tdata",    "dir": "output", "width": 8 },
+    { "name": "out_tvalid",   "dir": "output", "width": 1 },
+    { "name": "out_tsop",     "dir": "output", "width": 1 },
+    { "name": "out_teop",     "dir": "output", "width": 1 }
+  ],
+
+  "components": [
+    { "instance": "u_rst_sync", "module": "rst_sync",
+      "params": { "STAGES": 2 } },
+
+    { "instance": "u_cg",       "module": "clk_gate" },
+
+    { "instance": "u_in_trace", "module": "pcb_link",
+      "params": { "WIDTH": 8, "DELAY_NS": 40,
+                  "DRIVE_MA": 8, "IMPEDANCE_OH": 50,
+                  "NAME": "\"board_40mm_in\"" } },
+
+    { "instance": "u_pe",       "module": "pe_tile_stub",
+      "params": { "MULT_LATENCY": 2, "KERNEL_CONST": "8'h07",
+                  "REQ_MODULE": "8'hEE" } },
+
+    { "instance": "u_out_trace", "module": "pcb_link",
+      "params": { "WIDTH": 8, "DELAY_NS": 20,
+                  "DRIVE_MA": 8, "IMPEDANCE_OH": 50,
+                  "NAME": "\"camm2_20mm_out\"" } }
+  ],
+
+  "connections": [
+    { "from": "ext.clk",                 "to": ["u_rst_sync.clk", "u_cg.clk"] },
+    { "from": "ext.rst_n",               "to": ["u_rst_sync.rst_n_async"] },
+    { "from": "ext.scan_en",             "to": ["u_cg.scan_en"] },
+
+    { "from": "u_rst_sync.rst_n_sync",   "to": ["u_cg.enable", "u_pe.rst_n", "u_in_trace.rst_n", "u_out_trace.rst_n"] },
+    { "from": "u_cg.gclk",               "to": ["u_pe.clk", "u_in_trace.clk", "u_out_trace.clk"] },
+
+    { "from": "ext.in_tdata",            "to": ["u_in_trace.tx_data"] },
+    { "from": "ext.in_tvalid",           "to": ["u_in_trace.tx_valid"] },
+    { "from": "ext.in_tsop",             "to": ["u_in_trace.tx_sop"] },
+    { "from": "ext.in_teop",             "to": ["u_in_trace.tx_eop"] },
+
+    { "from": "u_in_trace.rx_data",      "to": ["u_pe.s_axis_tdata"] },
+    { "from": "u_in_trace.rx_valid",     "to": ["u_pe.s_axis_tvalid"] },
+    { "from": "u_in_trace.rx_sop",       "to": ["u_pe.s_axis_tstart"] },
+    { "from": "u_in_trace.rx_eop",       "to": ["u_pe.s_axis_tlast"] },
+
+    { "from": "u_pe.m_axis_tdata",       "to": ["u_out_trace.tx_data"] },
+    { "from": "u_pe.m_axis_tvalid",      "to": ["u_out_trace.tx_valid"] },
+    { "from": "u_pe.m_axis_tstart",      "to": ["u_out_trace.tx_sop"] },
+    { "from": "u_pe.m_axis_tlast",       "to": ["u_out_trace.tx_eop"] },
+
+    { "from": "u_out_trace.rx_data",     "to": ["ext.out_tdata"] },
+    { "from": "u_out_trace.rx_valid",    "to": ["ext.out_tvalid"] },
+    { "from": "u_out_trace.rx_sop",      "to": ["ext.out_tsop"] },
+    { "from": "u_out_trace.rx_eop",      "to": ["ext.out_teop"] }
+  ],
+
+  "tieoffs": [
+    { "to": "u_pe.routing_bitmap",   "value": "11'h080" },
+    { "to": "u_pe.m_axis_tready",    "value": "1'b1" },
+    { "to": "u_pe.m_axis_tx_tready", "value": "1'b0" }
+  ]
+}

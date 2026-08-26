@@ -8,6 +8,11 @@
 // entries are evicted back to the host.  When the host needs them again, they
 // are reloaded via the weight upload path.
 //
+// EVICTION_TARGET compile-time parameter selects the eviction destination:
+//   0 = discard (entries read from bank but not persisted)
+//   1 = BMC DMA (entries sent to host BMC over spine fabric)
+//   2 = NVMe (entries sent via spine to orchestrator chip's PCIe NVMe bridge)
+//
 // Eviction priority: oldest entries first (FIFO order matching the bank's
 // write_ptr).  The controller uses the compile-time latency budget to
 // estimate when evicted entries will be needed again and preloads them.
@@ -17,14 +22,15 @@
 //   2. Controller reads oldest entry from bank via evict_req/evict_addr
 //   3. Controller wraps evicted data in a KV_OFFLOAD flit and injects into spine
 //   4. Host receives the flit and stores it in DRAM
-//   5. When needed, host sends KV_RELOAD flit through the router chip
+//   5. When needed, host sends KV_RELOAD flit through the orchestrator chip
 //   6. Controller captures the reload data and writes it back into the bank
 // =============================================================================
 module kv_offload #(
-    parameter NUM_LAYERS  = 4,
-    parameter BANK_DEPTH  = 1024,
-    parameter ADDR_BITS   = 10,
-    parameter ENTRY_BYTES = 512        // bytes per KV entry (payload frame size)
+    parameter NUM_LAYERS    = 4,
+    parameter BANK_DEPTH    = 1024,
+    parameter ADDR_BITS     = 10,
+    parameter ENTRY_BYTES   = 512,       // bytes per KV entry (payload frame size)
+    parameter EVICTION_TARGET = 0        // 0=discard, 1=BMC DMA, 2=NVMe
 )(
     input  wire        clk,
     input  wire        rst_n,
@@ -34,6 +40,7 @@ module kv_offload #(
     input  wire        kv_full_0,
     input  wire        kv_empty_0,
     input  wire [ADDR_BITS-1:0] kv_occupancy_0,
+    input  wire [ADDR_BITS-1:0] kv_read_ptr_0,
     output wire        evict_req_0,
     output wire [ADDR_BITS-1:0] evict_addr_0,
     input  wire        evict_done_0,
@@ -51,6 +58,7 @@ module kv_offload #(
     input  wire        kv_full_1,
     input  wire        kv_empty_1,
     input  wire [ADDR_BITS-1:0] kv_occupancy_1,
+    input  wire [ADDR_BITS-1:0] kv_read_ptr_1,
     output wire        evict_req_1,
     output wire [ADDR_BITS-1:0] evict_addr_1,
     input  wire        evict_done_1,
@@ -68,6 +76,7 @@ module kv_offload #(
     input  wire        kv_full_2,
     input  wire        kv_empty_2,
     input  wire [ADDR_BITS-1:0] kv_occupancy_2,
+    input  wire [ADDR_BITS-1:0] kv_read_ptr_2,
     output wire        evict_req_2,
     output wire [ADDR_BITS-1:0] evict_addr_2,
     input  wire        evict_done_2,
@@ -85,6 +94,7 @@ module kv_offload #(
     input  wire        kv_full_3,
     input  wire        kv_empty_3,
     input  wire [ADDR_BITS-1:0] kv_occupancy_3,
+    input  wire [ADDR_BITS-1:0] kv_read_ptr_3,
     output wire        evict_req_3,
     output wire [ADDR_BITS-1:0] evict_addr_3,
     input  wire        evict_done_3,
@@ -200,9 +210,10 @@ module kv_offload #(
     assign reclaim_ready_2 = (oc_bank == 2) ? spine_in_ready : 1'b0;
     assign reclaim_ready_3 = (oc_bank == 3) ? spine_in_ready : 1'b0;
 
-    // Spine injection: eviction flits use VC_SPINE_ASCENT (class 1)
+    // Spine injection: eviction flits use VC_SPINE_ASCENT (class 1).
+    // EVICTION_TARGET: 0=discard (no spine write), 1=BMC DMA, 2=NVMe via PCIe.
     assign spine_out_data  = evict_data_active;
-    assign spine_out_valid = (oc_state == OC_EVICT_WR) ? evict_valid_active : 1'b0;
+    assign spine_out_valid = (oc_state == OC_EVICT_WR && EVICTION_TARGET != 0) ? evict_valid_active : 1'b0;
     assign spine_out_sop   = (oc_pos == 0);
     assign spine_out_eop   = (oc_pos == ENTRY_BYTES - 1);
     assign spine_out_vc    = 2'b01;  // VC_SPINE_ASCENT
@@ -232,25 +243,25 @@ module kv_offload #(
                         oc_bank   <= 0;
                         oc_state  <= OC_EVICT_RD;
                         evict_req_r <= 1;
-                        evict_addr_r <= 0; // evict oldest (addr 0)
+                        evict_addr_r <= kv_read_ptr_0;
                         oc_pos    <= 0;
                     end else if (kv_full_1) begin
                         oc_bank   <= 1;
                         oc_state  <= OC_EVICT_RD;
                         evict_req_r <= 1;
-                        evict_addr_r <= 0;
+                        evict_addr_r <= kv_read_ptr_1;
                         oc_pos    <= 0;
                     end else if (kv_full_2) begin
                         oc_bank   <= 2;
                         oc_state  <= OC_EVICT_RD;
                         evict_req_r <= 1;
-                        evict_addr_r <= 0;
+                        evict_addr_r <= kv_read_ptr_2;
                         oc_pos    <= 0;
                     end else if (kv_full_3) begin
                         oc_bank   <= 3;
                         oc_state  <= OC_EVICT_RD;
                         evict_req_r <= 1;
-                        evict_addr_r <= 0;
+                        evict_addr_r <= kv_read_ptr_3;
                         oc_pos    <= 0;
                     end else if (spine_in_valid && spine_in_sop) begin
                         // Reclaim: host reloading a KV entry into the bank
@@ -268,13 +279,20 @@ module kv_offload #(
                 end
 
                 OC_EVICT_WR: begin
-                    // Stream evicted data to spine
-                    if (spine_out_ready && evict_valid_active) begin
-                        oc_pos <= oc_pos + 1;
-                        if (oc_pos == ENTRY_BYTES - 1) begin
-                            evictions <= evictions + 1;
-                            oc_state  <= OC_IDLE;
+                    // Stream evicted data to spine (BMC DMA or NVMe via PCIe)
+                    // EVICTION_TARGET=0 (discard): skip spine write
+                    if (EVICTION_TARGET != 0) begin
+                        if (spine_out_ready && evict_valid_active) begin
+                            oc_pos <= oc_pos + 1;
+                            if (oc_pos == ENTRY_BYTES - 1) begin
+                                evictions <= evictions + 1;
+                                oc_state  <= OC_IDLE;
+                            end
                         end
+                    end else begin
+                        // Discard mode: entry was read from bank but not persisted
+                        evictions <= evictions + 1;
+                        oc_state  <= OC_IDLE;
                     end
                 end
 

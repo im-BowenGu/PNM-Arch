@@ -64,7 +64,7 @@ func CompileModelIR(cfg *ModelConfig, idx *SafetensorsIndex) (*ModelIR, error) {
 			ModelOp{ModelLayer: ml, Role: "dense_down", ExpertIdx: -1, CUType: CUTypeBF16FMA, DType: "BF16", SizeBytes: inter * h * 2},
 			ModelOp{ModelLayer: ml, Role: "input_layernorm", ExpertIdx: -1, CUType: CUTypeFP32ALU, DType: "FP32", SizeBytes: h * 2},
 			ModelOp{ModelLayer: ml, Role: "post_attention_layernorm", ExpertIdx: -1, CUType: CUTypeFP32ALU, DType: "FP32", SizeBytes: h * 2},
-			ModelOp{ModelLayer: ml, Role: "router_weights", ExpertIdx: -1, CUType: CUTypeBF16FMA, DType: "BF16", SizeBytes: int64(tc.NumExperts) * h * 2},
+			ModelOp{ModelLayer: ml, Role: "orchestrator_weights", ExpertIdx: -1, CUType: CUTypeBF16FMA, DType: "BF16", SizeBytes: int64(tc.NumExperts) * h * 2},
 		)
 		for e := 0; e < tc.NumExperts; e++ {
 			ir.Ops = append(ir.Ops,
@@ -194,7 +194,7 @@ func (ir *ModelIR) PopulateSchema(dims Dims) (*ModelCompiler, error) {
 	modelLayersPerPhysical := int(math.Ceil(float64(tc.NumHiddenLayers) / float64(dims.Layers)))
 	physLayerOf := func(ml int) int { return ml / modelLayersPerPhysical }
 
-	routerNID := NodeID{L: -1, X: -1, Y: -1}
+	orchestratorNID := NodeID{L: -1, X: -1, Y: -1}
 
 	tensorName := func(op ModelOp) string {
 		switch op.Role {
@@ -220,7 +220,7 @@ func (ir *ModelIR) PopulateSchema(dims Dims) (*ModelCompiler, error) {
 			return fmt.Sprintf("layers.%d.input_layernorm", op.ModelLayer)
 		case "post_attention_layernorm":
 			return fmt.Sprintf("layers.%d.post_attention_layernorm", op.ModelLayer)
-		case "router_weights":
+		case "orchestrator_weights":
 			return fmt.Sprintf("layers.%d.router.proj", op.ModelLayer)
 		default:
 			return op.Role
@@ -253,8 +253,8 @@ func (ir *ModelIR) PopulateSchema(dims Dims) (*ModelCompiler, error) {
 
 	for _, op := range ir.Ops {
 		switch {
-		case op.Role == "router_weights":
-			place(routerNID, op)
+		case op.Role == "orchestrator_weights":
+			place(orchestratorNID, op)
 		case op.Role == "embedding":
 			if shardEmbedded {
 				continue
@@ -353,4 +353,99 @@ func (ir *ModelIR) PopulateSchema(dims Dims) (*ModelCompiler, error) {
 	}
 
 	return mc, nil
+}
+
+// ReplicateHotExperts duplicates hot-expert weights across multiple nodes to
+// reduce spine traffic. Experts with dispatch frequency above the threshold
+// are replicated to `replicas` additional nodes. This directly implements the
+// paper's claim that α drops from 7/8 to ~1/4 with hot-expert replication.
+//
+// The function modifies NodeAssignments in place: it clones the expert's
+// TensorRef entries to the replica nodes and returns a map from
+// (model_layer, expert_idx) → []NodeID listing all nodes hosting that expert.
+func (mc *ModelCompiler) ReplicateHotExperts(
+	freq map[MoeKey]int,
+	threshold int,
+	replicas int,
+	dims Dims,
+) map[MoeKey][]NodeID {
+	if replicas < 1 {
+		replicas = 1
+	}
+
+	// Build reverse map: node → set of expert keys it hosts
+	nodeExperts := make(map[NodeID][]MoeKey)
+	for nid, na := range mc.NodeAssignments {
+		if nid.L < 0 {
+			continue
+		}
+		for _, t := range na.Tensors {
+			if t.Role == "expert_gate_up" || t.Role == "expert_down" {
+				key := MoeKey{ModelLayer: t.ModelLayer, ExpertIdx: t.ExpertIdx}
+				nodeExperts[nid] = append(nodeExperts[nid], key)
+			}
+		}
+	}
+
+	// Track all nodes for each expert (original + replicas)
+	expertNodes := make(map[MoeKey][]NodeID)
+	for key, count := range freq {
+		// Find the original node
+		var origNode NodeID
+		for nid, keys := range nodeExperts {
+			for _, k := range keys {
+				if k == key {
+					origNode = nid
+					goto found
+				}
+			}
+		}
+		continue
+	found:
+		expertNodes[key] = []NodeID{origNode}
+
+		if count < threshold {
+			continue
+		}
+
+		// Replicate to N additional nodes
+		physLayer := origNode.L
+		nodesPerLayer := dims.Bx * dims.By
+		replicated := 0
+		for n := 0; n < nodesPerLayer && replicated < replicas; n++ {
+			candidate := NodeID{L: physLayer, X: n / dims.By, Y: n % dims.By}
+			if candidate == origNode {
+				continue
+			}
+			// Check if candidate has budget
+			na := mc.NodeAssignments[candidate]
+			origNa := mc.NodeAssignments[origNode]
+			origExpertBytes := int64(0)
+			for _, t := range origNa.Tensors {
+				if (t.Role == "expert_gate_up" || t.Role == "expert_down") &&
+					t.ModelLayer == key.ModelLayer && t.ExpertIdx == key.ExpertIdx {
+					origExpertBytes += t.SizeBytes
+				}
+			}
+			if na.TotalBytes+origExpertBytes > mc.PerNodeBudget {
+				continue
+			}
+
+			// Clone expert tensors to candidate
+			for _, t := range origNa.Tensors {
+				if (t.Role == "expert_gate_up" || t.Role == "expert_down") &&
+					t.ModelLayer == key.ModelLayer && t.ExpertIdx == key.ExpertIdx {
+					clone := t
+					clone.Name = fmt.Sprintf("%s.replica_%d", t.Name, replicated+1)
+					na.Tensors = append(na.Tensors, clone)
+					na.TotalBytes += t.SizeBytes
+				}
+			}
+			mc.NodeAssignments[candidate] = na
+			expertNodes[key] = append(expertNodes[key], candidate)
+			replicated++
+		}
+	}
+
+	return expertNodes
 }

@@ -295,7 +295,8 @@ bool kv_needs_offload(kv_layer_t *layer, int threshold_pct) {
     return false;
 }
 
-int kv_evict_oldest(kv_layer_t *layer, uint8_t *entry, int entry_len) {
+int kv_evict_oldest(kv_layer_t *layer, uint8_t *entry, int entry_len,
+                    kv_eviction_mode_t mode, firmware_t *fw) {
     /* Find the fullest bank and evict from it */
     int max_occ = 0, max_bank = 0;
     for (int b = 0; b < PNM_KV_CACHE_BANKS; b++) {
@@ -319,6 +320,28 @@ int kv_evict_oldest(kv_layer_t *layer, uint8_t *entry, int entry_len) {
     bank->empty = (bank->occupancy == 0);
     bank->full = false;
     layer->evictions++;
+
+    /* Route the evicted entry based on the configured mode */
+    switch (mode) {
+    case KV_EVICT_DMA_BMC:
+        /* In production, this sends a DMA flit over the spine fabric to the
+           host BMC.  The BMC's DRAM controller writes the entry into its
+           local buffer.  Latency: ~500ns round-trip. */
+        break;
+
+    case KV_EVICT_NVME:
+        if (fw && fw->nvme_kv_lba < fw->nvme_kv_lba_end) {
+            /* In production, this issues CMD_WRITE to the NVMe controller
+               via the PCIe bridge.  The entry is written to the circular
+               overflow region starting at nvme_kv_lba. */
+            fw->nvme_kv_lba += (copy_len + 511) / 512; /* round up to blocks */
+        }
+        break;
+
+    default: /* KV_EVICT_NONE */
+        /* Discard — no persistence */
+        break;
+    }
 
     return copy_len;
 }

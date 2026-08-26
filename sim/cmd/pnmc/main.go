@@ -122,6 +122,41 @@ func runPNMC(argv []string) int {
 	return code
 }
 
+func startCPUProfile(path string) func() {
+	if path == "" {
+		return func() {}
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "cpuprofile: %v\n", err)
+		os.Exit(2)
+	}
+	if err := pprof.StartCPUProfile(f); err != nil {
+		fmt.Fprintf(os.Stderr, "cpuprofile: %v\n", err)
+		f.Close()
+		os.Exit(2)
+	}
+	return func() {
+		pprof.StopCPUProfile()
+		f.Close()
+	}
+}
+
+func writeHeapProfile(path string) {
+	if path == "" {
+		return
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "memprofile: %v\n", err)
+		return
+	}
+	if err := pprof.WriteHeapProfile(f); err != nil {
+		fmt.Fprintf(os.Stderr, "memprofile: %v\n", err)
+	}
+	f.Close()
+}
+
 func runCompileModel(argv []string) int {
 	fs := flag.NewFlagSet("compile-model", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
@@ -134,15 +169,20 @@ func runCompileModel(argv []string) int {
 	fs.IntVar(&by, "y", 4, "Y rows per board")
 	fs.IntVar(&by, "board-y", 4, "Y rows per board")
 	outDir := fs.String("o", ".", "output directory for generated files")
+	cpuProf := fs.String("cpuprofile", "", "write CPU profile to file")
+	memProf := fs.String("memprofile", "", "write heap profile to file")
+	modelDir, argv := splitProgram(argv)
 	if err := fs.Parse(argv); err != nil {
 		return 2
 	}
-	if fs.NArg() < 1 {
+	if modelDir == "" {
 		fmt.Fprintln(os.Stderr, "usage: pnmc compile-model <model_dir> [-l layers] [-x bx] [-y by] [-o output]")
 		fmt.Fprintln(os.Stderr, "  model_dir must contain config.json and model.safetensors.index.json")
 		return 2
 	}
-	modelDir := fs.Arg(0)
+	stopCPU := startCPUProfile(*cpuProf)
+	defer writeHeapProfile(*memProf)
+	defer stopCPU()
 
 	fmt.Printf("Loading model from %s...\n", modelDir)
 
@@ -225,16 +265,21 @@ func runDriver(argv []string) int {
 	fs.IntVar(&by, "y", 4, "Y rows per board")
 	fs.IntVar(&by, "board-y", 4, "Y rows per board")
 	outDir := fs.String("o", ".", "output directory for routing table and MoE map")
+	cpuProf := fs.String("cpuprofile", "", "write CPU profile to file")
+	memProf := fs.String("memprofile", "", "write heap profile to file")
+	modelDir, argv := splitProgram(argv)
 	if err := fs.Parse(argv); err != nil {
 		return 2
 	}
-	if fs.NArg() < 1 {
+	if modelDir == "" {
 		fmt.Fprintln(os.Stderr, "usage: pnmc run-driver <model_dir> [-l layers] [-x bx] [-y by] [-o output]")
 		fmt.Fprintln(os.Stderr, "  Runs the full driver + firmware boot sequence and generates")
 		fmt.Fprintln(os.Stderr, "  routing_table.json, moe_map.json, and dispatch_plan.txt")
 		return 2
 	}
-	modelDir := fs.Arg(0)
+	stopCPU := startCPUProfile(*cpuProf)
+	defer writeHeapProfile(*memProf)
+	defer stopCPU()
 
 	fmt.Printf("=== PNM Driver + Firmware ===\n")
 	fmt.Printf("Model: %s\n", modelDir)

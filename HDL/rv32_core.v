@@ -1,7 +1,7 @@
 // =============================================================================
 // rv32_core — RV32IMA Multi-Cycle Processor Core
 //
-// Minimal RISC-V core for BMC/router integration. Targets Linux/Redox
+// Minimal RISC-V core for BMC/orchestrator integration. Targets Linux/Redox
 // compatibility on nommu configurations (Flat Mode / physical addressing).
 //
 // Supported ISA:
@@ -323,7 +323,7 @@ module rv32_core #(
                         OP_JALR:   imm <= {{20{ir[31]}}, ir[31:20]};
                         OP_BRANCH: imm <= {{19{ir[31]}}, ir[31], ir[7], ir[30:25], ir[11:8], 1'b0};
                         OP_LOAD:   imm <= {{20{ir[31]}}, ir[31:20]};
-                        OP_STORE:  imm <= {{19{ir[31]}}, ir[31:25], ir[11:7]};
+                        OP_STORE:  imm <= {{20{ir[31]}}, ir[31:25], ir[11:7]};
                         OP_OP_IMM: imm <= {{20{ir[31]}}, ir[31:20]};
                         default:   imm <= 32'h0;
                     endcase
@@ -407,9 +407,7 @@ module rv32_core #(
                         end
 
                         OP_FENCE: begin
-                            state <= S_FETCH;
-                            pc <= pc + 32'd4;
-                            csr_minstret <= csr_minstret + 64'd1;
+                            state <= S_WRITEBACK;
                         end
 
                         OP_SYSTEM: begin
@@ -475,13 +473,27 @@ module rv32_core #(
                 // =============================================================
                 S_MEMORY: begin
                     if (!mem_addr_valid) begin
-                        // Cycle 1: present address
+                        // Cycle 1: present address with correct byte enables
                         bus_addr_r   <= alu_result;
-                        bus_wdata    <= rs2_val;
                         bus_we       <= (opcode == OP_STORE);
-                        bus_be       <= 4'hF;
                         bus_valid    <= 1'b1;
                         mem_addr_valid <= 1'b1;
+
+                        // Sub-word store: shift data into correct byte lane
+                        case (funct3)
+                            3'b000: begin // SB
+                                bus_wdata <= {24'h0, rs2_val[7:0]} << (alu_result[1:0] * 8);
+                                bus_be    <= (4'b0001 << alu_result[1:0]);
+                            end
+                            3'b001: begin // SH
+                                bus_wdata <= {16'h0, rs2_val[15:0]} << (alu_result[1] * 16);
+                                bus_be    <= (4'b0011 << (alu_result[1] * 2));
+                            end
+                            default: begin // SW
+                                bus_wdata <= rs2_val;
+                                bus_be    <= 4'hF;
+                            end
+                        endcase
                     end else begin
                         // Cycle 2+: wait for ready
                         if (bus_ready) begin
@@ -502,7 +514,16 @@ module rv32_core #(
                 S_WRITEBACK: begin
                     if (rd_we && rd_addr != 5'h0) begin
                         case (opcode)
-                            OP_LOAD: rf[rd_addr] <= mem_result;
+                            OP_LOAD: begin
+                                case (funct3)
+                                    3'b000: rf[rd_addr] <= {{24{mem_result[7]}},  mem_result[7:0]};   // LB
+                                    3'b001: rf[rd_addr] <= {{16{mem_result[15]}}, mem_result[15:0]};  // LH
+                                    3'b010: rf[rd_addr] <= mem_result;                                // LW
+                                    3'b100: rf[rd_addr] <= {24'h0, mem_result[7:0]};                 // LBU
+                                    3'b101: rf[rd_addr] <= {16'h0, mem_result[15:0]};                // LHU
+                                    default: rf[rd_addr] <= mem_result;
+                                endcase
+                            end
                             default: rf[rd_addr] <= alu_result;
                         endcase
                     end
@@ -519,6 +540,8 @@ module rv32_core #(
                 // =============================================================
                 S_CSR_MRET: begin
                     pc    <= pc_next;
+                    csr_mstatus[3] <= csr_mstatus[7];  // MIE = MPIE
+                    csr_mstatus[7] <= 1'b1;            // MPIE = 1
                     state <= S_FETCH;
                 end
 

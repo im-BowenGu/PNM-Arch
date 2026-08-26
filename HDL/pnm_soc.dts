@@ -1,0 +1,164 @@
+// Device Tree Source for the PNM orchestrator_sbc SoC
+//
+// Memory map derived from HDL/orchestrator_sbc.v.
+// This DTS describes the chip-level peripherals for the RISC-V
+// BMC/Router SoC that sits at the spine root of the PNM chassis.
+//
+// Compile with: dtc -I dts -O dtb -o pnm_soc.dtb pnm_soc.dts
+// Test with:    dtc -I dts -O dtb pnm_soc.dts | dtc -I dtb -O dts
+
+/dts-v1/;
+/ {
+    model = "PNM Router SBC SoC";
+    compatible = "pnm,router-sbc";
+    #address-cells = <1>;
+    #size-cells = <1>;
+
+    chosen {
+        bootargs = "earlycon=uart0,115200 console=ttyS0,115200n8 rootfstype=ramfs";
+    };
+
+    cpus {
+        #address-cells = <1>;
+        #size-cells = <0>;
+        timebase-frequency = <100000000>;
+
+        cpu@0 {
+            device_type = "cpu";
+            compatible = "riscv,rv32ima";
+            reg = <0>;
+            riscv,isa = "rv32ima";
+            mmu-type = "none";
+            status = "okay";
+
+            cpu0_intc: interrupt-controller {
+                #interrupt-cells = <1>;
+                interrupt-controller;
+                compatible = "riscv,cpu-intc";
+            };
+        };
+    };
+
+    memory@80000000 {
+        device_type = "memory";
+        reg = <0x80000000 0x40000000>;  /* 1GB DRAM window (LPDDR5 stub) */
+    };
+
+    sram@40000000 {
+        device_type = "memory";
+        compatible = "mmio-sram";
+        reg = <0x40000000 0x01000000>;  /* 16MB on-chip SRAM (default) */
+        /* SRAM_WORDS parameter: 500KB..32MB configurable at synthesis */
+    };
+
+    reserved-memory {
+        #address-cells = <1>;
+        #size-cells = <1>;
+        ranges;
+
+        /* Boot ROM is execute-only; reserve to prevent data-plane access */
+        bootrom@0 {
+            reg = <0x00000000 0x00010000>;  /* 64KB */
+            no-map;
+        };
+    };
+
+    soc {
+        compatible = "simple-bus";
+        #address-cells = <1>;
+        #size-cells = <1>;
+        ranges;
+
+        /* ------------------------------------------------------------------ */
+        /* UART0 — 16550-compatible, 8N1                                       */
+        /* ------------------------------------------------------------------ */
+        uart0: serial@10000000 {
+            compatible = "ns16550a";
+            reg = <0x10000000 0x20>;
+            clock-frequency = <100000000>;  /* CLK_FREQ */
+            current-speed = <115200>;
+            reg-shift = <2>;
+            reg-io-width = <4>;
+            interrupts = <0>;  /* IRQ 0 */
+            status = "okay";
+        };
+
+        /* ------------------------------------------------------------------ */
+        /* CLINT — Machine-mode timer + software interrupt                     */
+        /* ------------------------------------------------------------------ */
+        clint@20000000 {
+            compatible = "riscv,clint";
+            reg = <0x20000000 0xC000>;
+            interrupts-extended = <&cpu0_intc 3>,   /* MTI — machine timer */
+                                  <&cpu0_intc 7>;   /* MSI — software */
+            riscv,ndev = <16>;
+            timer-frequency = <100000000>;  /* CLK_FREQ */
+            status = "okay";
+        };
+
+        /* ------------------------------------------------------------------ */
+        /* PCIe Gen5 x16 PHY — Host DMA endpoint                               */
+        /* ------------------------------------------------------------------ */
+        pcie@C0000000 {
+            compatible = "pnm,pcie-phy";
+            reg = <0xC0000000 0x100>;  /* 256B register window */
+            interrupts = <4>;  /* IRQ 4 */
+            #phy-cells = <0>;
+            status = "okay";
+        };
+
+        /* ------------------------------------------------------------------ */
+        /* NVMe storage controller                                             */
+        /* ------------------------------------------------------------------ */
+        nvme@D0000000 {
+            compatible = "pnm,nvme-ctrl";
+            reg = <0xD0000000 0x40>;  /* 64B register window */
+            interrupts = <5>;  /* IRQ 5 */
+            #address-cells = <0>;
+            status = "okay";
+        };
+
+        /* ------------------------------------------------------------------ */
+        /* PNM router engine — flit builder + CRC + dispatch counters          */
+        /* ------------------------------------------------------------------ */
+        pnm@F0000000 {
+            compatible = "pnm,router-engine";
+            reg = <0xF0000000 0x100>;  /* 256B register window */
+
+            /* Register map:
+             * 0x00  ROUTE_CTRL    (W: start flit, boot_done)
+             * 0x04  ROUTE_LAYER   (W: target layer)
+             * 0x08  ROUTE_MODULE  (W: target module ID)
+             * 0x0C  ROUTE_LEN     (W: payload length)
+             * 0x10  ROUTE_DATA    (W: payload byte FIFO)
+             * 0x14  PNM_STATUS    (R: busy flag)
+             * 0x18  PNM_RXDATA    (R: spine extract byte)
+             * 0x1C  PNM_ERRORS    (R: CRC error counter)
+             * 0x20  PNM_DISPATCHES(R: dispatch counter)
+             * 0x24  PNM_WEIGHTS   (R: weight flit counter)
+             */
+            status = "okay";
+        };
+
+        /* ------------------------------------------------------------------ */
+        /* Interrupt controller                                                */
+        /* ------------------------------------------------------------------ */
+        intc: interrupt-controller@0 {
+            compatible = "pnm,intc";
+            reg = <0x00000000 0x100>;
+            #interrupt-cells = <1>;
+            interrupt-controller;
+            status = "okay";
+        };
+    };
+
+    /* Interrupt routing (matches orchestrator_sbc.v cpu_irq assignments) */
+    /* IRQ 0: UART
+     * IRQ 1: CLINT MTI
+     * IRQ 2: CLINT MSI
+     * IRQ 3: Spine extraction data available
+     * IRQ 4: PCIe
+     * IRQ 5: NVMe
+     * IRQ 6..15: External (ext_irq[15:6])
+     */
+};

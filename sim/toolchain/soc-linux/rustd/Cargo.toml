@@ -1,0 +1,18 @@
+[package]
+name = "pnm_rustd"
+version = "0.1.0"
+edition = "2021"
+description = "PNM router chip daemon: access control, salting+hashing, workload management"
+license = "AGPL-3.0-or-later"
+
+[dependencies]
+# No external crates — all crypto and data structures are self-contained.
+# Cross-compile: cargo build --release --target riscv32-unknown-none-elf
+# Then strip the ELF for NOMMU Linux or bare-metal.
+
+[profile.release]
+opt-level = "s"     # size-optimized for ROM/DRAM fit
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
