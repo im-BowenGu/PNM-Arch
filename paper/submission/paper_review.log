@@ -1,4 +1,4 @@
-This is pdfTeX, Version 3.141592653-2.6-1.40.26 (TeX Live 2024/nixos.org) (preloaded format=pdflatex 1980.1.1)  30 AUG 2026 03:03
+This is pdfTeX, Version 3.141592653-2.6-1.40.26 (TeX Live 2024/nixos.org) (preloaded format=pdflatex 1980.1.1)  30 AUG 2026 08:52
 entering extended mode
  restricted \write18 enabled.
  %&-line parsing enabled.
@@ -572,9 +572,15 @@ ABLE $\OMS/cmsy/m/n/10.95 !$ \OT1/ptm/m/n/10.95 (-20) WEIGHT[]UPLOAD $\OMS/cmsy
 [13]
 
 [14]
-Overfull \hbox (75.88535pt too wide) in paragraph at lines 140--141
-\OT1/ptm/m/n/10.95 (-20) `PNM[]MAX[]NODES[]TOTAL=512`, `PNM[]MAX[]EXPERTS=256`,
- and `PNM[]KV[]CACHE[]DEPTH=4096`;
+Overfull \hbox (57.23648pt too wide) in paragraph at lines 140--141
+\OT1/ptm/m/n/10.95 (-20) `PNM[]MAX[]NODES[]TOTAL=32`, `PNM[]MAX[]EXPERTS=16`, a
+nd `PNM[]KV[]CACHE[]DEPTH=64`),
+ []
+
+
+Overfull \hbox (36.37744pt too wide) in paragraph at lines 140--141
+\OT1/ptm/m/n/10.95 (-20) and the full SoC de-faults oth-er-wise (`PNM[]MAX[]LAY
+ERS=8`, `PNM[]MAX[]NODES[]TOTAL=512`,
  []
 
 
@@ -752,7 +758,7 @@ texmfdist/fonts/type1/urw/times/utmb8a.pfb></nix/store/4l3m65sl104swdhl3hrpnqma
 chm98qgx-texlive-combined-medium-2024-final-texmfdist/fonts/type1/urw/times/utm
 r8a.pfb></nix/store/4l3m65sl104swdhl3hrpnqmachm98qgx-texlive-combined-medium-20
 24-final-texmfdist/fonts/type1/urw/times/utmri8a.pfb>
-Output written on paper_review.pdf (65 pages, 303370 bytes).
+Output written on paper_review.pdf (65 pages, 303703 bytes).
 PDF statistics:
  721 PDF objects out of 1000 (max. 8388607)
  629 compressed objects within 7 object streams

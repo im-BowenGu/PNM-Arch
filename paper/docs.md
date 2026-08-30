@@ -50,7 +50,7 @@ The fabric is a byte-wide, Verilog-2005 model of the deterministic single-spine 
 | `fp64_fma.v` | FMA | FP64 | 3 cycles | Double-precision scientific |
 | `bf16_mac_array.v` | Systolic array | BF16 | variable | Attention QKV |
 | `fp16_mac_array.v` | Systolic array | FP16 | variable | FP16 attention |
-| `fp32_alu.v` | ALU | FP32 | 3 (MIN/MAX/CMP), 4 (FMA), 25 (DIV) cycles | Layernorm (divider) |
+| `fp32_alu.v` | ALU | FP32 | 3 (MIN/MAX/CMP), 4 (FMA), 28 (DIV) cycles | Layernorm (divider) |
 | `int8_mac.v` | MAC | INT8 | 2 cycles | Quantized inference |
 | `moe_gating.v` | MoE Gating | BF16 | variable | Top-k expert selection |
 

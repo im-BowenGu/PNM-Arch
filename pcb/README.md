@@ -8,8 +8,8 @@ vendor lock-in, no binary file corruption.
 ## Chassis architecture
 
 A PNM chassis is a vertical stack of 1-16 board layers connected by a central
-spine cable. The reference chassis is 8 layers with 16 compute nodes per layer
-(128 nodes total).
+spine cable. The reference chassis is 8 layers with 64 compute nodes per layer
+(512 nodes total).
 
 ```
                     ┌─────────────────────────┐
@@ -27,7 +27,7 @@ spine cable. The reference chassis is 8 layers with 16 compute nodes per layer
                │               │               │
         ┌──────┴──────┐ ┌──────┴──────┐ ┌──────┴──────┐
         │  pnm_node   │ │  pnm_node   │ │  pnm_node   │  Compute nodes
-        │  MAC + DRAM │ │  MAC + DRAM │ │  MAC + DRAM │  (16 per layer)
+        │  MAC + DRAM │ │  MAC + DRAM │ │  MAC + DRAM │  (64 per layer, reference)
         └──────┬──────┘ └──────┬──────┘ └──────┬──────┘
                │               │               │
         ┌──────┴──────┐ ┌──────┴──────┐ ┌──────┴──────┐
@@ -65,21 +65,24 @@ selected by solder jumpers):
 All three processor options share the same PNM register window at `0xF000_0000`
 (on custom SoC) or the same SPI/UART protocol (on Pi Bridge / MCU).
 
-**Boot**: 4KB bootstub ROM copies the kernel from NVMe into SRAM (500KB-32MB
-configurable), then jumps to it. NOMMU Linux fits in ~1MB stripped down.
-No DRAM on the processor package — everything runs from on-chip SRAM.
+**Boot**: 64KB bootstub ROM (`orchestrator_sbc.v` `0x0000_0000 - 0x0000_FFFF`)
+copies the kernel from NVMe into SRAM (500KB-32MB configurable), then jumps to
+it. NOMMU Linux fits in ~1MB stripped down. The custom SoC also carries a 1 GB
+LPDDR5/6 window at `0x8000_0000` (instruction/data heap) in addition to on-chip
+SRAM (`orchestrator_sbc.v`); the Pi Bridge and MCU variants run from SRAM only.
 
 **Memory map** (custom SoC only):
 
 | Region | Address Range | Size | Description |
 |--------|--------------|------|-------------|
-| Boot ROM | `0x0000_0000` | 4KB | Bootstub: NVMe→SRAM copy + jump |
+| Boot ROM | `0x0000_0000` | 64KB | Bootstub: NVMe→SRAM copy + jump |
 | UART | `0x1000_0000` | 4KB | 16550-compatible debug console |
-| CLINT | `0x2000_0000` | 4KB | Timer + software interrupt |
+| CLINT | `0x2000_0000` | 64KB | Timer + software interrupt |
 | SRAM | `0x4000_0000` | 500KB-32MB | On-chip SRAM (kernel + runtime) |
+| DRAM | `0x8000_0000` | 1GB | LPDDR5/6 window (heap + data) |
 | PCIe | `0xC000_0000` | 4KB | PCIe config/status registers |
-| NVMe | `0xD000_0000` | 4KB | NVMe controller (boot + weights + swap) |
-| PNM | `0xF000_0000` | 4KB | PNM orchestrator engine |
+| NVMe | `0xD000_0000` | 64B | NVMe controller (boot + weights + swap) |
+| PNM | `0xF000_0000` | 64B | PNM orchestrator engine |
 
 **NVMe** provides block storage for:
 - Model weight persistence (survives power cycles)
@@ -89,7 +92,7 @@ No DRAM on the processor package — everything runs from on-chip SRAM.
 
 **4-layer stackup**: top copper → inner1 (GND) → inner2 (power) → bottom copper.
 
-### gating_board — MoE gating network board
+### gating_asic — MoE gating network board
 
 Optional per-layer board for Mixture-of-Experts expert routing. The gating
 network can have ~1 GB of weights (gating matrices scale with expert count),
@@ -159,8 +162,8 @@ pcb/
 │   │                          PCIe x16 edge, M.2 NVMe
 │   ├── schematics/            schematic sheets
 │   └── boards/                4-layer board layout
-├── gating_board/              MoE gating board (gating ASIC + LPCAMM2/LPDDR5)
-│   ├── gating_board.lpp       LibrePCB project
+├── gating_asic/              MoE gating ASIC board (BF16 MAC) + LPCAMM2/LPDDR5
+│   ├── gating_asic.lpp       LibrePCB project
 │   ├── library/               Gating ASIC, LPCAMM2, LPDDR5 BGA
 │   ├── schematics/            schematic sheets
 │   └── boards/                4-layer board layout
@@ -191,15 +194,15 @@ pcb/
 ## Assembly variable: board count
 
 The chassis supports 1-16 board layers. The reference configuration is
-**8 layers × 16 nodes = 128 compute nodes**.
+**8 layers × 64 nodes = 512 compute nodes**.
 
 Board count is a build-time parameter. The `gen_topology.py` script generates
 the interconnect board schematic and the Verilog topology for any valid
 configuration:
 
 ```bash
-# Reference chassis: 8 layers, 4×4 nodes per layer
-python3 gen_topology.py --variant x2_lxy --layers 8 --board-x 4 --board-y 4
+# Reference chassis: 8 layers, 8×8 nodes per layer
+python3 gen_topology.py --variant x2_lxy --layers 8 --board-x 8 --board-y 8
 
 # Small config: 2 layers, 2×2 nodes per layer (8 nodes total)
 python3 gen_topology.py --variant x2_lxy --layers 2 --board-x 2 --board-y 2
@@ -211,7 +214,7 @@ python3 gen_topology.py --variant x2_lxy --layers 16 --board-x 8 --board-y 8
 The Go co-simulation mirrors this:
 
 ```bash
-go run ./cmd/pnm -l 8 -x 4 -y 4       # reference: 128 nodes
+go run ./cmd/pnm -l 8 -x 8 -y 8       # reference: 512 nodes
 go run ./cmd/pnm -l 2 -x 2 -y 2       # small: 8 nodes
 go run ./cmd/pnm -l 16 -x 8 -y 8      # large: 1024 nodes
 ```

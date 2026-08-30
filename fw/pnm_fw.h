@@ -31,6 +31,7 @@
 #define PNM_MAX_MODEL_LAYERS 8
 #define PNM_KV_CACHE_DEPTH  64
 #define PNM_KV_CACHE_BANKS  2
+#define PNM_KV_ENTRY_BYTES  512     /* RTL kv_cache_bank ENTRY_BYTES frame */
 #define PNM_ROUTING_TABLE_SIZE 32
 #define PNM_WEIGHT_CMD_MAX  64
 #else
@@ -43,6 +44,7 @@
 #define PNM_MAX_MODEL_LAYERS 128    /* max transformer layers          */
 #define PNM_KV_CACHE_DEPTH  4096    /* KV cache entries per bank       */
 #define PNM_KV_CACHE_BANKS  4       /* directional banks per layer     */
+#define PNM_KV_ENTRY_BYTES  512     /* RTL kv_cache_bank ENTRY_BYTES frame */
 #define PNM_ROUTING_TABLE_SIZE 256  /* max routing table entries       */
 #define PNM_WEIGHT_CMD_MAX  1024    /* max weight upload commands      */
 #endif
@@ -210,7 +212,7 @@ typedef struct {
     /* Flash attention config (mirrors Go DefaultFlashAttnConfig) */
     int flash_attn_enabled;   /* 1 = tiled flash attention (default)     */
     int flash_tile_size_kv;   /* KV tile size for flash attention        */
-    int seq_pos;              /* current sequence position (for KV tiling) */
+    int seq_pos[PNM_MAX_MODEL_LAYERS]; /* per-model-layer sequence position (mirrors Go SeqPositions[ml]) */
 } firmware_t;
 
 /* ── Dispatch Record ───────────────────────────────────────────────── */
