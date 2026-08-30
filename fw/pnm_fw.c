@@ -225,7 +225,7 @@ int fw_plan_inference(firmware_t *fw, const uint8_t *token,
          * emits one "flash_attn" store record per KV tile plus a final
          * "flash_attn" load record; otherwise a single "dense" pair. */
         int tile_size_kv = fw->flash_tile_size_kv > 0 ? fw->flash_tile_size_kv : 256;
-        int seq_pos = fw->seq_pos;
+        int seq_pos = fw->seq_pos[ml];  /* per-model-layer, mirrors Go SeqPositions[ml] */
         /* Attention target node (persists past the branch for kv_offload). */
         node_id_t attn_target;
         attn_target.L = (int8_t)pl;
@@ -364,7 +364,7 @@ int fw_plan_inference(firmware_t *fw, const uint8_t *token,
 
         /* Advance the sequence position for this layer after the attention
          * (KV store) step, mirroring Go firmware.go SeqPositions[ml]++. */
-        fw->seq_pos++;
+        fw->seq_pos[ml]++;
     }
 
     *num_records = idx;
@@ -392,8 +392,8 @@ int fw_verify_weight_upload(firmware_t *fw) {
 
 int fw_verify_dispatch(firmware_t *fw, const dispatch_record_t *records,
                        int num_records) {
-    /* Verify that every model layer has a dense dispatch as its first record
-     * and that no layer is missing entirely. */
+    /* Verify that every model layer has a dense (or flash_attn) dispatch as
+     * its first record and that no layer is missing entirely. */
     int mpl = fw->model_layers_per_physical > 0 ? fw->model_layers_per_physical : 1;
     int model_layers = mpl * fw->num_layers;
     if (fw->num_hidden_layers > 0 && model_layers > fw->num_hidden_layers)
@@ -408,8 +408,12 @@ int fw_verify_dispatch(firmware_t *fw, const dispatch_record_t *records,
     unsigned char seen[PNM_MAX_MODEL_LAYERS] = {0};
     for (int i = 0; i < num_records; i++) {
         if (records[i].layer > last_layer) {
-            if (strcmp(records[i].phase, "dense") != 0) {
-                return -1; /* first dispatch per layer must be dense */
+            /* First dispatch per layer: dense, or flash_attn when flash
+             * attention is enabled (the planner then emits flash_attn store
+             * + load records as the layer's leading records, not "dense"). */
+            if (strcmp(records[i].phase, "dense") != 0 &&
+                strcmp(records[i].phase, "flash_attn") != 0) {
+                return -1; /* first dispatch per layer must be dense or flash_attn */
             }
             last_layer = records[i].layer;
         }
@@ -429,8 +433,13 @@ int fw_verify_dispatch(firmware_t *fw, const dispatch_record_t *records,
 void kv_cache_init(kv_cache_t *kv, int num_layers, int hidden_size) {
     memset(kv, 0, sizeof(*kv));
     kv->num_layers = num_layers;
+    (void)hidden_size; /* frame size is RTL-fixed (PNM_KV_ENTRY_BYTES), not model-derived */
 
-    int entry_bytes = hidden_size * 4; /* K(2B) + V(2B) per hidden dim */
+    /* Each KV entry occupies the RTL kv_cache_bank fixed frame
+       (ENTRY_BYTES=512), mirroring the Go twin's DefaultKVCacheConfig and
+       the silicon accounting. A model-derived hidden_size*4 frame would
+       diverge from the hardware frame and overstate paper capacity. */
+    int entry_bytes = PNM_KV_ENTRY_BYTES;
     const char *dirs[] = {"X+", "X-", "Y+", "Y-"};
 
     for (int l = 0; l < num_layers; l++) {

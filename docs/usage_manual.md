@@ -88,7 +88,8 @@ Each node's PE tile instantiates one compute unit type:
 | `fp32_fma.v` | FMA | FP32 | 3 cycles | High-precision compute |
 | `fp64_fma.v` | FMA | FP64 | 3 cycles | Double-precision scientific |
 | `bf16_mac_array.v` | Systolic array | BF16 | variable | Attention QKV |
-| `fp32_alu.v` | ALU | FP32 | 3 (MIN/MAX/CMP), 4 (FMA), 25 (DIV) | Layernorm |
+| `fp16_mac_array.v` | Systolic array | FP16 | variable | FP16 attention |
+| `fp32_alu.v` | ALU | FP32 | 3 (MIN/MAX/CMP), 4 (FMA), 28 (DIV) | Layernorm |
 | `int8_mac.v` | MAC | INT8 | 2 cycles | Quantized inference |
 
 ### Orchestrator chip family

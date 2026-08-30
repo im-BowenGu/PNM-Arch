@@ -14,7 +14,7 @@
 //   result [0..3] = ALU output (big-endian FP32)
 //
 // For unary operations (MIN/MAX/CMP with implicit zero), only operand A
-// is consumed. DIV uses the 25-cycle restoring division pipeline.
+// is consumed. DIV uses the 28-cycle restoring division pipeline.
 //
 // The chip integrates with the doorbell discipline: it validates the
 // incoming CRC and pulses corrupt_out on failure, matching pe_tile_stub.v.

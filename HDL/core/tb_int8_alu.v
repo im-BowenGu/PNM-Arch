@@ -113,6 +113,42 @@ module tb_int8_alu;
         wait_result(res);
         check(res, 16'd10, "MAX(10,5)=10");
 
+        // --- Negative-result regressions (R2b zero-extend bug) ---
+        // ADD: 3 + (-5) = -2 (sign-extended to 0xFFFE, not 0x00FE)
+        feed(8'sd3, -8'sd5, OP_ADD);
+        wait_result(res);
+        check(res, 16'hFFFE, "ADD 3+(-5)=-2");
+
+        // SUB: 3 - 5 = -2
+        feed(8'sd3, 8'sd5, OP_SUB);
+        wait_result(res);
+        check(res, 16'hFFFE, "SUB 3-5=-2");
+
+        // SUB: -4 - 3 = -7
+        feed(-8'sd4, 8'sd3, OP_SUB);
+        wait_result(res);
+        check(res, 16'hFFF9, "SUB -4-3=-7");
+
+        // SHIFT: -4 << 1 = -8 (arithmetic shift preserves sign)
+        feed(-8'sd4, 8'sd1, OP_SHIFT);
+        wait_result(res);
+        check(res, 16'hFFF8, "SHIFT -4<<1=-8");
+
+        // SHIFT: 1 << 7 = +128 (bit-7 overflow needs a 9-bit intermediate)
+        feed(8'sd1, 8'sd7, OP_SHIFT);
+        wait_result(res);
+        check(res, 16'h0080, "SHIFT 1<<7=+128");
+
+        // MIN: MIN(3, -5) = -5
+        feed(8'sd3, -8'sd5, OP_MIN);
+        wait_result(res);
+        check(res, 16'hFFFB, "MIN(3,-5)=-5");
+
+        // MAX: MAX(-10, -5) = -5
+        feed(-8'sd10, -8'sd5, OP_MAX);
+        wait_result(res);
+        check(res, 16'hFFFB, "MAX(-10,-5)=-5");
+
         // AND: 0xFF & 0x0F = 0x0F
         feed(8'hFF, 8'h0F, OP_AND);
         wait_result(res);

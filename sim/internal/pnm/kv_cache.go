@@ -575,7 +575,15 @@ func (kl *KVCacheLayer) RepeatKV(kvEntry []byte) []byte {
 	if kl.HeadDim <= 0 || kl.NumKeyValueHeads <= 0 {
 		return kvEntry
 	}
-	kvBytesPerHead := kl.HeadDim * 2 * (kl.Config.EntryBytes / (kl.NumKeyValueHeads * kl.HeadDim * 2))
+	// All KV heads share the single EntryBytes frame, so each head occupies
+	// EntryBytes/NumKeyValueHeads bytes. The previous expression derived the
+	// per-head size from HeadDim but divided it through an integer quotient
+	// of the frame (EntryBytes/(NumKVHeads*HeadDim*2)); whenever the frame did
+	// not hold a clean multiple of all heads (e.g. EntryBytes=512 with 8 KV
+	// heads of HeadDim=64), that quotient truncated to zero and RepeatKV
+	// silently returned the un-expanded entry, disabling GQA. Use the direct
+	// frame split instead.
+	kvBytesPerHead := kl.Config.EntryBytes / kl.NumKeyValueHeads
 	if kvBytesPerHead <= 0 {
 		return kvEntry
 	}

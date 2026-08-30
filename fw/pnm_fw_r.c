@@ -12,6 +12,54 @@
 #include "pnm_fw_r.h"
 #include <string.h>
 
+/* ── MoE gate helpers (port of pnm_fw.c select_topk) ──────────────── */
+static uint64_t r_fnv1a_64(const uint8_t *token, int token_len) {
+    uint64_t h = 14695981039346656037ULL; /* FNV offset basis */
+    for (int i = 0; i < token_len; i++) {
+        h ^= token[i];
+        h *= 1099511628211ULL; /* FNV prime */
+    }
+    return h;
+}
+
+/* Fill topk_experts[] with the top-k entries of experts[] ranked by a
+ * token/layer-dependent gate score, mirroring firmware.go selectTopExperts
+ * and pnm_fw.c select_topk. Returns the count chosen. */
+static int r_select_topk(const uint8_t *token, int token_len, int ml,
+                         const int *experts, int n, int topk, int *topk_experts) {
+    if (n <= 0) return 0;
+    if (topk > n) topk = n;
+    uint64_t h = r_fnv1a_64(token, token_len);
+    h ^= (uint64_t)ml * 0x9E3779B97F4A7C15ULL;
+    h *= 1099511628211ULL;
+    uint64_t score[PNM_MAX_EXPERTS];
+    int      exp_idx[PNM_MAX_EXPERTS];
+    for (int e = 0; e < n; e++) {
+        uint64_t sh = h ^ (uint64_t)experts[e] * 0x2545F4914F6CDD1DULL;
+        sh ^= sh >> 33;
+        sh *= 0xFF51AFD7ED558CCDULL;
+        sh ^= sh >> 33;
+        score[e]   = sh;
+        exp_idx[e] = experts[e];
+    }
+    for (int i = 1; i < n; i++) {
+        uint64_t sk = score[i];
+        int      ek = exp_idx[i];
+        int j = i - 1;
+        while (j >= 0 && (score[j] < sk ||
+                          (score[j] == sk && exp_idx[j] > ek))) {
+            score[j+1]   = score[j];
+            exp_idx[j+1] = exp_idx[j];
+            j--;
+        }
+        score[j+1]   = sk;
+        exp_idx[j+1] = ek;
+    }
+    for (int i = 0; i < topk; i++)
+        topk_experts[i] = exp_idx[i];
+    return topk;
+}
+
 /* ── Firmware Init ─────────────────────────────────────────────────── */
 
 void r_fw_init(r_fw_t *fw) {
@@ -48,7 +96,15 @@ int r_fw_plan_inference(r_fw_t *fw, const uint8_t *token,
     int mpl = fw->base.model_layers_per_physical > 0
               ? fw->base.model_layers_per_physical : 1;
 
-    for (int ml = 0; ml < PNM_MAX_MODEL_LAYERS && idx < max_records; ml++) {
+    /* Clamp planned model layers to the actual layer count when known,
+     * mirroring the main twin (pnm_fw.c). */
+    int model_layers = mpl * fw->base.num_layers;
+    if (fw->base.num_hidden_layers > 0 && model_layers > fw->base.num_hidden_layers)
+        model_layers = fw->base.num_hidden_layers;
+    if (model_layers > PNM_MAX_MODEL_LAYERS) model_layers = PNM_MAX_MODEL_LAYERS;
+    if (model_layers < 0) model_layers = 0;
+
+    for (int ml = 0; ml < model_layers && idx < max_records; ml++) {
         int pl = ml / mpl;
         if (pl >= fw->base.num_layers) break;
 
@@ -61,7 +117,7 @@ int r_fw_plan_inference(r_fw_t *fw, const uint8_t *token,
         r->base.target.X = (uint8_t)(attn_node / by);
         r->base.target.Y = (uint8_t)(attn_node % by);
         r->base.expert_idx = -1;
-        r->base.flit_bytes = 4 + token_len + 2;
+        r->base.flit_bytes = 5 + token_len + 2;
         memcpy(r->base.kv_action, "store", 6);
         r->base.cu_type = R_CU_DENSE;
         r->precision = 64;
@@ -78,7 +134,7 @@ int r_fw_plan_inference(r_fw_t *fw, const uint8_t *token,
             ln->base.target.X = (uint8_t)(attn_node / by);
             ln->base.target.Y = (uint8_t)(attn_node % by);
             ln->base.expert_idx = -1;
-            ln->base.flit_bytes = 4 + token_len + 2;
+            ln->base.flit_bytes = 5 + token_len + 2;
             memcpy(ln->base.kv_action, "", 1);
             ln->base.cu_type = R_CU_NORM;
             ln->precision = 64;
@@ -87,26 +143,37 @@ int r_fw_plan_inference(r_fw_t *fw, const uint8_t *token,
             idx++;
         }
 
-        /* MoE gating — FP64 FMA */
-        for (int exp = 0; exp < PNM_MAX_TOPK && idx < max_records; exp++) {
-            for (int e = 0; e < fw->base.moe_count; e++) {
-                if (fw->base.moe_map[e].model_layer == ml &&
-                    fw->base.moe_map[e].expert_idx == exp) {
-                    r_dispatch_t *er = &records[idx];
-                    er->base.layer = ml;
-                    memcpy(er->base.phase, "moe", 4);
-                    er->base.target = fw->base.moe_map[e].target_node;
-                    er->base.expert_idx = exp;
-                    er->base.flit_bytes = 4 + token_len + 2;
-                    memcpy(er->base.kv_action, "", 1);
-                    er->base.cu_type = R_CU_MOE;
-                    er->precision = 64;
-                    er->vec_width = 4;
-                    er->is_vectorized = 1;
-                    idx++;
-                    break;
-                }
+        /* MoE gating — FP64 FMA. Route to the top-k experts by a
+         * token/layer gate score over the layer's full expert population,
+         * mirroring pnm_fw.c / firmware.go selectTopExperts. */
+        int cand[PNM_MAX_EXPERTS], cand_n = 0;
+        for (int m = 0; m < fw->base.moe_count && cand_n < PNM_MAX_EXPERTS; m++)
+            if (fw->base.moe_map[m].model_layer == ml)
+                cand[cand_n++] = fw->base.moe_map[m].expert_idx;
+        int sel[PNM_MAX_TOPK + 1];
+        int topk = fw->base.top_k_experts > 0 ? fw->base.top_k_experts : PNM_MAX_TOPK;
+        if (topk > PNM_MAX_TOPK) topk = PNM_MAX_TOPK;
+        int nsel = r_select_topk(token, token_len, ml, cand, cand_n, topk, sel);
+        for (int k = 0; k < nsel && idx < max_records; k++) {
+            int eidx = sel[k];
+            moe_entry_t *me = NULL;
+            for (int m = 0; m < fw->base.moe_count; m++) {
+                if (fw->base.moe_map[m].model_layer == ml &&
+                    fw->base.moe_map[m].expert_idx == eidx) { me = &fw->base.moe_map[m]; break; }
             }
+            if (!me) continue;
+            r_dispatch_t *er = &records[idx];
+            er->base.layer = ml;
+            memcpy(er->base.phase, "moe", 4);
+            er->base.target = me->target_node;
+            er->base.expert_idx = eidx;
+            er->base.flit_bytes = 5 + token_len + 2;
+            memcpy(er->base.kv_action, "", 1);
+            er->base.cu_type = R_CU_MOE;
+            er->precision = 64;
+            er->vec_width = 4;
+            er->is_vectorized = 1;
+            idx++;
         }
     }
 
@@ -145,7 +212,7 @@ int r_fw_estimate_flops(const r_dispatch_t *records, int num_records)
     int flops = 0;
     for (int i = 0; i < num_records; i++) {
         int flit_bytes = records[i].base.flit_bytes;
-        int elems = (flit_bytes - 6) / R_DTYPE_BYTES;
+        int elems = (flit_bytes - 7) / R_DTYPE_BYTES;
         if (elems < 0) elems = 0;
 
         /* Vectorized operations: multiply by vector width */

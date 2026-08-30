@@ -39,7 +39,7 @@ module int8_alu (
     reg signed [8:0]  add_result;
     reg signed [8:0]  sub_result;
     reg signed [15:0] mul_result;
-    reg signed [7:0]  shift_result;
+    reg signed [8:0]  shift_result;   // 9-bit: SHIFT 1<<7=128 needs the top bit
     reg signed [7:0]  min_result;
     reg signed [7:0]  max_result;
     reg [7:0]         and_result;
@@ -59,7 +59,7 @@ module int8_alu (
             add_result <= $signed({a[7], a}) + $signed({b[7], b});
             sub_result <= $signed({a[7], a}) - $signed({b[7], b});
             mul_result <= $signed(a) * $signed(b);
-            shift_result <= a <<< b[2:0];  // arithmetic left shift, 3-bit count
+            shift_result <= $signed(a) <<< b[2:0];  // arithmetic left shift, 3-bit count
             min_result <= ($signed(a) < $signed(b)) ? a : b;
             max_result <= ($signed(a) > $signed(b)) ? a : b;
             and_result <= a & b;
@@ -78,7 +78,7 @@ module int8_alu (
                 OP_ADD:   result <= {{8{add_result[7]}}, add_result[7:0]};
                 OP_SUB:   result <= {{8{sub_result[7]}}, sub_result[7:0]};
                 OP_MUL:   result <= mul_result;
-                OP_SHIFT: result <= {{8{shift_result[7]}}, shift_result};
+                OP_SHIFT: result <= {{7{shift_result[8]}}, shift_result};
                 OP_MIN:   result <= {{8{min_result[7]}}, min_result};
                 OP_MAX:   result <= {{8{max_result[7]}}, max_result};
                 OP_AND:   result <= {{8{and_result[7]}}, and_result};

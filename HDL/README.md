@@ -23,7 +23,7 @@ Verilog-2005 model of the **routing fabric**, **compute units**, and **co-simula
 | `fp64_fma.v` | FP64 Fused Multiply-Add (3-cycle pipeline) |
 | `fp16_mac_array.v` | FP16 systolic MAC array |
 | `bf16_mac_array.v` | BF16 systolic MAC array |
-| `fp32_alu.v` | FP32 ALU: ADD, SUB, MUL, DIV, MIN, MAX, CMP (4-cycle FMA path, 25-cycle div) |
+| `fp32_alu.v` | FP32 ALU: ADD, SUB, MUL, DIV, MIN, MAX, CMP (4-cycle FMA path, 28-cycle div) |
 | `fp32_alu_chip.v` | FP32 ALU chip — wraps `fp32_alu.v` with AXI-Stream flit interface for PNM fabric integration |
 | `int8_mac.v` | INT8 multiply-accumulate |
 | **Fabric integration** | |
@@ -68,7 +68,7 @@ Each node's PE tile (`pe_tile_stub.v`) instantiates one of several compute unit 
 | `fp64_fma.v` | FMA | FP64 | 3 cycles | Double-precision scientific |
 | `bf16_mac_array.v` | Systolic array | BF16 | variable | Attention QKV |
 | `fp16_mac_array.v` | Systolic array | FP16 | variable | FP16 attention |
-| `fp32_alu.v` | ALU | FP32 | 3 (MIN/MAX/CMP), 4 (FMA), 25 (DIV) | Layernorm (divider + multiplier) |
+| `fp32_alu.v` | ALU | FP32 | 3 (MIN/MAX/CMP), 4 (FMA), 28 (DIV) | Layernorm (divider + multiplier) |
 | `fp32_alu_chip.v` | ALU chip | FP32 | 5-29 cycles | AXI-Stream integrated ALU for fabric |
 | `int8_mac.v` | MAC | INT8 | 2 cycles | Quantized inference |
 
@@ -300,7 +300,7 @@ alu.store [addr], r0          # store FP32 to memory
 alu.add   r0, r1, r2          # r0 = r1 + r2 (FP32)
 alu.sub   r0, r1, r2          # r0 = r1 - r2
 alu.mul   r0, r1, r2          # r0 = r1 * r2
-alu.div   r0, r1, r2          # r0 = r1 / r2 (25-cycle restoring div)
+alu.div   r0, r1, r2          # r0 = r1 / r2 (28-cycle restoring div)
 alu.min   r0, r1, r2          # r0 = min(r1, r2)
 alu.max   r0, r1, r2          # r0 = max(r1, r2)
 alu.cmp   r0, r1, r2, >=      # r0 = (r1 >= r2) ? 1.0 : 0.0
@@ -350,7 +350,7 @@ occurs on the router chip.
 | `f64.div` | `fp64_fma.v` | 3 cycles | Uses FMA's add path for div |
 | `f64.add/mul/min/max/cmp` | `fp64_fma.v` | 3 cycles | All via FMA pipeline |
 | `alu.add/sub/mul` | `fp32_alu.v` | 4 cycles | Via internal `fp32_fma` |
-| `alu.div` | `fp32_alu.v` | 25 cycles | Left-shifting restoring division |
+| `alu.div` | `fp32_alu.v` | 28 cycles | Left-shifting restoring division |
 | `alu.min/max/cmp` | `fp32_alu.v` | 3 cycles | Pipelined signed comparison |
 | `alu.dot` | `fp32_alu.v` | N×4 cycles | Expanded to N multiply+add ops |
 | `alu.lerp` | `fp32_alu.v` | 3×4 cycles | `a + t*(b-a)` via MUL+ADD |

@@ -5,7 +5,7 @@
 //
 // Multi-function FP32 ALU: ADD, SUB, MUL, DIV, MIN, MAX, CMP.
 // Pipeline latency: 4 cycles (FMA path: 3 + 1 output mux).
-// DIV uses 25-cycle restoring division.
+// DIV uses 28-cycle restoring division.
 // MIN/MAX/CMP are 3-cycle pipelined (matching FMA latency).
 // busy: asserted when DIV is in progress; new valid_in must be held.
 // =============================================================================
@@ -255,7 +255,7 @@ module fp32_alu (
     end
 
     // =========================================================================
-    // Output mux: DIV has highest priority (24-cycle latency > FMA's 3)
+    // Output mux: DIV has highest priority (28-cycle latency > FMA's 3)
     // Bug fix: no two sources should be active simultaneously; if they are,
     // DIV wins (it has the longest latency and is rarest).
     // =========================================================================
