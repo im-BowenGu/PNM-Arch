@@ -91,6 +91,11 @@ Each node's PE tile instantiates one compute unit type:
 | `fp16_mac_array.v` | Systolic array | FP16 | variable | FP16 attention |
 | `fp32_alu.v` | ALU | FP32 | 3 (MIN/MAX/CMP), 4 (FMA), 28 (DIV) | Layernorm |
 | `int8_mac.v` | MAC | INT8 | 2 cycles | Quantized inference |
+| `int4_mac_array.v` | Systolic array | INT4/INT8 | variable | INT4 quantized inference (4x density vs BF16) |
+| `fp4_mac.v` | MAC | FP4 (E2M1) | 2 cycles | FP4 quantized (packed nibbles) |
+| `fp4_mac_array.v` | Systolic array | FP4 | variable | FP4 quantized inference (4x density vs BF16) |
+| `mxfp4_mac_array.v` | Systolic array | MXFP4 | variable | MXFP4 block-scaled (OCP microscaling) inference |
+| `weight_dequant.v` | Dequantizer | INT4/INT8/FP4/MXFP4 → BF16 | 1 cycle | Weight-only quantization |
 
 ### Orchestrator chip family
 

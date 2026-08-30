@@ -3,6 +3,7 @@ package pnm
 import (
 	"bytes"
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -52,7 +53,8 @@ func SimDir() string {
 
 var FABRIC = []string{"flit_gate.v", "hfr.v", "lxy_repeater.v", "xy_turn.v",
 	"node_eject.v", "vc_merge.v", "core/crc16.v", "core/bf16_fma.v", "core/pe_tile_stub.v",
-	"core/weight_dequant.v", "core/int8_mac.v", "core/int4_mac_array.v", "kv_cache_bank.v"}
+	"core/weight_dequant.v", "core/int8_mac.v", "core/int4_mac.v", "core/int4_mac_array.v",
+	"core/fp4_mac.v", "core/fp4_mac_array.v", "core/mxfp4_mac_array.v", "kv_cache_bank.v"}
 
 // PE_PIPE_DELAY: the generated node MAC stub (pe_tile_stub.v,
 // MULT_LATENCY=2) adds two pipe cycles between the eject and the node DMA
@@ -223,8 +225,91 @@ func Golden(kernel string, payload []byte, weights []int, gstate map[string]uint
 			acc += pv * wv
 		}
 		return acc & 0xFFFFFFFF
+	case "f64_add":
+		if len(payload) >= 16 {
+			a := bytesToFP64(payload[0:8])
+			b := bytesToFP64(payload[8:16])
+			return fp64ToBytes(a + b)
+		}
+		return fp64ToBytes(0)
+	case "f64_mul":
+		if len(payload) >= 16 {
+			a := bytesToFP64(payload[0:8])
+			b := bytesToFP64(payload[8:16])
+			return fp64ToBytes(a * b)
+		}
+		return fp64ToBytes(0)
+	case "f64_fma":
+		if len(payload) >= 24 {
+			a := bytesToFP64(payload[0:8])
+			b := bytesToFP64(payload[8:16])
+			c := bytesToFP64(payload[16:24])
+			return fp64ToBytes(a*b + c)
+		}
+		return fp64ToBytes(0)
+	case "f64_sub":
+		if len(payload) >= 16 {
+			a := bytesToFP64(payload[0:8])
+			b := bytesToFP64(payload[8:16])
+			return fp64ToBytes(a - b)
+		}
+		return fp64ToBytes(0)
+	case "f64_div":
+		if len(payload) >= 16 {
+			a := bytesToFP64(payload[0:8])
+			b := bytesToFP64(payload[8:16])
+			return fp64ToBytes(a / b)
+		}
+		return fp64ToBytes(0)
+	case "f64_min":
+		if len(payload) >= 16 {
+			a := bytesToFP64(payload[0:8])
+			b := bytesToFP64(payload[8:16])
+			return fp64ToBytes(math.Min(a, b))
+		}
+		return fp64ToBytes(0)
+	case "f64_max":
+		if len(payload) >= 16 {
+			a := bytesToFP64(payload[0:8])
+			b := bytesToFP64(payload[8:16])
+			return fp64ToBytes(math.Max(a, b))
+		}
+		return fp64ToBytes(0)
+	case "f64_neg":
+		if len(payload) >= 8 {
+			a := bytesToFP64(payload[0:8])
+			return fp64ToBytes(-a)
+		}
+		return fp64ToBytes(0)
+	case "f64_cmp":
+		if len(payload) >= 17 {
+			a := bytesToFP64(payload[0:8])
+			b := bytesToFP64(payload[8:16])
+			op := strings.TrimSpace(string(payload[16:]))
+			var holds bool
+			switch op {
+			case "==":
+				holds = a == b
+			case "!=", "/=":
+				holds = a != b
+			case "<":
+				holds = a < b
+			case ">":
+				holds = a > b
+			case "<=":
+				holds = a <= b
+			case ">=":
+				holds = a >= b
+			}
+			if holds {
+				return fp64ToBytes(1.0)
+			}
+			return fp64ToBytes(0.0)
+		}
+		return fp64ToBytes(0)
+	default:
+		return nil // unknown kernel: verification will report mismatch
 	}
-	panic("unknown kernel: " + kernel)
 }
 
 // ManifestNode is the per-node program manifest: resident kernel, weights,
@@ -1158,14 +1243,14 @@ type job struct {
 }
 
 // RunOne generates per-slice inputs, simulates slices in parallel, verifies.
-func RunOne(prog *Program, nodes []NodeID, dims Dims, groups, replays int) bool {
+func RunOne(prog *Program, nodes []NodeID, dims Dims, groups, replays int) (*ScenarioResult, bool) {
 	layers, bx, by := dims.Layers, dims.Bx, dims.By
 	layerGroups := PartitionLayers(layers, groups)
 	simDir := SimDir()
 	hdlDir, err := filepath.Abs(filepath.Join(simDir, "..", "HDL"))
 	if err != nil {
 		fmt.Printf("  HDL path resolution failed: %v\n", err)
-		return false
+		return nil, false
 	}
 
 	// -- per-slice stimulus, topology, testbench -------------------------
@@ -1222,7 +1307,7 @@ func RunOne(prog *Program, nodes []NodeID, dims Dims, groups, replays int) bool 
 				e = e[len(e)-2000:]
 			}
 			fmt.Printf("  group %d: iverilog failed:\n%s", j.GI, e)
-			return false
+			return nil, false
 		}
 	}
 
@@ -1268,7 +1353,7 @@ func RunOne(prog *Program, nodes []NodeID, dims Dims, groups, replays int) bool 
 		fmt.Printf("  replay: %d slice log(s) bit-identical across 2 runs (%d bytes)\n", len(jobs), n)
 	}
 	if !ok {
-		return false
+		return nil, false
 	}
 
 	// -- verify per slice, aggregate --------------------------------------
@@ -1295,6 +1380,7 @@ func RunOne(prog *Program, nodes []NodeID, dims Dims, groups, replays int) bool 
 		}
 	}
 
+	// -- summary print ---------------------------------------------------
 	latS := "n/a"
 	if len(stats.Latencies) > 0 {
 		lo, hi, sum := stats.Latencies[0], stats.Latencies[0], 0
@@ -1315,7 +1401,40 @@ func RunOne(prog *Program, nodes []NodeID, dims Dims, groups, replays int) bool 
 		stats.Activations, stats.Rejections, stats.Pkts, stats.DmaBytes)
 	fmt.Printf("  latency: %s\n", latS)
 
+	// -- build result ----------------------------------------------------
+	result := &ScenarioResult{
+		Name:          "",
+		Nodes:         len(nodes),
+		Layers:        dims.Layers,
+		WireBytes:     len(prog.Stream),
+		Slices:        len(jobs),
+		Activations:   stats.Activations,
+		Rejections:    stats.Rejections,
+		Packets:       stats.Pkts,
+		DmaBytes:      stats.DmaBytes,
+		WorstSpanCyc:  maxSpan,
+		BytesPerCycle: float64(len(prog.Stream)) / float64(maxSpan),
+		Latencies:     stats.Latencies,
+	}
+	if len(stats.Latencies) > 0 {
+		lo, hi, sum := stats.Latencies[0], stats.Latencies[0], 0
+		for _, v := range stats.Latencies {
+			if v < lo {
+				lo = v
+			}
+			if v > hi {
+				hi = v
+			}
+			sum += v
+		}
+		result.LatencyMin = lo
+		result.LatencyMean = sum / len(stats.Latencies)
+		result.LatencyMax = hi
+	}
+
 	if len(allErrors) > 0 {
+		result.Pass = false
+		result.Errors = allErrors
 		fmt.Printf("  FAIL (%d problems):\n", len(allErrors))
 		n := len(allErrors)
 		if n > 12 {
@@ -1324,10 +1443,11 @@ func RunOne(prog *Program, nodes []NodeID, dims Dims, groups, replays int) bool 
 		for _, e := range allErrors[:n] {
 			fmt.Printf("    - %s\n", e)
 		}
-		return false
+		return result, false
 	}
+	result.Pass = true
 	fmt.Println("  PASS: byte-exact delivery, kernels correct, zero drops, zero misroutes")
-	return true
+	return result, true
 }
 
 func containsInt(s []int, v int) bool {
@@ -1361,7 +1481,7 @@ func pyStrList(s []string) string {
 }
 
 // RunMain is the pnm harness entry point (formerly sim/run.py main()).
-func RunMain(layers, bx, by int, scenarios []string, seed int64, flits *int, hotFrac float64, groups int) int {
+func RunMain(layers, bx, by int, scenarios []string, seed int64, flits *int, hotFrac float64, groups int, outDir string) int {
 	dims := Dims{Layers: layers, Bx: bx, By: by}
 	nodes := AllNodes(layers, bx, by)
 	if groups == 0 {
@@ -1381,6 +1501,7 @@ func RunMain(layers, bx, by int, scenarios []string, seed int64, flits *int, hot
 	}
 
 	totalFail := 0
+	var results []ScenarioResult
 	for _, name := range scenarios {
 		var prog *Program
 		switch name {
@@ -1426,8 +1547,48 @@ func RunMain(layers, bx, by int, scenarios []string, seed int64, flits *int, hot
 		if name == "replay" {
 			replays = 2
 		}
-		if !RunOne(prog, nodes, dims, groups, replays) {
+		sr, ok := RunOne(prog, nodes, dims, groups, replays)
+		if sr != nil {
+			sr.Name = name
+			results = append(results, *sr)
+		}
+		if !ok {
 			totalFail++
+		}
+	}
+
+	// -- write structured output -----------------------------------------
+	if outDir != "" {
+		if err := EnsureOutputDir(outDir); err != nil {
+			fmt.Fprintf(os.Stderr, "output dir: %v\n", err)
+		} else {
+			runResult := &RunResult{
+				Dims:      dims,
+				Seed:      seed,
+				Scenarios: results,
+				AllPass:   totalFail == 0,
+			}
+			csvPath, jsonPath, latCSV, sumCSV := OutputPaths(outDir, "pnm_run")
+			if err := WriteScenarioCSV(csvPath, results); err != nil {
+				fmt.Fprintf(os.Stderr, "write CSV: %v\n", err)
+			} else {
+				fmt.Printf("Wrote: %s\n", csvPath)
+			}
+			if err := WriteScenarioJSON(jsonPath, runResult); err != nil {
+				fmt.Fprintf(os.Stderr, "write JSON: %v\n", err)
+			} else {
+				fmt.Printf("Wrote: %s\n", jsonPath)
+			}
+			if err := WriteLatencyCSV(latCSV, results); err != nil {
+				fmt.Fprintf(os.Stderr, "write latency CSV: %v\n", err)
+			} else {
+				fmt.Printf("Wrote: %s\n", latCSV)
+			}
+			if err := WriteSummaryCSV(sumCSV, runResult); err != nil {
+				fmt.Fprintf(os.Stderr, "write summary CSV: %v\n", err)
+			} else {
+				fmt.Printf("Wrote: %s\n", sumCSV)
+			}
 		}
 	}
 

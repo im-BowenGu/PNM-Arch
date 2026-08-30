@@ -69,8 +69,11 @@ module pe_tile_stub #(
     parameter [7:0]   REQ_MODULE    = 8'hEE, // AOT-fixed requester (spine root)
     parameter integer USE_FMA       = 0,     // 0=bias-add, 1=BF16 FMA
     parameter [15:0]  FMA_WEIGHT    = 16'h3C00, // BF16 weight (1.0 when USE_FMA=1)
-    parameter integer CU_TYPE       = 0,     // 0=bias-add, 1=BF16 FMA, 2=INT4 MAC
-    parameter [7:0]   INT8_WEIGHT   = 8'sd1  // INT8 weight for CU_TYPE=2
+    parameter integer CU_TYPE       = 0,     // 0=bias-add, 1=BF16 FMA, 2=INT4 MAC,
+                                             // 3=FP4 MAC, 4=MXFP4 MAC
+    parameter [7:0]   INT8_WEIGHT   = 8'sd1,  // INT8 weight for CU_TYPE=2
+    parameter [7:0]   FP4_WEIGHT    = 8'h04,  // FP4 weight (E2M1 1.0) for CU_TYPE=3/4
+    parameter [7:0]   MXFP4_SHIFT   = 8'd0    // MXFP4 block-scale shift for CU_TYPE=4
 )(
     input  wire        clk,
     input  wire        rst_n,
@@ -290,6 +293,34 @@ module pe_tile_stub #(
         .valid_out (mac_valid_w)
     );
 
+    // -- FP4/MXFP4 MAC compute path (CU_TYPE=3/4) --------------------------
+    // Element-wise E2M1 multiply-accumulate over the byte stream (low nibble
+    // of each payload byte).  MXFP4 applies a compile-time block scale shift
+    // to the weight's fixed-point dequant.  Accumulates into the same int4_acc
+    // serializer as the INT4 path (reused register/state, disjoint gating).
+    wire [31:0] fp4_mac_result_w;
+    wire        fp4_mac_valid_w;
+    reg  [3:0]  fp4_shift_q;         // MXFP4 block-scale shift (CU_TYPE=4)
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) fp4_shift_q <= 4'd0;
+        else if (deliver && s1_start) fp4_shift_q <= MXFP4_SHIFT[3:0];
+    end
+
+    fp4_mac u_mac_fp4 (
+        .clk       (clk),
+        .rst_n     (rst_n),
+        .a         (s1_data),
+        .pack_select(1'b0),          // low nibble of activation byte
+        .b         (FP4_WEIGHT),
+        .b_pack_select(1'b0),
+        .c         (int4_acc),
+        .wshift    ((CU_TYPE == 4) ? fp4_shift_q : 4'd0),
+        .valid_in  (deliver && in_payload && (CU_TYPE == 3 || CU_TYPE == 4)),
+        .result    (fp4_mac_result_w),
+        .valid_out (fp4_mac_valid_w)
+    );
+
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             int4_acc       <= 32'd0;
@@ -300,6 +331,9 @@ module pe_tile_stub #(
                 int4_acc_valid <= 1'b0;
             end else if (mac_valid_w) begin
                 int4_acc       <= mac_result_w;
+                int4_acc_valid <= 1'b1;
+            end else if (fp4_mac_valid_w) begin
+                int4_acc       <= fp4_mac_result_w;
                 int4_acc_valid <= 1'b1;
             end
         end
@@ -315,8 +349,8 @@ module pe_tile_stub #(
             int4_out_cnt     <= 2'd0;
             int4_out_sr      <= 32'd0;
             int4_out_pending <= 1'b0;
-        end else if (mac_valid_w && !int4_out_pending) begin
-            int4_out_sr      <= mac_result_w;
+        end else if ((mac_valid_w || fp4_mac_valid_w) && !int4_out_pending) begin
+            int4_out_sr      <= (mac_valid_w ? mac_result_w : fp4_mac_result_w);
             int4_out_pending <= 1'b1;
             int4_out_cnt     <= 2'd3;  // 4 bytes to emit
         end else if (int4_out_pending && int4_out_cnt != 0 && deliver && in_payload) begin
@@ -340,9 +374,11 @@ module pe_tile_stub #(
     wire [7:0] fma_out_byte = (fma_out_cnt == 3'd1) ? fma_out_sr[1]
                                                     : fma_out_sr[0];
     wire [7:0] out_byte =
-        (CU_TYPE == 2 && int4_out_pending && in_payload) ? int4_out_byte
+        ((CU_TYPE == 2 || CU_TYPE == 3 || CU_TYPE == 4)
+         && int4_out_pending && in_payload) ? int4_out_byte
       : (USE_FMA && fma_out_pending && in_payload) ? fma_out_byte
-      : (in_payload && !USE_FMA && CU_TYPE != 2) ? (s1_data + KERNEL_CONST)
+      : (in_payload && !USE_FMA && CU_TYPE != 2 && CU_TYPE != 3 && CU_TYPE != 4)
+            ? (s1_data + KERNEL_CONST)
       : (pos == 4 + plen)            ? crc_out_acc[15:8]
       : (pos == 4 + plen + 1)        ? crc_out_acc[7:0]
       :                                s1_data;
