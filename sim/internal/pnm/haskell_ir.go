@@ -156,6 +156,7 @@ func compileHaskellFunc(p *HaskellProgram, lines []string, start int) (int, erro
 	if right == "do" {
 		endIdx := start + 1
 		var bodyLines []string
+		inExpr := ""
 		for endIdx < len(lines) {
 			l := strings.TrimSpace(lines[endIdx])
 			if l == "" || strings.HasPrefix(l, "--") {
@@ -163,6 +164,7 @@ func compileHaskellFunc(p *HaskellProgram, lines []string, start int) (int, erro
 				continue
 			}
 			if strings.HasPrefix(l, "in ") || strings.HasPrefix(l, "in\t") {
+				inExpr = strings.TrimSpace(l[len("in"):])
 				break
 			}
 			bodyLines = append(bodyLines, l)
@@ -170,6 +172,15 @@ func compileHaskellFunc(p *HaskellProgram, lines []string, start int) (int, erro
 		}
 		for _, bl := range bodyLines {
 			if err := compileHaskellLine(p, bl); err != nil {
+				return endIdx - start, err
+			}
+		}
+		// A do block returns the value of its `in <expr>` tail (the let
+		// bindings are scoped to the block).  Compile it so the function
+		// body's last instruction computes the do-block result instead of
+		// silently discarding the `in` expression.
+		if inExpr != "" {
+			if err := compileHaskellLine(p, inExpr); err != nil {
 				return endIdx - start, err
 			}
 		}
@@ -397,6 +408,15 @@ func resolveHaskellAtom(p *HaskellProgram, s string) string {
 		r := p.allocReg()
 		p.Regs = append(p.Regs, FP64IR{Op: FP64Const, Dest: r, Imm: val})
 		return r
+	}
+	// Unary minus on a bare variable (e.g. "-b" in "2.0 * -b") is negated
+	// here via a native FP64Neg, rather than being passed through to
+	// compileHaskellExprTo where the trailing Variable case would emit a
+	// read of an unwritten register named "-b".
+	if strings.HasPrefix(s, "-") && isSimpleIdent(strings.TrimPrefix(s, "-")) {
+		neg := p.allocReg()
+		p.Regs = append(p.Regs, FP64IR{Op: FP64Neg, Dest: neg, Src: []string{p.getOrCreateReg(strings.TrimPrefix(s, "-"))}})
+		return neg
 	}
 	// A bare identifier is a register reference; anything else (a parenthesized
 	// or arithmetic operand such as "(b + c)") must be compiled as an expression.

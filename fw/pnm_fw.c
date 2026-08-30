@@ -40,6 +40,9 @@ int cu_type_bytes(cu_type_t t) {
 void fw_init(firmware_t *fw) {
     memset(fw, 0, sizeof(*fw));
     fw->state = FW_RESET;
+    /* Flash attention defaults mirror Go DefaultFlashAttnConfig. */
+    fw->flash_attn_enabled = 1;
+    fw->flash_tile_size_kv = 256;
 }
 
 /* ── Boot Sequence ─────────────────────────────────────────────────── */
@@ -216,31 +219,86 @@ int fw_plan_inference(firmware_t *fw, const uint8_t *token,
         /* Step 1: Dense path — attention node */
         int attn_node = ml % nodes_per_layer;
         if (idx >= max_records) { truncated = 1; break; }
-        dispatch_record_t *r = &records[idx];
-        r->layer = ml;
-        memcpy(r->phase, "dense", 6);
-        r->target.L = (int8_t)pl;
-        r->target.X = (uint8_t)(attn_node / by);
-        r->target.Y = (uint8_t)(attn_node % by);
-        r->expert_idx = -1;
-        r->flit_bytes = 5 + token_len + 2; /* LAYER + MODULE + CTRL + LEN2 + payload + CRC */
-        memcpy(r->kv_action, "store", 6);
-        r->cu_type = CU_BF16_ARRAY; /* attention uses systolic array */
-        idx++;
 
-        /* Step 2a: KV cache load for attention — mirrors the Go PlanInference
-         * KVAction "load" record (attn_kv_load) that follows every dense store.
-         * Bookkeeping only (flit_bytes 0); it marks the read of prior K/V. */
-        if (idx >= max_records) { truncated = 1; break; }
-        dispatch_record_t *lr = &records[idx];
-        lr->layer = ml;
-        memcpy(lr->phase, "dense", 6);
-        lr->target = r->target;
-        lr->expert_idx = -1;
-        lr->flit_bytes = 0;
-        memcpy(lr->kv_action, "load", 5);
-        lr->cu_type = CU_BF16_ARRAY;
-        idx++;
+        /* Flash attention: dispatch tiled QK^T softmax V — mirrors Go
+         * firmware.go PlanInference's flash_attn branch. When enabled it
+         * emits one "flash_attn" store record per KV tile plus a final
+         * "flash_attn" load record; otherwise a single "dense" pair. */
+        int tile_size_kv = fw->flash_tile_size_kv > 0 ? fw->flash_tile_size_kv : 256;
+        int seq_pos = fw->seq_pos;
+        /* Attention target node (persists past the branch for kv_offload). */
+        node_id_t attn_target;
+        attn_target.L = (int8_t)pl;
+        attn_target.X = (uint8_t)(attn_node / by);
+        attn_target.Y = (uint8_t)(attn_node % by);
+        if (fw->flash_attn_enabled) {
+            int num_kv_tiles = (seq_pos + tile_size_kv) / tile_size_kv;
+            if (num_kv_tiles < 1) num_kv_tiles = 1;
+            for (int kv_tile = 0; kv_tile < num_kv_tiles; kv_tile++) {
+                if (idx >= max_records) { truncated = 1; break; }
+                dispatch_record_t *r = &records[idx];
+                r->layer = ml;
+                memcpy(r->phase, "flash_attn", 11);
+                r->target.L = (int8_t)pl;
+                r->target.X = (uint8_t)(attn_node / by);
+                r->target.Y = (uint8_t)(attn_node % by);
+                r->expert_idx = -1;
+                r->flit_bytes = 5 + token_len + 2; /* LAYER+MODULE+CTRL+LEN2+payload+CRC */
+                memcpy(r->kv_action, "store", 6);
+                r->cu_type = CU_BF16_ARRAY; /* systolic array */
+                r->flash_tile_q = 0;
+                r->flash_tile_kv = kv_tile;
+                r->flash_num_tiles = num_kv_tiles;
+                r->window_start = -1; /* full attention (no sliding window config) */
+                r->window_end = -1;
+                idx++;
+            }
+            if (truncated) break;
+            /* KV cache load for tiled attention */
+            if (idx >= max_records) { truncated = 1; break; }
+            dispatch_record_t *lr = &records[idx];
+            lr->layer = ml;
+            memcpy(lr->phase, "flash_attn", 11);
+            lr->target.L = (int8_t)pl;
+            lr->target.X = (uint8_t)(attn_node / by);
+            lr->target.Y = (uint8_t)(attn_node % by);
+            lr->expert_idx = -1;
+            lr->flit_bytes = 0;
+            memcpy(lr->kv_action, "load", 5);
+            lr->cu_type = CU_BF16_ARRAY;
+            lr->flash_tile_q = 0;
+            lr->flash_tile_kv = 0;
+            lr->flash_num_tiles = num_kv_tiles;
+            lr->window_start = -1;
+            lr->window_end = -1;
+            idx++;
+        } else {
+            dispatch_record_t *r = &records[idx];
+            r->layer = ml;
+            memcpy(r->phase, "dense", 6);
+            r->target.L = (int8_t)pl;
+            r->target.X = (uint8_t)(attn_node / by);
+            r->target.Y = (uint8_t)(attn_node % by);
+            r->expert_idx = -1;
+            r->flit_bytes = 5 + token_len + 2; /* LAYER + MODULE + CTRL + LEN2 + payload + CRC */
+            memcpy(r->kv_action, "store", 6);
+            r->cu_type = CU_BF16_ARRAY; /* attention uses systolic array */
+            idx++;
+
+            /* Step 2a: KV cache load for attention — mirrors the Go PlanInference
+             * KVAction "load" record (attn_kv_load) that follows every dense store.
+             * Bookkeeping only (flit_bytes 0); it marks the read of prior K/V. */
+            if (idx >= max_records) { truncated = 1; break; }
+            dispatch_record_t *lr = &records[idx];
+            lr->layer = ml;
+            memcpy(lr->phase, "dense", 6);
+            lr->target = r->target;
+            lr->expert_idx = -1;
+            lr->flit_bytes = 0;
+            memcpy(lr->kv_action, "load", 5);
+            lr->cu_type = CU_BF16_ARRAY;
+            idx++;
+        }
         if (truncated) break;
 
         /* Step 2b: KV cache check — offload if needed. Mirrors the Go
@@ -252,7 +310,7 @@ int fw_plan_inference(firmware_t *fw, const uint8_t *token,
             dispatch_record_t *kr = &records[idx];
             kr->layer = ml;
             memcpy(kr->phase, "kv_offload", 11);
-            kr->target = r->target;
+            kr->target = attn_target;
             kr->expert_idx = -1;
             kr->flit_bytes = 0;
             memcpy(kr->kv_action, "evict", 6);
@@ -303,6 +361,10 @@ int fw_plan_inference(firmware_t *fw, const uint8_t *token,
             idx++;
         }
         if (truncated) break;
+
+        /* Advance the sequence position for this layer after the attention
+         * (KV store) step, mirroring Go firmware.go SeqPositions[ml]++. */
+        fw->seq_pos++;
     }
 
     *num_records = idx;

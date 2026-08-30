@@ -206,18 +206,29 @@ typedef struct {
     int num_layers;           /* physical spine layers                   */
     int model_layers_per_physical; /* model layers per physical layer    */
     int num_hidden_layers;    /* actual model layers (0 = unknown, use mpl*num_layers) */
+
+    /* Flash attention config (mirrors Go DefaultFlashAttnConfig) */
+    int flash_attn_enabled;   /* 1 = tiled flash attention (default)     */
+    int flash_tile_size_kv;   /* KV tile size for flash attention        */
+    int seq_pos;              /* current sequence position (for KV tiling) */
 } firmware_t;
 
 /* ── Dispatch Record ───────────────────────────────────────────────── */
 
 typedef struct {
     int       layer;
-    char      phase[16];      /* "dense", "moe", "kv_offload" */
+    char      phase[16];      /* "dense", "moe", "kv_offload", "flash_attn" */
     node_id_t target;
     int       expert_idx;     /* -1 for dense */
     int       flit_bytes;
     char      kv_action[8];   /* "store", "load", "evict", "" */
     cu_type_t cu_type;
+    /* Flash attention metadata (mirrors Go DispatchRecord) */
+    int       flash_tile_q;    /* Q tile index */
+    int       flash_tile_kv;   /* KV tile index */
+    int       flash_num_tiles; /* total KV tiles */
+    int       window_start;    /* sliding window start (-1 = full attn) */
+    int       window_end;      /* sliding window end */
 } dispatch_record_t;
 
 /* ── API ───────────────────────────────────────────────────────────── */

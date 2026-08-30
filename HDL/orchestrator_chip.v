@@ -607,16 +607,51 @@ module orchestrator_chip #(
             endcase
 
             // =================================================================
-            // Result collection: tail_up → PCIe egress
+            // Result collection: tail_up → PCIe egress (10-byte FIFO)
             // Forwards result echoes from the spine back to the host via PCIe.
+            // Incoming bytes are buffered so a host backpressure window never
+            // drops a byte; only a full FIFO counts an error.
             // =================================================================
-            if (spine_extract_valid && boot_done && pcie_out_ready) begin
-                pcie_out_data  <= spine_extract_data;
-                pcie_out_valid <= 1;
-                pcie_out_sop   <= spine_extract_sop;
-                pcie_out_eop   <= spine_extract_eop;
-            end else begin
-                pcie_out_valid <= 0;
+            begin : rc_fifo
+                reg [3:0] rc_widx;
+                reg       rc_can_write;
+                reg       rc_do_drain;
+                rc_widx      = (rc_fifo_head + rc_fifo_cnt) % 4'd10;
+                rc_can_write = spine_extract_valid && boot_done && (rc_fifo_cnt != 4'd10);
+                rc_do_drain  = (rc_fifo_cnt != 4'd0) && pcie_out_ready;
+                if (spine_extract_valid && boot_done) begin
+                    if (rc_fifo_cnt == 4'd10) begin
+                        errors <= errors + 1;  // FIFO full: byte dropped
+                    end else begin
+                        rc_buf[rc_widx] <= spine_extract_data;
+                        rc_sop[rc_widx]  <= spine_extract_sop;
+                        rc_eop[rc_widx]  <= spine_extract_eop;
+                    end
+                end
+                if (rc_fifo_cnt != 4'd0) begin
+                    if (pcie_out_ready) begin
+                        pcie_out_data  <= rc_buf[rc_fifo_head];
+                        pcie_out_sop   <= rc_sop[rc_fifo_head];
+                        pcie_out_eop   <= rc_eop[rc_fifo_head];
+                        pcie_out_valid <= 1;
+                        rc_fifo_head   <= (rc_fifo_head + 1) % 4'd10;
+                    end else begin
+                        // Host backpressured: keep presenting the head byte.
+                        pcie_out_valid <= 1;
+                    end
+                end else begin
+                    pcie_out_valid <= 0;
+                end
+                // Net the occupancy update so a simultaneous spine write and
+                // PCIe drain in one cycle advance the count by zero (+1 write,
+                // -1 drain) instead of letting the last NBA assignment drop one
+                // of the two events.
+                if (rc_can_write && rc_do_drain)
+                    rc_fifo_cnt <= rc_fifo_cnt;
+                else if (rc_can_write)
+                    rc_fifo_cnt <= rc_fifo_cnt + 1;
+                else if (rc_do_drain)
+                    rc_fifo_cnt <= rc_fifo_cnt - 1;
             end
 
             // =================================================================

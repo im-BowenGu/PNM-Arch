@@ -217,8 +217,67 @@ func compileHLSLDecl(p *HLSLProgram, line string) error {
 
 func compileHLSLExpr(p *HLSLProgram, varName, expr string) error {
 	dest := p.getOrCreateReg(varName)
+	return compileHLSLExprTo(p, dest, expr)
+}
 
-	// Vector/Type constructors: float4(...), float3(...), float2(...), int(...)
+// compileHLSLExprTo compiles an HLSL expression into the given destination
+// register.  It is also used recursively by resolveHLSLAtom so that a compound
+// operand (e.g. "b + c" in "r = a.x + b.x + c.x") is fully lowered instead of
+// being treated as a bare variable name.
+func compileHLSLExprTo(p *HLSLProgram, dest, expr string) error {
+	expr = stripOuterParens(expr)
+
+	// Ternary: cond ? a : b
+	if idx := strings.Index(expr, "?"); idx > 0 {
+		parts := strings.SplitN(expr[idx+1:], ":", 2)
+		if len(parts) == 2 {
+			cond := strings.TrimSpace(expr[:idx])
+			thenExpr := strings.TrimSpace(parts[0])
+			elseExpr := strings.TrimSpace(parts[1])
+			// Emulate: dest = cond ? thenVal : elseVal
+			// via: dest = thenVal * sel + elseVal * (1 - sel), where sel is the
+			// condition normalized to 0.0/1.0.
+			condReg := p.allocReg()
+			if err := compileHLSLExprTo(p, condReg, cond); err != nil {
+				return err
+			}
+			zero := p.allocReg()
+			p.Regs = append(p.Regs, HLSLIR{Op: ALUConst, Dest: zero, Imm: 0.0})
+			one := p.allocReg()
+			p.Regs = append(p.Regs, HLSLIR{Op: ALUConst, Dest: one, Imm: 1.0})
+			sel := p.allocReg()
+			p.Regs = append(p.Regs, HLSLIR{Op: ALUCmp, Dest: sel, Src: []string{condReg, zero}, Cond: "!="})
+			notSel := p.allocReg()
+			p.Regs = append(p.Regs, HLSLIR{Op: ALUSub, Dest: notSel, Src: []string{one, sel}})
+			thenVal := resolveHLSLAtom(p, thenExpr)
+			elseVal := resolveHLSLAtom(p, elseExpr)
+			thenPart := p.allocReg()
+			p.Regs = append(p.Regs, HLSLIR{Op: ALUMul, Dest: thenPart, Src: []string{thenVal, sel}})
+			elsePart := p.allocReg()
+			p.Regs = append(p.Regs, HLSLIR{Op: ALUMul, Dest: elsePart, Src: []string{elseVal, notSel}})
+			p.Regs = append(p.Regs, HLSLIR{Op: ALUAdd, Dest: dest, Src: []string{thenPart, elsePart}})
+			return nil
+		}
+	}
+
+	// Comparison: a.x > 0.0, a == b, etc.
+	if cond, lhs, rhs, ok := splitHLSLCompare(expr); ok {
+		l := resolveHLSLAtom(p, lhs)
+		r := resolveHLSLAtom(p, rhs)
+		p.Regs = append(p.Regs, HLSLIR{Op: ALUCmp, Dest: dest, Src: []string{l, r}, Cond: cond})
+		return nil
+	}
+
+	// Binary arithmetic, with parentheses and precedence respected.
+	if opCh, lhsS, rhsS, ok := splitArith(expr); ok {
+		op := hlslArithOp(opCh)
+		l := resolveHLSLAtom(p, lhsS)
+		r := resolveHLSLAtom(p, rhsS)
+		p.Regs = append(p.Regs, HLSLIR{Op: op, Dest: dest, Src: []string{l, r}})
+		return nil
+	}
+
+	// Vector/Type constructors and intrinsic calls: float4(...), lerp(...), ...
 	if idx := strings.Index(expr, "("); idx > 0 {
 		funcName := strings.TrimSpace(expr[:idx])
 		argsStr := expr[idx+1:]
@@ -230,49 +289,12 @@ func compileHLSLExpr(p *HLSLProgram, varName, expr string) error {
 			if funcName == vt {
 				args := splitHLSLArgs(argsStr)
 				if len(args) > 0 {
-					return compileHLSLExpr(p, varName, args[0])
+					return compileHLSLExprTo(p, dest, args[0])
 				}
 				return nil
 			}
 		}
 		return compileHLSLCall(p, dest, funcName, argsStr)
-	}
-
-	// Ternary: cond ? a : b
-	if idx := strings.Index(expr, "?"); idx > 0 {
-		parts := strings.SplitN(expr[idx+1:], ":", 2)
-		if len(parts) == 2 {
-			cond := strings.TrimSpace(expr[:idx])
-			thenExpr := strings.TrimSpace(parts[0])
-			elseExpr := strings.TrimSpace(parts[1])
-			// Emulate: dest = cond ? thenVal : elseVal
-			// via: dest = thenVal * cmp + elseVal * (1 - cmp)
-			cmpResult := p.allocReg()
-			c := resolveHLSLAtom(p, cond)
-			zero := p.allocReg()
-			p.Regs = append(p.Regs, HLSLIR{Op: ALUConst, Dest: zero, Imm: 0.0})
-			p.Regs = append(p.Regs, HLSLIR{Op: ALUCmp, Dest: cmpResult, Src: []string{c, zero}, Cond: "!="})
-			one := p.allocReg()
-			p.Regs = append(p.Regs, HLSLIR{Op: ALUConst, Dest: one, Imm: 1.0})
-			notCmp := p.allocReg()
-			p.Regs = append(p.Regs, HLSLIR{Op: ALUSub, Dest: notCmp, Src: []string{one, cmpResult}})
-			thenVal := resolveHLSLAtom(p, thenExpr)
-			elseVal := resolveHLSLAtom(p, elseExpr)
-			thenPart := p.allocReg()
-			p.Regs = append(p.Regs, HLSLIR{Op: ALUMul, Dest: thenPart, Src: []string{thenVal, cmpResult}})
-			elsePart := p.allocReg()
-			p.Regs = append(p.Regs, HLSLIR{Op: ALUMul, Dest: elsePart, Src: []string{elseVal, notCmp}})
-			p.Regs = append(p.Regs, HLSLIR{Op: ALUAdd, Dest: dest, Src: []string{thenPart, elsePart}})
-			return nil
-		}
-	}
-
-	// Binary arithmetic
-	if op, lhs, rhs, ok := parseHLSLBinop(expr); ok {
-		l := resolveHLSLAtom(p, lhs)
-		r := resolveHLSLAtom(p, rhs)
-		p.Regs = append(p.Regs, HLSLIR{Op: op, Dest: dest, Src: []string{l, r}})
-		return nil
 	}
 
 	// Number literal
@@ -282,42 +304,66 @@ func compileHLSLExpr(p *HLSLProgram, varName, expr string) error {
 	}
 
 	// Variable
+	if strings.TrimSpace(expr) == "" {
+		return fmt.Errorf("unsupported HLSL expression: %q", expr)
+	}
 	src := p.getOrCreateReg(strings.TrimSpace(expr))
 	p.Regs = append(p.Regs, HLSLIR{Op: ALUMov, Dest: dest, Src: []string{src}})
 	return nil
 }
 
-func parseHLSLBinop(expr string) (FP32ALUOp, string, string, bool) {
-	// Find operator at nesting depth 0, right-to-left for precedence
+// hlslArithOp maps an arithmetic operator character from splitArith to the
+// corresponding FP32 ALU opcode.
+func hlslArithOp(c byte) FP32ALUOp {
+	switch c {
+	case '+':
+		return ALUAdd
+	case '-':
+		return ALUSub
+	case '*':
+		return ALUMul
+	case '/':
+		return ALUDiv
+	}
+	return ALUAdd
+}
+
+// splitHLSLCompare finds a comparison operator at nesting depth 0 and returns
+// the operator, left-hand side, and right-hand side.  It scans right-to-left so
+// that "a == b == c" splits at the last comparison (matching left-assoc).
+func splitHLSLCompare(expr string) (cond, lhs, rhs string, ok bool) {
+	cmps := []string{"==", "!=", "<=", ">=", "<", ">"}
+	bestIdx := -1
+	bestCond := ""
 	depth := 0
-	for i := len(expr) - 1; i >= 0; i-- {
-		switch expr[i] {
-		case ')':
-			depth++
+	for i := 0; i < len(expr); i++ {
+		c := expr[i]
+		switch c {
 		case '(':
-			depth--
-		case '+':
-			if depth == 0 && i > 0 {
-				return ALUAdd, expr[:i], expr[i+1:], true
+			depth++
+		case ')':
+			if depth > 0 {
+				depth--
 			}
-		case '-':
-			if depth == 0 && i > 0 {
-				return ALUSub, expr[:i], expr[i+1:], true
-			}
-		case '*':
-			if depth == 0 {
-				return ALUMul, expr[:i], expr[i+1:], true
-			}
-		case '/':
-			if depth == 0 {
-				return ALUDiv, expr[:i], expr[i+1:], true
+		}
+		if depth == 0 {
+			for _, op := range cmps {
+				if i+len(op) <= len(expr) && expr[i:i+len(op)] == op {
+					bestIdx = i
+					bestCond = op
+					break
+				}
 			}
 		}
 	}
-	return 0, "", "", false
+	if bestIdx == -1 {
+		return "", "", "", false
+	}
+	return bestCond, strings.TrimSpace(expr[:bestIdx]), strings.TrimSpace(expr[bestIdx+len(bestCond):]), true
 }
 
 func resolveHLSLAtom(p *HLSLProgram, s string) string {
+	s = stripOuterParens(s)
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return p.getOrCreateReg("_")
@@ -327,8 +373,27 @@ func resolveHLSLAtom(p *HLSLProgram, s string) string {
 		p.Regs = append(p.Regs, HLSLIR{Op: ALUConst, Dest: r, Imm: float32(val)})
 		return r
 	}
-	s = strings.Trim(s, "()")
-	return p.getOrCreateReg(s)
+	// Unary minus on a bare variable (e.g. "-b" in "2.0 * -b") is negated
+	// here, rather than being passed through to compileHLSLExprTo where the
+	// trailing Variable case would emit a read of an unwritten register
+	// named "-b".  A leading minus on a numeric literal is handled above.
+	if strings.HasPrefix(s, "-") && isSimpleIdent(strings.TrimPrefix(s, "-")) {
+		zero := p.allocReg()
+		p.Regs = append(p.Regs, HLSLIR{Op: ALUConst, Dest: zero, Imm: 0.0})
+		neg := p.allocReg()
+		p.Regs = append(p.Regs, HLSLIR{Op: ALUSub, Dest: neg, Src: []string{zero, p.getOrCreateReg(strings.TrimPrefix(s, "-"))}})
+		return neg
+	}
+	// A bare identifier is a register reference; anything else (a parenthesized
+	// or arithmetic operand such as "(b + c)") must be compiled as an expression.
+	if isSimpleIdent(s) {
+		return p.getOrCreateReg(s)
+	}
+	r := p.allocReg()
+	if err := compileHLSLExprTo(p, r, s); err != nil {
+		return p.getOrCreateReg(s)
+	}
+	return r
 }
 
 func compileHLSLCall(p *HLSLProgram, dest, funcName, argsStr string) error {

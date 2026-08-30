@@ -152,7 +152,8 @@ func (d *Driver) computeMoeMap() map[MoeKey][]NodeID {
 type WeightUploadCommand struct {
 	TargetLayer  int             // physical layer (0-based)
 	TargetModule byte            // MODULE_ID = {X[3:0], Y[3:0]}
-	Payload      []byte          // raw tensor bytes
+	Payload      []byte          // sampled tensor bytes (bounded; see generateWeightPayload)
+	SizeBytes    int64           // authoritative tensor size in bytes (budget / MB accounting)
 	CUType       ComputeUnitType // compute unit that processes this tensor
 	DType        string          // "BF16", "FP16", "FP32", "INT8"
 	ModelLayer   int             // model layer index (-1 for non-layer tensors)
@@ -223,6 +224,7 @@ func (d *Driver) BuildWeightCommands() ([]WeightUploadCommand, error) {
 					TargetLayer:  nid.L,
 					TargetModule: moduleID,
 					Payload:      payload,
+					SizeBytes:    t.SizeBytes,
 					CUType:       t.CUType,
 					DType:        t.DType,
 					ModelLayer:   t.ModelLayer,
@@ -235,13 +237,20 @@ func (d *Driver) BuildWeightCommands() ([]WeightUploadCommand, error) {
 	return cmds, nil
 }
 
-// generateWeightPayload produces the raw BF16 weight bytes for a tensor.
-// In production, this reads from the safetensors file at the correct offset.
-// For the co-simulation, it generates deterministic synthetic data.
+// generateWeightPayload produces a bounded synthetic byte sample for a tensor.
+// The weight payload content is not consumed by the boot/verify/driver path (only
+// the authoritative SizeBytes is used for budget accounting), so the materialized
+// buffer is capped to keep a large model from exhausting host RAM when the whole
+// chassis's weights are enumerated at once. In production the full tensor would be
+// read from safetensors and streamed per command rather than held in one map.
 func (d *Driver) generateWeightPayload(t TensorRef) []byte {
 	nbytes := int(t.SizeBytes)
 	if nbytes == 0 {
 		return nil
+	}
+	const sampleCap = 4096
+	if nbytes > sampleCap {
+		nbytes = sampleCap
 	}
 	var tmpl [256]byte
 	base := (t.ModelLayer*7 + t.ExpertIdx*3) & 0xFF
@@ -271,56 +280,6 @@ func BuildWeightFlit(cmd WeightUploadCommand) []StreamByte {
 }
 
 // ============================================================================
-// Inference API
-// ============================================================================
-
-// InferDispatch is one token dispatch through the MoE fabric.
-// The driver sends the token to the orchestrator chip, which evaluates the gating
-// network and dispatches to the top-k experts.
-type InferDispatch struct {
-	TokenPayload []byte    // input hidden state
-}
-
-// PlanInference computes the dispatch sequence for one token through all
-// layers.  For each layer: (1) dispatch to the attention node, (2) dispatch
-// to each of the top-k experts.
-func (d *Driver) PlanInference(token []byte) (*InferDispatch, error) {
-	tc := &d.Config.TextConfig
-	if tc.NumExperts == 0 {
-		return nil, fmt.Errorf("driver: no experts in model config")
-	}
-
-	disp := &InferDispatch{
-		TokenPayload: token,
-	}
-
-	nodesPerLayer := d.Dims.Bx * d.Dims.By
-	modelLayersPerPhysical := (tc.NumHiddenLayers + d.Dims.Layers - 1) / d.Dims.Layers
-
-	for ml := 0; ml < tc.NumHiddenLayers; ml++ {
-		pl := ml / modelLayersPerPhysical
-		if pl >= d.Dims.Layers {
-			pl = d.Dims.Layers - 1
-		}
-
-		// Dense path: attention node
-		attnNodeIdx := ml % nodesPerLayer
-		attnX := attnNodeIdx / d.Dims.By
-		attnY := attnNodeIdx % d.Dims.By
-		_ = NodeID{L: pl, X: attnX, Y: attnY} // dispatch target
-
-		// MoE path: top-k experts (for now, all experts — no gating network)
-		for expIdx := 0; expIdx < tc.TopKExperts; expIdx++ {
-			key := MoeKey{ModelLayer: ml, ExpertIdx: expIdx}
-			if _, ok := d.MoeMap[key]; !ok {
-				continue // expert not in map (shouldn't happen)
-			}
-		}
-	}
-
-	return disp, nil
-}
-
 // ============================================================================
 // Schemas and serialization
 // ============================================================================

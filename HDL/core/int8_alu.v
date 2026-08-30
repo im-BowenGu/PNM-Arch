@@ -18,7 +18,7 @@
 //   → result[15:0] (extended to 16-bit for MUL/SHIFT), valid_out
 //
 // Signed arithmetic throughout. MUL produces 16-bit signed result.
-// ADD/SUB produce 8-bit result zero-extended to 16-bit.
+// ADD/SUB produce an 8-bit signed (wrapping) result sign-extended to 16-bit.
 // =============================================================================
 
 module int8_alu (
@@ -75,13 +75,13 @@ module int8_alu (
         end else begin
             valid_out <= s1_valid;
             case (s1_op)
-                OP_ADD:   result <= {8'h00, add_result[7:0]};
-                OP_SUB:   result <= {8'h00, sub_result[7:0]};
+                OP_ADD:   result <= {{8{add_result[7]}}, add_result[7:0]};
+                OP_SUB:   result <= {{8{sub_result[7]}}, sub_result[7:0]};
                 OP_MUL:   result <= mul_result;
-                OP_SHIFT: result <= {8'h00, shift_result};
-                OP_MIN:   result <= {8'h00, min_result};
-                OP_MAX:   result <= {8'h00, max_result};
-                OP_AND:   result <= {8'h00, and_result};
+                OP_SHIFT: result <= {{8{shift_result[7]}}, shift_result};
+                OP_MIN:   result <= {{8{min_result[7]}}, min_result};
+                OP_MAX:   result <= {{8{max_result[7]}}, max_result};
+                OP_AND:   result <= {{8{and_result[7]}}, and_result};
                 OP_CMP:   result <= {8'h00, cmp_result};
                 default:  result <= 0;
             endcase
