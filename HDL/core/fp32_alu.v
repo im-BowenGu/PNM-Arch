@@ -87,15 +87,19 @@ module fp32_alu (
     reg [25:0] d_quot;      // 26-bit quotient for accuracy and rounding
     reg [4:0]  d_cnt;
     reg        d_sign;
-    reg [8:0]  d_exp;
+    reg signed [9:0] d_exp;  // signed: wrap-free a_exp - b_exp + 127 in [-126, 380]
     reg        d_valid_r;
     reg [31:0] d_result_r;
+
+    wire signed [9:0] d_result_exp = d_quot[25] ? d_exp : (d_exp - 10'sd1);
 
     wire [24:0] rem_sub = d_rem_high - {1'b0, d_divisor};
     wire        can_sub = ~rem_sub[24]; // Positive or zero => subtraction successful
 
     wire a_is_zero = (a[30:0] == 31'd0);
     wire b_is_zero = (b[30:0] == 31'd0);
+    wire a_is_den  = (a[30:23] == 8'd0) && (a[22:0] != 0);
+    wire b_is_den  = (b[30:23] == 8'd0) && (b[22:0] != 0);
 
     assign busy = (d_state != DIV_IDLE);
 
@@ -113,8 +117,15 @@ module fp32_alu (
                         if ((a[30:23] == 8'd255 && a[22:0] != 0) ||
                             (b[30:23] == 8'd255 && b[22:0] != 0) ||
                             (a[30:23] == 8'd255 && b[30:23] == 8'd255) ||
-                            (a_is_zero && b_is_zero)) begin
+                            (a_is_zero && b_is_zero) ||
+                            (a[30:23] == 8'd255 && b_is_zero)) begin
                             d_result_r <= FP32_NAN; d_valid_r <= 1;
+                        end else if (a_is_den) begin
+                            // Denormal input flushed: a_den -> a=0 -> +-0
+                            d_result_r <= {a[31] ^ b[31], 8'd0, 23'd0}; d_valid_r <= 1;
+                        end else if (b_is_den) begin
+                            // b_den -> b=0 -> +-Inf
+                            d_result_r <= {a[31] ^ b[31], 8'd255, 23'd0}; d_valid_r <= 1;
                         end else if (b_is_zero) begin
                             d_result_r <= {a[31] ^ b[31], 8'd255, 23'd0}; d_valid_r <= 1;
                         end else if (a_is_zero) begin
@@ -128,7 +139,8 @@ module fp32_alu (
                             d_rem_low  <= 24'd0;
                             d_divisor  <= {1'b1, b[22:0]};
                             d_quot     <= 0;
-                            d_exp      <= {1'b0, a[30:23]} - {1'b0, b[30:23]} + 9'd127;
+                            d_exp      <= $signed({2'b00, a[30:23]}) -
+                                         $signed({2'b00, b[30:23]}) + 10'sd127;
                             d_cnt      <= 0;
                             d_state    <= DIV_COMPUTE;
                         end
@@ -155,23 +167,19 @@ module fp32_alu (
 
                 DIV_NORM: begin
                     // d_quot[25] = 1 => range [1.0, 2.0); = 0 => [0.5, 1.0)
-                    if (d_quot[25]) begin
-                        if (d_exp[8]) begin
-                            // exponent overflow → infinity
-                            d_result_r <= {d_sign, 8'd255, 23'd0};
-                        end else if (d_exp == 0) begin
-                            // exponent underflow → zero
-                            d_result_r <= {d_sign, 8'd0, 23'd0};
-                        end else begin
-                            d_result_r <= {d_sign, d_exp[7:0], d_quot[24:2]};
-                        end
+                    // d_exp is 10-bit signed (captured wrap-free): true
+                    // overflow (>=255) and wrapped underflow (-126 = 386 mod
+                    // 512) share the 9-bit d_exp[8] region, so a bare bit test
+                    // conflates them. Compare the signed value instead.
+                    if (d_result_exp > 10'sd254) begin
+                        // exponent overflow → infinity
+                        d_result_r <= {d_sign, 8'd255, 23'd0};
+                    end else if (d_result_exp < 10'sd1) begin
+                        // exponent underflow (incl. subnormal) → zero
+                        d_result_r <= {d_sign, 8'd0, 23'd0};
                     end else begin
-                        if (d_exp[8] || d_exp == 0) begin
-                            // exponent underflow → zero
-                            d_result_r <= {d_sign, 8'd0, 23'd0};
-                        end else begin
-                            d_result_r <= {d_sign, d_exp[7:0] - 8'd1, d_quot[23:1]};
-                        end
+                        d_result_r <= {d_sign, d_result_exp[7:0],
+                                       d_quot[25] ? d_quot[24:2] : d_quot[23:1]};
                     end
                     d_valid_r <= 1;
                     d_state   <= DIV_IDLE;
@@ -222,7 +230,14 @@ module fp32_alu (
             OP_MAX: s1_minmax_res = s1_both_zero ? {s1_a_sign & s1_b_sign, 31'd0} :
                                     s1_a_nan ? s1_b : s1_b_nan ? s1_a :
                                     (s1_a_gt_b ? s1_a : s1_b);
-            OP_CMP: s1_minmax_res = s1_a_gt_b ? FP32_ONE : FP32_ZERO;
+            // OP_CMP contract (HDL/README.md:306): (a >= b) ? 1.0 : 0.0.
+            // Equality (a == b) must return 1.0, so use the non-strict test.
+            // Any comparison with a NaN is unordered (false) per IEEE 754, so
+            // two identical NaN bit patterns must NOT compare equal.
+            OP_CMP: s1_minmax_res = (s1_a_nan || s1_b_nan) ? FP32_ZERO :
+                                    (s1_a_gt_b || s1_both_zero ||
+                                     (s1_a[30:0] == s1_b[30:0] &&
+                                      s1_a[31] == s1_b[31])) ? FP32_ONE : FP32_ZERO;
             default:s1_minmax_res = FP32_ZERO;
         endcase
     end

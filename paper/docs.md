@@ -17,7 +17,9 @@ Paper/
   README.md             # Project overview
   HDL/                  # Verilog-2005 fabric model + compute units
   sim/                  # Co-simulation harness (Go, stdlib only)
-  sim/fw/               # C firmware port for MCU targets
+  fw/                   # C firmware port for MCU targets
+  toolchain/            # MCU/SoC/Linux/seL4 cross-compilation toolchains
+  pi_host/              # Raspberry Pi Compute Module host drivers
   sim/examples/         # Synthetic test configurations
   submission/           # Build artifacts (gitignored)
 ```
@@ -48,8 +50,8 @@ The fabric is a byte-wide, Verilog-2005 model of the deterministic single-spine 
 | `fp64_fma.v` | FMA | FP64 | 3 cycles | Double-precision scientific |
 | `bf16_mac_array.v` | Systolic array | BF16 | variable | Attention QKV |
 | `fp16_mac_array.v` | Systolic array | FP16 | variable | FP16 attention |
-| `fp32_alu.v` | ALU | FP32 | 1-25 cycles | Layernorm (divider) |
-| `int8_mac.v` | MAC | INT8 | 1 cycle | Quantized inference |
+| `fp32_alu.v` | ALU | FP32 | 3 (MIN/MAX/CMP), 4 (FMA), 25 (DIV) cycles | Layernorm (divider) |
+| `int8_mac.v` | MAC | INT8 | 2 cycles | Quantized inference |
 | `moe_gating.v` | MoE Gating | BF16 | variable | Top-k expert selection |
 
 ### Doorbell and CRC
@@ -71,14 +73,14 @@ The orchestrator chip family is implemented as RISC-V System-on-Chip designs for
 | `clint.v` | CLINT | shared | Machine-mode timer (mtime/mtimecmp) + software interrupt (msip) |
 | `bmc_orchestrator_top.v` | BMC SoC | full | CPU + 64KB ROM + 64KB SRAM + UART + CLINT + PNM orchestrator engine |
 | `orchestrator_mcu.v` | MCU Orchestrator | minimal | RV32I + 8KB ROM + 4KB SRAM + UART only. No PCIe/MoE/FPU. For stencil/reduction/broadcast on small chassis |
-| `orchestrator_sbc_moe.v` | SBC+MoE Router | mid-tier | RV32IMA + LPDDR5 DRAM stub + 64KB MoE gating SRAM + BF16 systolic array + moe_gating unit + PCIe Gen5 register stub. For MoE/dense LLM dispatch |
-| `orchestrator_sbc.v` | SBC Orchestrator | general | RV32IMA + 64KB ROM + 16MB SRAM (0x40000000) + LPDDR5 DRAM stub (1GB window) + PCIe Gen5 x16 PHY + NVMe storage controller. Runs Linux/seL4 NOMMU + CPython userland. For transpiler orchestration and complex data workflows |
+| `orchestrator_sbc_moe.v` | SBC+MoE Router | mid-tier | RV32IMA + LPDDR5 DRAM stub + 64KB MoE gating SRAM + moe_gating unit + PCIe Gen5 register stub. For MoE/dense LLM dispatch |
+| `orchestrator_sbc.v` | SBC Orchestrator | general | RV32IMA + 64KB ROM + on-chip SRAM (0x40000000, configurable 512KB default up to 32MB via SRAM_WORDS; fw-linux targets 16MB) + LPDDR5 DRAM stub (1GB window) + PCIe Gen5 x16 PHY + NVMe storage controller. Runs Linux/seL4 NOMMU + CPython userland. For transpiler orchestration and complex data workflows |
 
 Memory maps:
 - **bmc_orchestrator_top**: ROM@0x00000000, UART@0x10000000, CLINT@0x20000000, SRAM@0x80000000, PNM@0xF0000000.
 - **orchestrator_mcu**: ROM@0x00000000 (8KB), UART@0x10000000, SRAM@0x80000000 (4KB), PNM@0xF0000000.
 - **orchestrator_sbc_moe**: ROM@0x00000000, UART@0x10000000, CLINT@0x20000000, GatingSRAM@0x40000000 (64KB BF16), DRAM@0x80000000 (512MB), PCIe@0xC0000000, PNM@0xF0000000.
-- **orchestrator_sbc**: ROM@0x00000000 (64KB), UART@0x10000000, CLINT@0x20000000, SRAM@0x40000000 (16MB), DRAM@0x80000000 (1GB), PCIe@0xC0000000 (Gen5 x16 PHY), NVMe@0xD0000000, PNM@0xF0000000.
+- **orchestrator_sbc**: ROM@0x00000000 (64KB), UART@0x10000000, CLINT@0x20000000, SRAM@0x40000000 (256MB window; 512KB default, configurable up to 32MB), DRAM@0x80000000 (1GB), PCIe@0xC0000000 (Gen5 x16 PHY), NVMe@0xD0000000, PNM@0xF0000000.
 
 **Why DRAM on SBC-class chips:** software stacks like CPython on Linux require hundreds of MB for kernel + interpreter + site-packages; on-chip SRAM cannot scale to that capacity at reasonable cost. The SBC variants model an external LPDDR5 controller with a behavioral array and programmable CAS latency (`DRAM_LATENCY`). Production silicon replaces this with a hard DDR PHY.
 
@@ -163,12 +165,12 @@ counters. The same module, re-parameterized, models DDR4/DDR5 SODIMM modules:
   deassert; STAGES parameter) used at every clock-domain boundary, and a
   latch-based glitch-free clock-gating cell whose enable captures on the
   falling edge with an unconditional scan_en bypass for DFT observability.
-- **`kv_cache_bank.v` — Per-direction KV cache bank** (`tb_kv_cache_bank.v`).
+- **`kv_cache_bank.v` — Per-direction KV cache bank** (verified via co-sim `kvcache=true` path, no dedicated standalone TB).
   On-chip SRAM bank storing Key/Value tensors for autoregressive inference.
   Each physical layer has 4 banks (X+, X-, Y+, Y-). Snoop the NoB link for
   KV_STORE/KV_LOAD opcodes; when full, asserts `kv_full` for the offload
   controller. FIFO eviction at configurable threshold.
-- **`kv_offload.v` — KV cache offloading controller** (`tb_kv_offload.v`).
+- **`kv_offload.v` — KV cache offloading controller** (verified via co-sim; no dedicated standalone TB).
   Manages eviction and reclaim between on-chip banks and host memory via the
   spine fabric. Compile-time `EVICTION_TARGET` parameter selects the
   destination: 0=discard (no persistence), 1=BMC DMA (round-trip over spine),
@@ -282,25 +284,25 @@ Design notes:
 
 Two toolchains target the chip family:
 
-- **MCU** (`sim/toolchain/mcu/`): bare-metal static firmware. Cross-compiles to flat binary for ROM burn-in via riscv-none-elf-gcc. Linker script places .text/.rodata in ROM and .data/.bss in SRAM with startup copy/zero code. No libc, no malloc, no OS.
-- **SoC** (`sim/toolchain/soc/`): NOMMU Linux/seL4 userspace daemon. Statically linked against musl-libc, accesses PNM registers via `/dev/pnm` mmap. Uses dynamic allocation (DRAM-backed heap). Entry point placed at DRAM offset 0x1000 by boot loader.
-- **SoC Linux** (`sim/toolchain/soc-linux/`): full OS image builder for `orchestrator_sbc`. Downloads, configures, and compiles a stripped RV32IMA NOMMU Linux kernel (6.6.x, no MMU/FPU/modules, 16550 UART + NVMe stub only), clones and builds seL4 microkernel (CMake cross-compile for riscv32), cross-compiles the `rustd` access-control daemon (Rust, no dependencies, bare-metal + NOMMU dual entry points), and packs an initramfs rootfs. The Rust daemon provides SHA-256/HMAC/PBKDF2 authentication, 32-user role-based access control, 64-job workload management, and configurable KV cache eviction routing (discard / BMC DMA / NVMe). Outputs land in a gitignored `build/` directory: flat kernel `Image`, seL4 ELF, `rustd`, and `initramfs.cpio`. Boot flow: ROM → SPL → kernel at DRAM 0x80000000 → `/init` → `rustd` mmaps `/dev/pnm` (0xF0000000) and starts dispatch.
-- **fw-linux** (`sim/toolchain/fw-linux/`): Linux tinyconfig + bare-metal init for `orchestrator_sbc`. Kernel config fragment (NOMMU, RV32I, no FPU) trims the kernel to fit in the 16 MB SRAM window (`0x4000_0000`). Produces `Image`, `init` binary, and `initrd.cpio` initramfs. The init binary prints a boot banner over UART@`0x10000000` (115200 8N1), probes the NVMe controller at `0xD0000000` (reads CAP, VS, CSTS), and enters a `wfi` idle loop. UART/PNM drivers are local; the NVMe driver is shared from `sim/fw/pnm_nvme.c`.
-- **fw-sel4** (`sim/toolchain/fw-sel4/`): seL4 microkernel root task for `orchestrator_sbc`. CMake-based build for RV32IMA generic platform. The root task maps UART@`0x10000000` and PNM@`0xF0000000` device frames via seL4 capabilities, prints a boot banner, reads PNM STATUS to confirm the orchestrator chip is alive, and enters a `seL4_Yield` idle loop. seL4 provides formal verification, capability-based access control, and temporal isolation — a hardened alternative to Linux for the orchestrator chip's control plane.
-- **Pi host** (`sim/pi_host/`): Raspberry Pi Compute Module drivers that reach the orchestrator PNM register window from a Pi: through the `HDL/pi_bridge.v` SPI slave (CM0-CM4 GPIO SPI) or directly via PCIe BAR0 (CM5). The same 48-bit frame protocol is implemented five times for maximum compatibility — Python (`pnm_pi.py`, spidev), Go (`pnm_pi.go`, stdlib-only raw ioctl), Rust (`pnm_pi.rs`, zero crates), C (`pnm_pi_spi.c`, raw ioctl), and C-over-PCIe (`pnm_pi_cm5.c`, sysfs BAR0 mmap). Frame: header byte `{rw<<7|sel}`, 32-bit data, status byte (0x01 write-ack / 0x00 read-ok); sel 0-9 map to PNM offsets 0x00-0x24.
+- **MCU** (`toolchain/mcu/`): bare-metal static firmware. Cross-compiles to flat binary for ROM burn-in via riscv-none-elf-gcc. Linker script places .text/.rodata in ROM and .data/.bss in SRAM with startup copy/zero code. No libc, no malloc, no OS.
+- **SoC** (`toolchain/soc/`): NOMMU Linux/seL4 userspace daemon. Statically linked against musl-libc, accesses PNM registers via `/dev/pnm` mmap. Uses dynamic allocation (DRAM-backed heap). Entry point placed at DRAM offset 0x1000 by boot loader.
+- **SoC Linux** (`toolchain/soc-linux/`): full OS image builder for `orchestrator_sbc`. Downloads, configures, and compiles a stripped RV32IMA NOMMU Linux kernel (6.6.x, no MMU/FPU/modules, 16550 UART + NVMe stub only), clones and builds seL4 microkernel (CMake cross-compile for riscv32), cross-compiles the `rustd` access-control daemon (Rust, no dependencies, bare-metal + NOMMU dual entry points), and packs an initramfs rootfs. The Rust daemon provides SHA-256/HMAC/PBKDF2 authentication, 32-user role-based access control, 64-job workload management, and configurable KV cache eviction routing (discard / BMC DMA / NVMe). Outputs land in a gitignored `build/` directory: flat kernel `Image`, seL4 ELF, `rustd`, and `initramfs.cpio`. Boot flow: ROM → SPL → kernel at DRAM 0x80000000 → `/init` → `rustd` mmaps `/dev/pnm` (0xF0000000) and starts dispatch.
+- **fw-linux** (`toolchain/fw-linux/`): Linux tinyconfig + bare-metal init for `orchestrator_sbc`. Kernel config fragment (NOMMU, RV32I, no FPU) trims the kernel to fit in the 16 MB SRAM window (`0x4000_0000`). Produces `Image`, `init` binary, and `initrd.cpio` initramfs. The init binary prints a boot banner over UART@`0x10000000` (115200 8N1), probes the NVMe controller at `0xD0000000` (reads CAP, VS, CSTS), and enters a `wfi` idle loop. UART/PNM drivers are local; the NVMe driver is shared from `fw/pnm_nvme.c`.
+- **fw-sel4** (`toolchain/fw-sel4/`): seL4 microkernel root task for `orchestrator_sbc`. CMake-based build for RV32IMA generic platform. The root task maps UART@`0x10000000` and PNM@`0xF0000000` device frames via seL4 capabilities, prints a boot banner, reads PNM STATUS to confirm the orchestrator chip is alive, and enters a `seL4_Yield` idle loop. seL4 provides formal verification, capability-based access control, and temporal isolation — a hardened alternative to Linux for the orchestrator chip's control plane.
+- **Pi host** (`pi_host/`): Raspberry Pi Compute Module drivers that reach the orchestrator PNM register window from a Pi: through the `HDL/pi_bridge.v` SPI slave (CM0-CM4 GPIO SPI) or directly via PCIe BAR0 (CM5). The same 48-bit frame protocol is implemented five times for maximum compatibility — Python (`pnm_pi.py`, spidev), Go (`pnm_pi.go`, stdlib-only raw ioctl), Rust (`pnm_pi.rs`, zero crates), C (`pnm_pi_spi.c`, raw ioctl), and C-over-PCIe (`pnm_pi_cm5.c`, sysfs BAR0 mmap). Frame: header byte `{rw<<7|sel}`, 32-bit data, status byte (0x01 write-ack / 0x00 read-ok); sel 0-9 map to PNM offsets 0x00-0x24.
 
 ### NVMe storage and Lustre filesystem
 
 The orchestrator chip's firmware gains block-level persistence through two
 complementary layers:
 
-- **NVMe driver** (`sim/fw/pnm_nvme.{h,c}`, Go twin
+- **NVMe driver** (`fw/pnm_nvme.{h,c}`, Go twin
   `sim/internal/pnm/nvme_lustre.go`): register-level driver for
   `HDL/nvme_ctrl.v`. Probes CAP, sets CSTS.ready, then submits READ/WRITE/
   FLUSH commands through the AXI-Lite window with poll-for-done completion.
   Used for model weight save/load across power cycles and KV cache overflow
   pages.
-- **Lustre client** (`sim/fw/pnm_lustre.{h,c}`): a minimal Lustre OSS
+- **Lustre client** (`fw/pnm_lustre.{h,c}`): a minimal Lustre OSS
   endpoint that splits the NVMe device into up to 16 object storage targets
   and stripes files round-robin across them with configurable stripe count
   (1–8) and stripe size (up to 1 MB). Each router node acts as both a Lustre
@@ -324,7 +326,7 @@ All testbenches are self-checking (scoreboard counters, `errors` integers, $disp
 | `tb_fp32_fma.v` | FP32 FMA 3-cycle pipeline | `*** FP32 FMA TEST PASSED ***` |
 | `tb_fp64_fma.v` | FP64 FMA 3-cycle pipeline | `*** FP64 FMA TEST PASSED ***` |
 | `tb_fp32_alu.v` | FP32 ALU division, MIN/MAX/CMP | `*** FP32 ALU TEST PASSED ***` |
-| `tb_int8_mac.v` | INT8 single-cycle MAC | `*** INT8 MAC TEST PASSED ***` |
+| `tb_int8_mac.v` | INT8 2-cycle MAC | `*** INT8 MAC TEST PASSED ***` |
 | `tb_fp16_mac_array.v` | FP16 systolic array | `*** FP16 MAC ARRAY TEST PASSED ***` |
 | `tb_bf16_mac_array.v` | BF16 systolic array | `*** BF16 MAC ARRAY TEST PASSED ***` |
 | `tb_moe_gating.v` | MoE softmax top-k | `*** MoE GATING TEST PASSED ***` |
@@ -574,7 +576,7 @@ token 2 2 5   10 20 30 40 50 60 70 80 90 a0 b0 c0 d0 e0 f0 00
 token 7 7 7   de ad be ef
 ```
 
-## C Firmware Port (sim/fw/)
+## C Firmware Port (fw/)
 
 Direct C port of `firmware.go` for MCU targets (ARM Cortex-M/R, RISC-V).
 
@@ -621,7 +623,7 @@ python3 build.py --review   # submission/paper_review.pdf (11pt single-column)
 cd HDL
 iverilog -g2005 -o tb_fabric.out hfr.v flit_gate.v vc_merge.v lxy_repeater.v xy_turn.v node_eject.v tb_fabric.v && vvp tb_fabric.out
 iverilog -g2005 -o tb_load.out   hfr.v flit_gate.v vc_merge.v lxy_repeater.v xy_turn.v node_eject.v tb_load.v   && vvp tb_load.out
-iverilog -g2005 -o tb_doorbell.out tb_doorbell.v pe_tile_stub.v doorbell.v crc16.v bf16_fma.v && vvp tb_doorbell.out
+iverilog -g2005 -o tb_doorbell.out core/tb_doorbell.v core/pe_tile_stub.v core/doorbell.v core/crc16.v core/bf16_fma.v core/weight_dequant.v core/int8_mac.v && vvp tb_doorbell.out
 # ... (see AGENTS.md for complete list)
 ```
 
@@ -632,7 +634,7 @@ verilator --lint-only -Wno-MULTITOP hfr.v flit_gate.v vc_merge.v lxy_repeater.v 
 
 ### C Firmware
 ```bash
-cd sim/fw && gcc -Wall -Wextra -std=c11 -c pnm_fw.c -o pnm_fw.o
+cd fw && gcc -Wall -Wextra -std=c11 -c pnm_fw.c -o pnm_fw.o
 ```
 
 ### Co-Simulation

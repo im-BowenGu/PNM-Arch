@@ -16,6 +16,9 @@
 //   2. Underflow: signed norm_exp prevents unsigned wrap
 //   3. Rounding: round-to-nearest-even
 //   4. Special cases: NaN, Inf, zero*Inf
+//   5. Mantissa alignment: 49-bit intermediate prevents MSB loss on overflow
+//   6. Far sticky: reciprocal dropped alignment bits ORed into rounding so a
+//      tiny same-sign addend rounds up; sub_far suppresses the RNE tie-break
 // =============================================================================
 
 module fp32_fma (
@@ -73,9 +76,11 @@ module fp32_fma (
     assign b_mantissa_w[22:0] = b_zero_w ? 23'd0 : (b_den_w ? {1'b0, b_man_w} : b_man_w);
     wire [8:0]  b_exponent_w = b_zero_w ? 9'd0 : (b_den_w ? 9'd1 : {1'b0, b_exp_w});
 
-    // Multiply
+    // Multiply — zero-guard ported from fp16_fma/bf16_fma (0*x must not leave
+    // a bogus exponent that misaligns c into oblivion).
     wire        mul_sign_w = a_sign_w ^ b_sign_w;
-    wire signed [9:0] mul_exp_w = $signed({1'b0, a_exponent_w}) + $signed({1'b0, b_exponent_w}) - 10'sd127;
+    wire signed [9:0] mul_exp_w = (a_zero_w || b_zero_w) ? 10'sd0 :
+        $signed({1'b0, a_exponent_w}) + $signed({1'b0, b_exponent_w}) - 10'sd127;
     wire [47:0] mul_man_w  = a_mantissa_w * b_mantissa_w;
     wire        mul_ovf_w  = mul_man_w[47];
 
@@ -126,13 +131,34 @@ module fp32_fma (
     wire signed [9:0] add_exp = (mul_exp_eff > $signed({1'b0, c_exponent})) ? mul_exp_eff : $signed({1'b0, c_exponent});
     wire signed [9:0] exp_diff = mul_exp_eff - $signed({1'b0, c_exponent});
 
-    // Align mantissas: implicit 1 at bit 47
-    wire [47:0] mul_man_aligned = (exp_diff >= 0) ?
-        (s1_mul_man << 1) :
-        (s1_mul_man << 1) >> (-exp_diff);
+    // Align mantissas: use 49-bit intermediate to avoid losing the MSB on overflow.
+    // When s1_mul_overflow=1 the implicit leading 1 is already at bit 47, so no
+    // up-shift is needed; in both cases right-shift by -exp_diff when c has the
+    // larger exponent so both operands sit at the same scale before adding.
+    wire [48:0] mul_man_49 = {1'b0, s1_mul_man};
+    wire [48:0] mul_pre    = s1_mul_overflow ? mul_man_49 : (mul_man_49 << 1);
+    wire [48:0] mul_man_aligned_w = (exp_diff >= 0) ? mul_pre : (mul_pre >> (-exp_diff));
+    wire [47:0] mul_man_aligned = mul_man_aligned_w[47:0];
     wire [47:0] c_man_aligned = (exp_diff < 0) ?
         ({c_mantissa, 24'd0}) :
         ({c_mantissa, 24'd0} >> exp_diff);
+
+    // Far sticky: bits of the right-shifted operand that fall entirely below
+    // the aligned window's LSB (position 0) are gone from norm_man, so OR them
+    // back in as a sticky so a tiny addend still rounds the mantissa up.
+    wire [8:0]  mul_shift_w = (exp_diff < 0) ? (-exp_diff) : 9'd0;
+    wire [8:0]  c_shift_w   = (exp_diff > 0) ?  exp_diff : 9'd0;
+    wire [8:0]  mul_shift   = (mul_shift_w > 9'd49) ? 9'd49 : mul_shift_w;
+    wire [8:0]  c_shift     = (c_shift_w   > 9'd48) ? 9'd48 : c_shift_w;
+    wire mul_far_sticky = |(mul_pre & ((49'd1 << mul_shift) - 49'd1));
+    wire c_far_sticky  = |({c_mantissa, 24'd0} & ((48'd1 << c_shift) - 48'd1));
+    // The far sticky only applies to addition (same signs): subtraction
+    // residuals pull the true magnitude down, so they must suppress the RNE
+    // tie-break instead of adding sticky.
+    wire add_op = (s1_mul_sign == c_sign);
+    wire mul_far_eff = add_op & mul_far_sticky;
+    wire c_far_eff  = add_op & c_far_sticky;
+    wire sub_far = (!add_op) & (mul_far_sticky | c_far_sticky);
 
     // Add
     wire        mul_ge_c = (mul_man_aligned >= c_man_aligned);
@@ -145,6 +171,10 @@ module fp32_fma (
     wire [48:0] add_result = (s1_mul_sign == c_sign) ?
         ({1'b0, mul_man_aligned} + {1'b0, c_man_aligned}) :
         abs_diff;
+
+    // Carry-drop sticky: normalize (add_result[48:1]) shifts bit 0 out of the
+    // window when the add carries; fold it back in so it still rounds.
+    wire carry_drop = add_op & add_result[48] & add_result[0];
 
     // Normalize
     reg [47:0] norm_man;
@@ -225,10 +255,10 @@ module fp32_fma (
     // Guard: [23], Round: [22], Sticky: |[21:0]
     wire guard  = norm_man[23];
     wire round  = norm_man[22];
-    wire sticky = |norm_man[21:0];
-    wire round_up = guard & (round | sticky | norm_man[24]);
+    wire sticky = |norm_man[21:0] | mul_far_eff | c_far_eff | carry_drop;
+    wire round_up = guard & (round | sticky | (norm_man[24] & ~sub_far));
 
-    wire [47:0] rounded_man = norm_man + (round_up ? 48'h000000000800 : 48'd0);  // add 1 at bit 23
+    wire [47:0] rounded_man = norm_man + (round_up ? (48'd1 << 23) : 48'd0);  // add 1 at bit 23
     wire rounded_carry = ~rounded_man[47] & norm_man[47];
 
     wire [47:0] final_man = rounded_carry ? 48'h008000000000 : rounded_man;  // 1<<47

@@ -88,8 +88,8 @@ Each node's PE tile instantiates one compute unit type:
 | `fp32_fma.v` | FMA | FP32 | 3 cycles | High-precision compute |
 | `fp64_fma.v` | FMA | FP64 | 3 cycles | Double-precision scientific |
 | `bf16_mac_array.v` | Systolic array | BF16 | variable | Attention QKV |
-| `fp32_alu.v` | ALU | FP32 | 1-24 cycles | Layernorm |
-| `int8_mac.v` | MAC | INT8 | 1 cycle | Quantized inference |
+| `fp32_alu.v` | ALU | FP32 | 3 (MIN/MAX/CMP), 4 (FMA), 25 (DIV) | Layernorm |
+| `int8_mac.v` | MAC | INT8 | 2 cycles | Quantized inference |
 
 ### Orchestrator chip family
 
@@ -98,7 +98,7 @@ Each node's PE tile instantiates one compute unit type:
 | `bmc_orchestrator_top` | Full BMC | CPU + UART + CLINT + PNM engine |
 | `orchestrator_mcu` | Minimal MCU | CPU + UART only |
 | `orchestrator_sbc` | SBC | CPU + SRAM + DRAM + PCIe + NVMe |
-| `orchestrator_sbc_moe` | SBC+MoE | CPU + MoE gating + BF16 array + PCIe |
+| `orchestrator_sbc_moe` | SBC+MoE | CPU + MoE gating + PCIe |
 
 ### Memory map (orchestrator_sbc)
 
@@ -106,9 +106,9 @@ Each node's PE tile instantiates one compute unit type:
 |--------|---------|------|-------------|
 | Boot ROM | `0x0000_0000` | 64 KB | Reset vector + SPL |
 | UART | `0x1000_0000` | 4 KB | 16550-compatible console |
-| CLINT | `0x2000_0000` | 4 KB | Machine-mode timer + software IRQ |
-| SRAM | `0x4000_0000` | 16 MB | Kernel image + stack |
-| DRAM | `0x8000_0000` | 512 MB | LPDDR5/6 heap + data |
+| CLINT | `0x2000_0000` | 64 KB | Machine-mode timer + software IRQ (page-decoded) |
+| SRAM | `0x4000_0000` | 512 KB (default; configurable 500 KB–32 MB) | Kernel image + stack |
+| DRAM | `0x8000_0000` | 1 GB | LPDDR5/6 heap + data |
 | PCIe | `0xC000_0000` | 4 KB | Gen5 x16 PHY registers |
 | NVMe | `0xD000_0000` | 64 B | AXI-Lite register window |
 | PNM | `0xF000_0000` | 64 B | Router chip registers |
@@ -199,7 +199,7 @@ MoE gating ASIC with DRAM options:
 
 | Option | Package | Notes |
 |--------|---------|-------|
-| LPCAMM2 socket | 262-pin BGA, 0.5mm pitch | Field-replaceable, up to 64 GB |
+| LPCAMM2 socket | 644-pin, 0.5mm pitch | Field-replaceable, up to 64 GB |
 | Soldered LPDDR5 | 200-ball, 0.65mm pitch | Compact, lower cost |
 
 Open `pcb/gating_asic/gating_asic.lpp` in LibrePCB.
@@ -224,7 +224,7 @@ Four toolchains for the RISC-V orchestrator chip:
 For `orchestrator_mcu` on small chassis. No OS, no libc, 8 KB ROM.
 
 ```bash
-cd sim/toolchain/mcu
+cd toolchain/mcu
 make            # → firmware.bin + firmware.hex
 ```
 
@@ -236,7 +236,7 @@ Output: flat binary for ROM burn-in. Linker script splits 8 KB ROM
 For `orchestrator_sbc` running Linux/Redox NOMMU userspace.
 
 ```bash
-cd sim/toolchain/soc
+cd toolchain/soc
 make            # → pnm_socd (static musl binary)
 ```
 
@@ -247,7 +247,7 @@ Statically linked against musl-libc. Accesses PNM via `/dev/pnm` mmap.
 Minimal Linux image that fits in 16 MB SRAM.
 
 ```bash
-cd sim/toolchain/fw-linux
+cd toolchain/fw-linux
 make check      # compile-check drivers + init
 make image      # → build/Image (requires Linux source tree)
 make initrd     # → build/initrd.cpio
@@ -261,7 +261,7 @@ Everything else disabled.
 Formally-verified microkernel for hardened control plane.
 
 ```bash
-cd sim/toolchain/fw-sel4
+cd toolchain/fw-sel4
 make            # → seL4 kernel + root task ELF (requires seL4 source tree)
 ```
 
@@ -288,19 +288,19 @@ Drivers for bridging from a Raspberry Pi to the PNM register window:
 
 ```bash
 # Python (CM0-CM4 via SPI)
-python3 sim/pi_host/pnm_pi.py
+python3 pi_host/pnm_pi.py
 
 # Go (CM0-CM4 via raw ioctl)
-go run sim/pi_host/pnm_pi.go
+go run pi_host/pnm_pi.go
 
 # Rust (CM0-CM4, zero crates)
-rustc sim/pi_host/pnm_pi.rs -o pnm_pi
+rustc pi_host/pnm_pi.rs -o pnm_pi
 
 # C (CM0-CM4 via spidev ioctl)
-gcc -o pnm_pi sim/pi_host/pnm_pi_spi.c
+gcc -o pnm_pi pi_host/pnm_pi_spi.c
 
 # C (CM5 via PCIe BAR0 mmap)
-gcc -o pnm_pi_cm5 sim/pi_host/pnm_pi_cm5.c
+gcc -o pnm_pi_cm5 pi_host/pnm_pi_cm5.c
 ```
 
 ## Reproducing results
@@ -310,6 +310,203 @@ The top-level script runs all verification:
 ```bash
 bash reproduce.sh    # co-sim, Go tests, HDL testbenches (exits on first failure)
 ```
+
+## Unified host driver
+
+The `pnmhost` CLI is a single entry point for all PNM workloads. It replaces
+the fragmented `cmd/pnm`, `cmd/pnmc`, and language CLI toolchains with one
+driver that handles scenarios, HPC benchmarks, programs, model compilation,
+and LLM inference — all with timestamped logging and structured result export.
+
+### Commands
+
+| Command | Description |
+|---------|-------------|
+| `pnmhost scenario <name> [...]` | Fabric verification (sweep, vcsweep, load, hotspot, stress, replay) |
+| `pnmhost workload <name>` | HPC workload (jacobi5, matvec, reduction, broadcast, nbody) |
+| `pnmhost program <path.pnm>` | Compile and run a .pnm program |
+| `pnmhost model <dir>` | Compile a HuggingFace model onto the chassis |
+| `pnmhost inference <dir> <prompt>` | Run LLM inference |
+| `pnmhost run <path.pnm>` | Auto-detect and run |
+
+### Usage
+
+```bash
+# Run multiple scenarios with result export
+pnmhost scenario sweep load stress -l 4 -x 4 -y 4 -output results/
+
+# Run an HPC workload
+pnmhost workload matvec -l 4 -x 4 -y 4 -frag 32
+
+# Compile and run a program with logging
+pnmhost program examples/bias_add.pnm -log results/run.log
+
+# Full model compilation + inference pipeline
+pnmhost model examples/gemma4_test -o results/
+pnmhost inference examples/gemma4_test "Hello, world!" -max-tokens 16
+```
+
+### Global options
+
+All flags can appear anywhere in the command line (order-independent):
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `-l`, `-layers` | Spine layers / boards | 3 |
+| `-x`, `-board-x` | X columns per board | 4 |
+| `-y`, `-board-y` | Y rows per board | 4 |
+| `-seed` | RNG seed | 0xC0FFEE |
+| `-groups` | Parallel vvp slices | auto |
+| `-output`, `-o` | Write results (CSV/JSON) to directory | none |
+| `-log` | Write timestamped log to file | stdout only |
+| `-flits` | Override flit count (scenarios) | per-scenario |
+| `-frag` | Workload parameter (vector length, etc.) | per-workload |
+| `-max-tokens` | Max inference tokens | 32 |
+| `-temperature` | Sampling temperature (0=greedy) | 0 |
+
+### Programmatic API
+
+```go
+hd := pnm.NewHostDriver(pnm.HostConfig{
+    Layers: 4, Bx: 4, By: 4,
+    OutputDir: "results/",
+    LogFile:   "results/run.log",
+})
+hd.RunScenarios("sweep", "load", "stress")
+hd.RunWorkload("matvec", 32)
+hd.RunProgram("examples/bias_add.pnm")
+hd.RunModel("examples/gemma4_test")
+hd.RunInference("examples/gemma4_test", "Hello")
+hd.WriteResults()
+fmt.Print(hd.Summary())
+```
+
+## Data output and logging
+
+The co-simulation harness and inference client export structured results
+for analysis. All output is opt-in via `--output <dir>`.
+
+### Co-simulation results (`cmd/pnm`)
+
+```bash
+go run ./cmd/pnm --output results/ --scenarios sweep load stress
+```
+
+Writes four files:
+
+| File | Format | Contents |
+|------|--------|----------|
+| `pnm_run_results.csv` | CSV | Per-scenario: pass/fail, activations, rejections, packets, DMA bytes, latency min/mean/max, bytes/cycle throughput |
+| `pnm_run_results.json` | JSON | Full `RunResult` with dims, seed, per-scenario metrics, error lists |
+| `pnm_run_latency.csv` | CSV | Per-packet latency (one row per packet per scenario) for histogram/CDF analysis |
+| `pnm_run_summary.csv` | CSV | Single-row summary across all scenarios (wide format, one column group per scenario) |
+
+### Inference results (`cmd/pnmc run-driver`)
+
+```bash
+go run ./cmd/pnmc run-driver examples/gemma4_test -o results/
+```
+
+In addition to `routing_table.json`, `moe_map.json`, and `dispatch_plan.txt`,
+writes `dispatch_plan.csv` with per-dispatch-step structured data (layer, phase,
+target node, expert index, flit bytes, compute unit, KV action).
+
+### LLM client token export
+
+The `LLMClient` provides two export methods:
+
+- `WriteTokens(path, prompt, tokenIDs)` — writes prompt + generated text + token IDs to a human-readable file
+- `ExportInference(path, prompt, tokenIDs, dispatches)` — writes complete inference result as JSON (tokens + stats + dispatch plan)
+
+### Programmatic API
+
+```go
+// Collect scenario results from RunOne
+result, ok := pnm.RunOne(prog, nodes, dims, groups, 1)
+if result != nil {
+    pnm.WriteScenarioCSV("results.csv", []pnm.ScenarioResult{*result})
+    pnm.WriteScenarioJSON("results.json", &pnm.RunResult{Scenarios: []pnm.ScenarioResult{*result}})
+}
+```
+
+## Haskell-to-PNM compilation
+
+The `haskell_pnm`, `r_pnm`, and `hlsl_pnm` tools compile a subset of
+Haskell, R, or HLSL to FP64 dispatch instructions on the PNM chassis.
+
+### Supported syntax
+
+| Feature | Haskell | R | HLSL |
+|---------|---------|---|------|
+| Assignments | `f x y = expr` | `x <- expr` | `float x = expr;` |
+| Arithmetic | `+`, `-`, `*`, `/` | `+`, `-`, `*`, `/` | `+`, `-`, `*`, `/` |
+| Comparisons | `==`, `/=`, `<=`, `>=`, `<`, `>` | `==`, `!=`, `<=`, `>=`, `<`, `>` | `==`, `!=`, `<=`, `>=`, `<`, `>` |
+| If-then-else | `if cond then val else val` | (not yet) | (not yet) |
+| Function calls | `f arg1 arg2` | `f(arg1, arg2)` | `f(arg1, arg2)` |
+| Built-in functions | `sum`, `product`, `abs`, `sqrt` | `sum`, `mean`, `min`, `max`, `abs`, `sqrt` | `dot`, `lerp`, `clamp`, `abs`, `sqrt`, `min`, `max`, `rcp` |
+| Float literals | `3.14`, `1e-5` | `3.14`, `1e-5` | `3.14`, `1e-5` |
+| Types | (untyped) | (untyped) | `float`, `float2`, `float3`, `float4`, `int` |
+
+### Example
+
+Haskell:
+```haskell
+mul x y = x * y
+add a b = a + b
+f x y = add (add (mul x y) x) y
+```
+
+R:
+```r
+result <- x * y
+result <- result + x
+result <- result + y
+```
+
+HLSL:
+```hlsl
+float result = x * y;
+result = result + x;
+result = result + y;
+```
+
+### Compilation pipeline
+
+```
+Haskell/R/HLSL source
+  → FP64/FP32 IR (f64.add, alu.mul, ...)
+  → PNM dispatch (kernel + token directives)
+  → co-simulation on the chassis
+```
+
+Each operation maps to a node running an `f64_*` kernel. Operands
+are packed as big-endian FP64 bytes (8 bytes each) in token payloads.
+
+### Usage
+
+```bash
+cd sim
+
+# Haskell
+go run ./cmd/haskell_pnm examples/hello.hs -l 2 -x 2 -y 2
+go run ./cmd/haskell_pnm examples/hello.hs -l 2 -x 2 -y 2 -run
+
+# R
+go run ./cmd/r_pnm examples/hello.R -l 2 -x 2 -y 2
+go run ./cmd/r_pnm examples/hello.R -l 2 -x 2 -y 2 -run
+
+# HLSL
+go run ./cmd/hlsl_pnm examples/hello.hlsl -l 2 -x 2 -y 2
+go run ./cmd/hlsl_pnm examples/hello.hlsl -l 2 -x 2 -y 2 -run
+```
+
+### FP64 kernels
+
+| Kernel | Payload | Result |
+|--------|---------|--------|
+| `f64_add` | `[a:8B, b:8B]` | `a + b` (8 bytes) |
+| `f64_mul` | `[a:8B, b:8B]` | `a * b` (8 bytes) |
+| `f64_fma` | `[a:8B, b:8B, c:8B]` | `a*b + c` (8 bytes) |
 
 ## Workload classification
 

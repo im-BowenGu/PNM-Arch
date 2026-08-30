@@ -25,13 +25,15 @@ static lustre_ost_t *ost_for_stripe(lustre_client_t *lc,
 }
 
 static uint64_t obj_lba(lustre_client_t *lc, lustre_ost_t *ost,
-                        uint64_t obj_id)
+                        uint64_t obj_id, uint32_t stripe_size)
 {
     (void)lc;
-    /* Object data starts at lba_base + (obj_id * blocks_per_obj).
-     * We use one LBA per object for simplicity in the behavioral model;
-     * production maps multi-block objects via extent lists. */
-    return ost->lba_base + (obj_id % ost->lba_count);
+    /* Each object owns one stripe of `stripe_size` bytes = stripe_size/512
+     * blocks, so consecutive object IDs on the same OST must be spaced that
+     * far apart. A single LBA per object would put object N+1's first block
+     * inside object N's extent and adjacent stripes would clobber each
+     * other. Modulo lba_count keeps the address inside the OST's window. */
+    return ost->lba_base + (obj_id * (stripe_size / 512)) % ost->lba_count;
 }
 
 /* ── API ───────────────────────────────────────────────────────────── */
@@ -96,7 +98,7 @@ int lustre_create(lustre_client_t *lc, const char *name,
     f->size_bytes   = 0;
     f->stripe_count = stripe_count;
     f->stripe_size  = stripe_size;
-    f->start_ost    = (uint8_t)(lc->file_count % lc->ost_count);
+    f->start_ost    = (uint8_t)(fd % lc->ost_count);
     f->obj_id_base  = lc->next_obj_id;
     lc->next_obj_id += stripe_count;
 
@@ -147,7 +149,7 @@ int64_t lustre_write(lustre_client_t *lc, int fd,
             return -1;
         }
 
-        lba = obj_lba(lc, ost, f->obj_id_base + stripe_idx) + stripe_off / 512;
+        lba = obj_lba(lc, ost, f->obj_id_base + stripe_idx, f->stripe_size) + stripe_off / 512;
         nlb = (uint16_t)(((chunk + 511) / 512) - 1);
 
         /* DMA buffer: use a fixed staging area in DRAM.
@@ -204,7 +206,7 @@ int64_t lustre_read(lustre_client_t *lc, int fd,
             return -1;
         }
 
-        lba = obj_lba(lc, ost, f->obj_id_base + stripe_idx) + stripe_off / 512;
+        lba = obj_lba(lc, ost, f->obj_id_base + stripe_idx, f->stripe_size) + stripe_off / 512;
         nlb = (uint16_t)(((chunk + 511) / 512) - 1);
 
         if (nvme_read_blocks(lc->nvme, lba, nlb,

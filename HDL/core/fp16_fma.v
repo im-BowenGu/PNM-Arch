@@ -147,6 +147,23 @@ module fp16_fma (
         ({c_mantissa, 11'd0}) :
         ({c_mantissa, 11'd0} >> exp_diff);
 
+    // Far sticky: bits of the right-shifted operand that fall entirely below
+    // the aligned window's LSB (position 0) are gone from norm_man, so OR them
+    // back in as a sticky so a tiny addend still rounds the mantissa up.
+    wire [4:0]  mul_shift_w = (exp_diff < 0) ? (-exp_diff) : 5'd0;
+    wire [4:0]  c_shift_w   = (exp_diff > 0) ?  exp_diff : 5'd0;
+    wire [4:0]  mul_shift   = (mul_shift_w > 5'd22) ? 5'd22 : mul_shift_w;
+    wire [4:0]  c_shift     = (c_shift_w   > 5'd22) ? 5'd22 : c_shift_w;
+    wire mul_far_sticky = |(mul_man_norm & ((22'd1 << mul_shift) - 22'd1));
+    wire c_far_sticky  = |({c_mantissa, 11'd0} & ((22'd1 << c_shift) - 22'd1));
+    // The far sticky only applies to addition (same signs): subtraction
+    // residuals pull the true magnitude down, so they must suppress the RNE
+    // tie-break instead of adding sticky.
+    wire add_op = (s1_mul_sign == c_sign);
+    wire mul_far_eff = add_op & mul_far_sticky;
+    wire c_far_eff  = add_op & c_far_sticky;
+    wire sub_far = (!add_op) & (mul_far_sticky | c_far_sticky);
+
     // Add with sign/magnitude
     wire        mul_ge_c = (mul_man_aligned >= c_man_aligned);
     wire [22:0] abs_diff = mul_ge_c ?
@@ -158,6 +175,11 @@ module fp16_fma (
     wire [22:0] add_result = (s1_mul_sign == c_sign) ?
         ({1'b0, mul_man_aligned} + {1'b0, c_man_aligned}) :
         abs_diff;
+
+    // Carry-drop sticky: when the add overflows into bit 22 the normalize
+    // step (add_result[22:1]) shifts bit 0 out of the window; fold it back in
+    // so it still rounds (same-sign addition only).
+    wire carry_drop = add_op & add_result[22] & add_result[0];
 
     // Normalize (fix #2: signed exponent prevents underflow wrap)
     reg [21:0] norm_man;
@@ -213,10 +235,10 @@ module fp16_fma (
     // Guard bit: norm_man[10], Round: norm_man[9], Sticky: |norm_man[8:0]
     wire guard  = norm_man[10];
     wire round  = norm_man[9];
-    wire sticky = |norm_man[8:0];
+    wire sticky = |norm_man[8:0] | mul_far_eff | c_far_eff | carry_drop;
 
     // Round up if: guard=1 AND (round=1 OR sticky=1 OR LSB of mantissa=1)
-    wire round_up = guard & (round | sticky | norm_man[11]);
+    wire round_up = guard & (round | sticky | (norm_man[11] & ~sub_far));
 
     // Apply rounding: add 1 at bit position 10 (LSB of mantissa field in norm_man)
     wire [21:0] rounded_man = norm_man + (round_up ? 22'd1024 : 22'd0);

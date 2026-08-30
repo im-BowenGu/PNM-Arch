@@ -73,11 +73,11 @@ type PageTableEntry struct {
 // to physical SRAM pages, enabling non-contiguous KV storage and page-level
 // sharing across sequences (prefix caching).
 type PageTable struct {
-	Entries    []PageTableEntry // virtual page -> physical page mapping
-	NumPages   int              // total virtual pages
-	PhysPages  int              // total physical SRAM pages
-	FreeList   []int            // stack of free physical pages
-	Allocated  int              // pages currently allocated
+	Entries   []PageTableEntry // virtual page -> physical page mapping
+	NumPages  int              // total virtual pages
+	PhysPages int              // total physical SRAM pages
+	FreeList  []int            // stack of free physical pages
+	Allocated int              // pages currently allocated
 }
 
 // NewPageTable creates a page table with the given capacities.
@@ -160,10 +160,10 @@ func (pt *PageTable) SharePage(virtPage int) {
 
 // PrefixCacheEntry stores a cached prefix's metadata.
 type PrefixCacheEntry struct {
-	PrefixHash [32]byte   // SHA-256 hash of the prefix token sequence
-	Layer      int        // model layer index
-	VirtPages  []int      // virtual pages holding this prefix's KV data
-	HitCount   int        // number of cache hits
+	PrefixHash [32]byte // SHA-256 hash of the prefix token sequence
+	Layer      int      // model layer index
+	VirtPages  []int    // virtual pages holding this prefix's KV data
+	HitCount   int      // number of cache hits
 }
 
 // PrefixCache manages hash-based prefix sharing across requests.
@@ -217,13 +217,17 @@ func (pc *PrefixCache) Store(tokens []int, layer int, virtPages []int) {
 		PrefixHash: hash,
 		Layer:      layer,
 		VirtPages:  virtPages,
-		HitCount:   0,
+		HitCount:   1,
 	}
-	// Simple eviction: if over capacity, remove the entry with lowest hit count
+	// Simple eviction: if over capacity, remove the entry with lowest hit count,
+	// skipping the entry we just added so a full cache isn't thrash-evicted.
 	if len(pc.Entries) > pc.MaxSize {
 		var minHash [32]byte
 		minHits := int(^uint(0) >> 1) // max int
 		for h, e := range pc.Entries {
+			if h == hash {
+				continue // never evict the just-added entry
+			}
 			if e.HitCount < minHits {
 				minHits = e.HitCount
 				minHash = h
@@ -239,42 +243,50 @@ func (pc *PrefixCache) Store(tokens []int, layer int, virtPages []int) {
 
 // KVCacheConfig holds the parameters for KV cache sizing.
 type KVCacheConfig struct {
-	BankDepth     int           // entries per bank (seq positions)
-	EntryBytes    int           // bytes per KV entry (2 * kv_hidden_size * dtype_bytes)
-	NumBanks      int           // banks per layer (4: one per direction)
-	MaxSeqLen     int           // maximum sequence length
-	OffloadThresh int           // eviction threshold (% full)
-	EvictMode     EvictionMode  // where evicted entries go
-	NVMeBase      uint32        // base address of NVMe controller (0xC0000000)
-	NVMeLBAStart  uint64        // first LBA for KV overflow region
-	NVMeLBAEnd    uint64        // last LBA (exclusive) for KV overflow region
-	SlidingWindow int           // sliding window length (0 = full attention for all layers)
+	BankDepth     int          // entries per bank (seq positions)
+	EntryBytes    int          // bytes per KV entry (2 * kv_hidden_size * dtype_bytes)
+	NumBanks      int          // banks per layer (4: one per direction)
+	MaxSeqLen     int          // maximum sequence length
+	OffloadThresh int          // eviction threshold (% full)
+	EvictMode     EvictionMode // where evicted entries go
+	NVMeBase      uint32       // base address of NVMe controller (0xC0000000)
+	NVMeLBAStart  uint64       // first LBA for KV overflow region
+	NVMeLBAEnd    uint64       // last LBA (exclusive) for KV overflow region
+	SlidingWindow int          // sliding window length (0 = full attention for all layers)
 	// Paged attention parameters
-	PageSize       int  // entries per page (must be power of 2)
-	EnablePaging   bool // enable paged attention (virtual-to-physical mapping)
-	EnablePrefix   bool // enable prefix caching
-	MaxPages       int  // max physical pages per layer
-	MaxVirtPages   int  // max virtual pages per sequence
+	PageSize     int  // entries per page (must be power of 2)
+	EnablePaging bool // enable paged attention (virtual-to-physical mapping)
+	EnablePrefix bool // enable prefix caching
+	MaxPages     int  // max physical pages per layer
+	MaxVirtPages int  // max virtual pages per sequence
 	// GQA parameters
 	NumAttentionHeads int // number of Q heads
 	NumKeyValueHeads  int // number of KV heads (for GQA: < num_attention_heads)
 	HeadDim           int // dimension per head
 }
 
-// DefaultKVCacheConfig returns the default configuration for Gemma-4.
+// DefaultKVCacheConfig returns the default configuration.
+// entryBytes is pinned to the RTL frame: the co-sim instantiates
+// kv_cache_bank with ENTRY_BYTES(512) / BANK_DEPTH(1024) (gen_topology.go),
+// so the Go accounting must use the identical per-entry size for any
+// model — a hiddenSize-derived frame (2*K+V projections * hiddenSize *
+// dtype_bytes) only coincides with silicon for hidden 128, and silently
+// inflating EntryBytes would overstate paper capacity numbers. Callers
+// that need model-accurate GQA frames set EntryBytes explicitly.
 func DefaultKVCacheConfig(hiddenSize int) KVCacheConfig {
 	// Each KV entry stores K + V projections for one seq position.
 	// RTL kv_cache_bank uses ENTRY_BYTES=512 (fixed frame size),
 	// BANK_DEPTH=1024 (SRAM capacity per direction bank).
 	entryBytes := 512 // must match RTL kv_cache_bank ENTRY_BYTES parameter
+	_ = hiddenSize    // model-derived sizing is the caller's explicit choice
 
 	return KVCacheConfig{
-		BankDepth:     1024,    // must match RTL kv_cache_bank BANK_DEPTH parameter
+		BankDepth:     1024, // must match RTL kv_cache_bank BANK_DEPTH parameter
 		EntryBytes:    entryBytes,
-		NumBanks:      4,       // X+, X-, Y+, Y-
-		MaxSeqLen:     16384,   // 16K context window
-		OffloadThresh: 80,      // evict at 80% full
-		EvictMode:     EvictNone, // default: discard
+		NumBanks:      4,          // X+, X-, Y+, Y-
+		MaxSeqLen:     16384,      // 16K context window
+		OffloadThresh: 80,         // evict at 80% full
+		EvictMode:     EvictNone,  // default: discard
 		NVMeBase:      0xC0000000, // PCIe NVMe BAR
 		NVMeLBAStart:  0,
 		NVMeLBAEnd:    1048576, // 512 GB at 512B blocks
@@ -282,8 +294,8 @@ func DefaultKVCacheConfig(hiddenSize int) KVCacheConfig {
 		PageSize:      PageSize,
 		EnablePaging:  true,
 		EnablePrefix:  true,
-		MaxPages:      256,     // 256 physical pages * 16 entries * 512 bytes = 2 MB per layer
-		MaxVirtPages:  1024,    // 1024 virtual pages = 16K entries max sequence length
+		MaxPages:      256,  // 256 physical pages * 16 entries * 512 bytes = 2 MB per layer
+		MaxVirtPages:  1024, // 1024 virtual pages = 16K entries max sequence length
 	}
 }
 
@@ -395,6 +407,16 @@ func (b *KVCacheBank) Evict() []byte {
 	return entry
 }
 
+// PeekOldest returns the oldest entry without removing it. Returns nil if empty.
+// Used by offload to persist an entry before dropping it, so a failed write does
+// not silently lose cache data.
+func (b *KVCacheBank) PeekOldest() []byte {
+	if b.Empty {
+		return nil
+	}
+	return b.Entries[b.ReadPtr]
+}
+
 // ============================================================================
 // KV Cache Layer (with paged attention support)
 // ============================================================================
@@ -452,9 +474,21 @@ func (kl *KVCacheLayer) SetGQA(numAttnHeads, numKVHeads, headDim int) {
 
 // Store distributes a KV entry across banks (round-robin by seq position).
 func (kl *KVCacheLayer) Store(seqPos int, entry []byte) bool {
-	bankIdx := seqPos % kl.Config.NumBanks
-	bankLocalPos := seqPos / kl.Config.NumBanks
+	bankIdx, bankLocalPos := kl.splitPos(seqPos)
+	if bankIdx < 0 {
+		return false
+	}
 	return kl.Banks[bankIdx].Store(entry, bankLocalPos)
+}
+
+// splitPos maps a sequence position to (bankIdx, bankLocalPos), returning a
+// negative bankIdx for invalid (negative) positions so callers can bail out
+// before indexing the bank slice.
+func (kl *KVCacheLayer) splitPos(seqPos int) (int, int) {
+	if seqPos < 0 {
+		return -1, 0
+	}
+	return seqPos % kl.Config.NumBanks, seqPos / kl.Config.NumBanks
 }
 
 // StorePaged stores a KV entry using paged attention (virtual-to-physical mapping).
@@ -471,24 +505,26 @@ func (kl *KVCacheLayer) StorePaged(virtPage, pageOffset int, entry []byte) bool 
 	}
 	// Map physical page + offset to a bank entry
 	globalIdx := physPage*kl.Config.PageSize + pageOffset
-	bankIdx := globalIdx % kl.Config.NumBanks
-	bankEntryIdx := globalIdx / kl.Config.NumBanks
+	bankIdx, bankEntryIdx := kl.splitPos(globalIdx)
+	if bankIdx < 0 {
+		return false
+	}
 	return kl.Banks[bankIdx].Store(entry, bankEntryIdx)
 }
 
 // Load reads a KV entry from the appropriate bank by sequence position.
 func (kl *KVCacheLayer) Load(seqPos int) []byte {
-	bankIdx := seqPos % kl.Config.NumBanks
-	// Position within this bank: entries are distributed round-robin across banks,
-	// so the bank-local index is seqPos / numBanks.
-	bankLocalPos := seqPos / kl.Config.NumBanks
+	bankIdx, bankLocalPos := kl.splitPos(seqPos)
+	if bankIdx < 0 {
+		return nil
+	}
 	return kl.Banks[bankIdx].Load(bankLocalPos)
 }
 
 // LoadPaged reads a KV entry using paged attention.
 func (kl *KVCacheLayer) LoadPaged(virtPage, pageOffset int) []byte {
 	if kl.PageTable == nil {
-		return kl.Load(virtPage*kl.Config.PageSize+pageOffset)
+		return kl.Load(virtPage*kl.Config.PageSize + pageOffset)
 	}
 	physPage := kl.PageTable.Translate(virtPage)
 	if physPage < 0 {
@@ -534,6 +570,11 @@ func (kl *KVCacheLayer) RepeatKV(kvEntry []byte) []byte {
 	}
 	// Each KV entry contains all KV heads concatenated.
 	// Split into per-head chunks, then repeat each chunk GroupSize times.
+	// Guard HeadDim/NumKeyValueHeads against zero (a malformed GQA config
+	// would otherwise divide by zero here and panic).
+	if kl.HeadDim <= 0 || kl.NumKeyValueHeads <= 0 {
+		return kvEntry
+	}
 	kvBytesPerHead := kl.HeadDim * 2 * (kl.Config.EntryBytes / (kl.NumKeyValueHeads * kl.HeadDim * 2))
 	if kvBytesPerHead <= 0 {
 		return kvEntry
@@ -553,31 +594,52 @@ func (kl *KVCacheLayer) RepeatKV(kvEntry []byte) []byte {
 	return result
 }
 
-// NeedsOffload returns true if any bank is above the offload threshold.
-func (kl *KVCacheLayer) NeedsOffload() bool {
-	for _, b := range kl.Banks {
-		threshold := b.Depth * kl.Config.OffloadThresh / 100
-		if b.Occupancy >= threshold {
-			return true
-		}
-	}
-	return false
-}
-
-// EvictOldest evicts the oldest entry from the fullest bank.
-func (kl *KVCacheLayer) EvictOldest() ([]byte, string) {
+// fullestBank returns the index of the most-filled bank, and whether that
+// bank is above the offload threshold. It is shared by NeedsOffload and the
+// offload path so both agree on which bank to drain.
+func (kl *KVCacheLayer) fullestBank() (int, bool) {
 	maxOcc := 0
-	maxBank := 0
+	maxBank := -1
 	for i, b := range kl.Banks {
 		if b.Occupancy > maxOcc {
 			maxOcc = b.Occupancy
 			maxBank = i
 		}
 	}
-	entry := kl.Banks[maxBank].Evict()
+	if maxBank < 0 {
+		return -1, false
+	}
+	threshold := kl.Banks[maxBank].Depth * kl.Config.OffloadThresh / 100
+	return maxBank, kl.Banks[maxBank].Occupancy >= threshold
+}
+
+// NeedsOffload returns true if any bank is above the offload threshold.
+func (kl *KVCacheLayer) NeedsOffload() bool {
+	_, over := kl.fullestBank()
+	return over
+}
+
+// OffloadPeek returns the oldest entry of the fullest (over-threshold) bank
+// without removing it, plus its direction. Returns nil if nothing to offload.
+func (kl *KVCacheLayer) OffloadPeek() ([]byte, string, *KVCacheBank) {
+	idx, over := kl.fullestBank()
+	if !over {
+		return nil, "", nil
+	}
+	b := kl.Banks[idx]
+	return b.PeekOldest(), b.Direction, b
+}
+
+// EvictOldest evicts the oldest entry from the fullest bank.
+func (kl *KVCacheLayer) EvictOldest() ([]byte, string) {
+	idx, _ := kl.fullestBank()
+	if idx < 0 {
+		return nil, ""
+	}
+	entry := kl.Banks[idx].Evict()
 	if entry != nil {
 		kl.Evictions++
-		return entry, kl.Banks[maxBank].Direction
+		return entry, kl.Banks[idx].Direction
 	}
 	return nil, ""
 }
@@ -588,13 +650,13 @@ func (kl *KVCacheLayer) EvictOldest() ([]byte, string) {
 
 // EvictionStats tracks where evicted entries went.
 type EvictionStats struct {
-	Discarded   int   // entries discarded (EvictNone)
-	DmaToBMC    int   // entries DMA'd to host BMC (EvictDmaBmc)
-	NvmeWrites  int   // entries written to NVMe (EvictNvme)
-	NvmeBlocks  int   // NVMe 512B blocks consumed
-	BMCBytes    int64 // total bytes DMA'd to BMC
-	NvmeBytes   int64 // total bytes written to NVMe
-	Errors      int   // failed evictions (NVMe full, DMA timeout)
+	Discarded  int   // entries discarded (EvictNone)
+	DmaToBMC   int   // entries DMA'd to host BMC (EvictDmaBmc)
+	NvmeWrites int   // entries written to NVMe (EvictNvme)
+	NvmeBlocks int   // NVMe 512B blocks consumed
+	BMCBytes   int64 // total bytes DMA'd to BMC
+	NvmeBytes  int64 // total bytes written to NVMe
+	Errors     int   // failed evictions (NVMe full, DMA timeout)
 }
 
 // KVCache manages KV caches across all physical layers.
@@ -618,11 +680,11 @@ type KVCache struct {
 func NewKVCache(dims Dims, hiddenSize int, nvme *NVMeDev) *KVCache {
 	cfg := DefaultKVCacheConfig(hiddenSize)
 	kc := &KVCache{
-		Layers:     make([]*KVCacheLayer, dims.Layers),
-		Config:     cfg,
-		Dims:       dims,
-		NVMe:       nvme,
-		EvictLBA:   cfg.NVMeLBAStart,
+		Layers:      make([]*KVCacheLayer, dims.Layers),
+		Config:      cfg,
+		Dims:        dims,
+		NVMe:        nvme,
+		EvictLBA:    cfg.NVMeLBAStart,
 		PrefixCache: NewPrefixCache(1024),
 	}
 	for l := 0; l < dims.Layers; l++ {
@@ -727,16 +789,20 @@ func (kc *KVCache) StorePrefix(tokens []int, layer int, virtPages []int) {
 // OffloadCycle checks all layers and evicts entries that exceed the threshold.
 func (kc *KVCache) OffloadCycle() int {
 	totalEvicted := 0
+offload:
 	for _, kl := range kc.Layers {
 		for kl.NeedsOffload() {
-			entry, dir := kl.EvictOldest()
-			if entry == nil {
+			// Peek first so a failed persist (e.g. NVMe write error) does not
+			// silently drop the entry; only remove it once it is safely stored.
+			entry, dir, bank := kl.OffloadPeek()
+			if entry == nil || bank == nil {
 				break
 			}
 			_ = dir
 
 			switch kc.Config.EvictMode {
 			case EvictDmaBmc:
+				bank.Evict()
 				totalEvicted++
 				kc.TotalEvictions++
 				kc.Stats.DmaToBMC++
@@ -747,25 +813,31 @@ func (kc *KVCache) OffloadCycle() int {
 					nBlocks := (len(entry) + NVMEBlockSize - 1) / NVMEBlockSize
 					err := kc.NVMe.WriteBlocks(kc.EvictLBA, uint16(nBlocks-1), 0, entry)
 					if err != nil {
+						// Persistent sink failure: keep the entry in the cache and
+						// stop offloading this cycle so we do not cascade-drain
+						// (and lose) the rest of the KV data.
 						kc.Stats.Errors++
-						break
+						continue offload
 					}
 					kc.EvictLBA += uint64(nBlocks)
 					if kc.EvictLBA >= kc.Config.NVMeLBAEnd {
 						kc.EvictLBA = kc.Config.NVMeLBAStart
 					}
+					bank.Evict()
 					totalEvicted++
 					kc.TotalEvictions++
 					kc.Stats.NvmeWrites++
 					kc.Stats.NvmeBlocks += nBlocks
 					kc.Stats.NvmeBytes += int64(len(entry))
 				} else {
+					bank.Evict()
 					totalEvicted++
 					kc.TotalEvictions++
 					kc.Stats.Discarded++
 				}
 
 			default: // EvictNone
+				bank.Evict()
 				totalEvicted++
 				kc.TotalEvictions++
 				kc.Stats.Discarded++

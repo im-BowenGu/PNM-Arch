@@ -4,6 +4,7 @@ package pnm
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -16,9 +17,10 @@ type HaskellProgram struct {
 
 // HaskellFunc represents a compiled Haskell function.
 type HaskellFunc struct {
-	Name string
-	Args []string
-	Body []FP64IR
+	Name     string
+	Args     []string
+	ArgRegs  []string // definition-time register holding each argument
+	Body     []FP64IR
 }
 
 func newHaskellProgram(name string) *HaskellProgram {
@@ -33,7 +35,15 @@ func (p *HaskellProgram) Emit() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Haskell FP64 IR: %s\n", p.FuncName)
 	fmt.Fprintf(&b, "# %d functions defined\n\n", len(p.Funcs))
-	for _, fn := range p.Funcs {
+	// Iterate in sorted name order so Emit() output is deterministic
+	// regardless of Go's randomized map iteration order.
+	names := make([]string, 0, len(p.Funcs))
+	for name := range p.Funcs {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		fn := p.Funcs[name]
 		fmt.Fprintf(&b, "func %s(%s)\n", fn.Name, strings.Join(fn.Args, ", "))
 		for _, inst := range fn.Body {
 			emitFP64Inst(&b, inst)
@@ -131,6 +141,17 @@ func compileHaskellFunc(p *HaskellProgram, lines []string, start int) (int, erro
 		p.getOrCreateReg(a)
 	}
 
+	// Record the definition-time register for each argument so an inlining
+	// call site can remap the body's reads of those registers to the actual
+	// call-time values (otherwise the inlined body reads stale definition-time
+	// registers that are never written at the call site).
+	argRegs := make([]string, len(args))
+	for i, a := range args {
+		if r, ok := p.Vars[a]; ok {
+			argRegs[i] = fmt.Sprintf("r%d", r)
+		}
+	}
+
 	// Check for multi-line do block
 	if right == "do" {
 		endIdx := start + 1
@@ -160,9 +181,10 @@ func compileHaskellFunc(p *HaskellProgram, lines []string, start int) (int, erro
 
 	// Capture generated instructions
 	fn := &HaskellFunc{
-		Name: funcName,
-		Args: args,
-		Body: make([]FP64IR, len(p.Regs)-regBase),
+		Name:    funcName,
+		Args:    args,
+		ArgRegs: argRegs,
+		Body:    make([]FP64IR, len(p.Regs)-regBase),
 	}
 	copy(fn.Body, p.Regs[regBase:])
 	p.Funcs[funcName] = fn
@@ -192,23 +214,24 @@ func compileHaskellLine(p *HaskellProgram, line string) error {
 
 func compileHaskellExpr(p *HaskellProgram, varName, expr string) error {
 	dest := p.getOrCreateReg(varName)
+	return compileHaskellExprTo(p, dest, expr)
+}
 
+// compileHaskellExprTo compiles a Haskell expression into the given destination
+// register.  It is also used recursively by resolveHaskellAtom so that a
+// compound operand (e.g. "b - c" in "f a b c = a - b - c") is fully lowered
+// instead of being treated as a bare variable name.
+func compileHaskellExprTo(p *HaskellProgram, dest, expr string) error {
 	if idx := strings.Index(expr, "|"); idx > 0 {
 		expr = strings.TrimSpace(expr[:idx])
 	}
 	if idx := strings.Index(expr, "`when`"); idx > 0 {
 		expr = strings.TrimSpace(expr[:idx])
 	}
+	expr = stripOuterParens(expr)
 
 	if strings.HasPrefix(expr, "if") {
 		return compileHaskellIf(p, dest, expr)
-	}
-
-	if op, lhs, rhs, ok := parseHaskellBinop(expr); ok {
-		l := resolveHaskellAtom(p, lhs)
-		r := resolveHaskellAtom(p, rhs)
-		p.Regs = append(p.Regs, FP64IR{Op: op, Dest: dest, Src: []string{l, r}})
-		return nil
 	}
 
 	if idx := findHaskellCmp(expr); idx >= 0 {
@@ -218,6 +241,14 @@ func compileHaskellExpr(p *HaskellProgram, varName, expr string) error {
 		l := resolveHaskellAtom(p, lhs)
 		r := resolveHaskellAtom(p, rhs)
 		p.Regs = append(p.Regs, FP64IR{Op: FP64Cmp, Dest: dest, Src: []string{l, r}, Cond: cond})
+		return nil
+	}
+
+	if opCh, lhs, rhs, ok := splitArith(expr); ok {
+		op := haskellArithOp(opCh)
+		l := resolveHaskellAtom(p, lhs)
+		r := resolveHaskellAtom(p, rhs)
+		p.Regs = append(p.Regs, FP64IR{Op: op, Dest: dest, Src: []string{l, r}})
 		return nil
 	}
 
@@ -236,64 +267,102 @@ func compileHaskellExpr(p *HaskellProgram, varName, expr string) error {
 		return nil
 	}
 
+	if strings.TrimSpace(expr) == "" {
+		return fmt.Errorf("unsupported Haskell expression: %q", expr)
+	}
+
 	src := p.getOrCreateReg(expr)
 	p.Regs = append(p.Regs, FP64IR{Op: FP64Mov, Dest: dest, Src: []string{src}})
 	return nil
 }
 
 func compileHaskellIf(p *HaskellProgram, dest, expr string) error {
-	parts := strings.Fields(expr)
-	if len(parts) >= 6 {
-		cond := resolveHaskellAtom(p, parts[1])
-		thenVal := resolveHaskellAtom(p, parts[3])
-		elseVal := resolveHaskellAtom(p, parts[5])
-		// Emulate: dest = cond ? thenVal : elseVal
-		// via: dest = thenVal * cmp + elseVal * (1 - cmp)
-		// where cmp = (cond != 0) ? 1.0 : 0.0
-		zero := p.allocReg()
-		p.Regs = append(p.Regs, FP64IR{Op: FP64Const, Dest: zero, Imm: 0.0})
-		cmpResult := p.allocReg()
-		p.Regs = append(p.Regs, FP64IR{Op: FP64Cmp, Dest: cmpResult, Src: []string{cond, zero}, Cond: "!="})
-		one := p.allocReg()
-		p.Regs = append(p.Regs, FP64IR{Op: FP64Const, Dest: one, Imm: 1.0})
-		notCmp := p.allocReg()
-		p.Regs = append(p.Regs, FP64IR{Op: FP64Sub, Dest: notCmp, Src: []string{one, cmpResult}})
-		thenPart := p.allocReg()
-		p.Regs = append(p.Regs, FP64IR{Op: FP64Mul, Dest: thenPart, Src: []string{thenVal, cmpResult}})
-		elsePart := p.allocReg()
-		p.Regs = append(p.Regs, FP64IR{Op: FP64Mul, Dest: elsePart, Src: []string{elseVal, notCmp}})
-		p.Regs = append(p.Regs, FP64IR{Op: FP64Add, Dest: dest, Src: []string{thenPart, elsePart}})
+	condExpr, thenStr, elseStr, ok := parseHaskellIf(expr)
+	if !ok {
+		return fmt.Errorf("malformed if-then-else: %s", expr)
 	}
+	zero := p.allocReg()
+	one := p.allocReg()
+	p.Regs = append(p.Regs, FP64IR{Op: FP64Const, Dest: zero, Imm: 0.0})
+	p.Regs = append(p.Regs, FP64IR{Op: FP64Const, Dest: one, Imm: 1.0})
+	// Compile the full condition expression (e.g. "a > b") to a register, then
+	// normalize it to a 0.0/1.0 selector so arithmetic and comparison
+	// conditions both work.
+	condReg := p.allocReg()
+	if err := compileHaskellExprTo(p, condReg, condExpr); err != nil {
+		return err
+	}
+	sel := p.allocReg()
+	p.Regs = append(p.Regs, FP64IR{Op: FP64Cmp, Dest: sel, Src: []string{condReg, zero}, Cond: "!="})
+	// Emulate: dest = thenVal * sel + elseVal * (1 - sel)
+	thenVal := resolveHaskellAtom(p, thenStr)
+	elseVal := resolveHaskellAtom(p, elseStr)
+	notSel := p.allocReg()
+	p.Regs = append(p.Regs, FP64IR{Op: FP64Sub, Dest: notSel, Src: []string{one, sel}})
+	thenPart := p.allocReg()
+	p.Regs = append(p.Regs, FP64IR{Op: FP64Mul, Dest: thenPart, Src: []string{thenVal, sel}})
+	elsePart := p.allocReg()
+	p.Regs = append(p.Regs, FP64IR{Op: FP64Mul, Dest: elsePart, Src: []string{elseVal, notSel}})
+	p.Regs = append(p.Regs, FP64IR{Op: FP64Add, Dest: dest, Src: []string{thenPart, elsePart}})
 	return nil
 }
 
-func parseHaskellBinop(expr string) (FP64Op, string, string, bool) {
-	depth := 0
-	for i := 0; i < len(expr)-1; i++ {
-		switch expr[i] {
-		case '(':
-			depth++
-		case ')':
-			depth--
-		case '+':
-			if depth == 0 {
-				return FP64Add, expr[:i], expr[i+1:], true
-			}
-		case '*':
-			if depth == 0 {
-				return FP64Mul, expr[:i], expr[i+1:], true
-			}
-		case '/':
-			if depth == 0 && i > 0 && expr[i-1] != '*' {
-				return FP64Div, expr[:i], expr[i+1:], true
-			}
-		case '-':
-			if depth == 0 && i > 0 {
-				return FP64Sub, expr[:i], expr[i+1:], true
-			}
-		}
+// parseHaskellIf splits "if COND then THENVAL else ELSEVAL" into its three
+// sub-expressions, treating "then"/"else" as space-delimited keywords.
+func parseHaskellIf(expr string) (cond, thenStr, elseStr string, ok bool) {
+	rest := strings.TrimSpace(strings.TrimPrefix(expr, "if"))
+	thenIdx := findHaskellToken(rest, "then")
+	if thenIdx < 0 {
+		return "", "", "", false
 	}
-	return 0, "", "", false
+	cond = strings.TrimSpace(rest[:thenIdx])
+	afterThen := strings.TrimSpace(rest[thenIdx+len("then"):])
+	elseIdx := findHaskellToken(afterThen, "else")
+	if elseIdx < 0 {
+		return "", "", "", false
+	}
+	thenStr = strings.TrimSpace(afterThen[:elseIdx])
+	elseStr = strings.TrimSpace(afterThen[elseIdx+len("else"):])
+	if cond == "" || thenStr == "" || elseStr == "" {
+		return "", "", "", false
+	}
+	return cond, thenStr, elseStr, true
+}
+
+// findHaskellToken locates the keyword kw as a standalone space-delimited token
+// in s, returning its starting index or -1.  It does not match inside a larger
+// identifier (e.g. it will not match "the" inside "these").
+func findHaskellToken(s, kw string) int {
+	for i := 0; ; {
+		idx := strings.Index(s[i:], kw)
+		if idx < 0 {
+			return -1
+		}
+		abs := i + idx
+		before := abs == 0 || s[abs-1] == ' ' || s[abs-1] == '('
+		after := abs+len(kw) >= len(s) || s[abs+len(kw)] == ' ' || s[abs+len(kw)] == '('
+		if before && after {
+			return abs
+		}
+		i = abs + len(kw)
+	}
+}
+
+// haskellArithOp maps an arithmetic operator character from splitArith to the
+// corresponding FP64 opcode.  Haskell subtraction is a native FP64Sub (the R
+// frontend lowers it to a negate + add instead).
+func haskellArithOp(c byte) FP64Op {
+	switch c {
+	case '+':
+		return FP64Add
+	case '-':
+		return FP64Sub
+	case '*':
+		return FP64Mul
+	case '/':
+		return FP64Div
+	}
+	return FP64Add
 }
 
 func findHaskellCmp(expr string) int {
@@ -319,6 +388,7 @@ func parseHaskellCond(s string) (string, string) {
 }
 
 func resolveHaskellAtom(p *HaskellProgram, s string) string {
+	s = stripOuterParens(s)
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return p.getOrCreateReg("_")
@@ -328,8 +398,30 @@ func resolveHaskellAtom(p *HaskellProgram, s string) string {
 		p.Regs = append(p.Regs, FP64IR{Op: FP64Const, Dest: r, Imm: val})
 		return r
 	}
-	s = strings.Trim(s, "()")
-	return p.getOrCreateReg(s)
+	// A bare identifier is a register reference; anything else (a parenthesized
+	// or arithmetic operand such as "(b + c)") must be compiled as an expression.
+	if isSimpleIdent(s) {
+		return p.getOrCreateReg(s)
+	}
+	r := p.allocReg()
+	if err := compileHaskellExprTo(p, r, s); err != nil {
+		return p.getOrCreateReg(s)
+	}
+	return r
+}
+
+// isSimpleIdent reports whether s is a plain variable/parameter name.
+func isSimpleIdent(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_') {
+			return false
+		}
+	}
+	return true
 }
 
 func compileHaskellCall(p *HaskellProgram, dest, funcName, args string) error {
@@ -363,15 +455,52 @@ func compileHaskellCall(p *HaskellProgram, dest, funcName, args string) error {
 		}
 	}
 	if fn, ok := p.Funcs[funcName]; ok {
+		// Inline the function body. The body was compiled in the global
+		// register space at definition time, so those register numbers are
+		// stale (and likely never written) at a later call site. Remap every
+		// register the body touches to fresh call-time registers, and bind the
+		// argument registers directly to the passed values' registers so the
+		// body reads the actual call arguments instead of definition-time
+		// (uninitialized) slots.
+		remap := make(map[string]string)
 		for i, arg := range argList {
-			if i < len(fn.Args) {
-				src := resolveHaskellAtom(p, arg)
-				dst := p.getOrCreateReg(fn.Args[i])
-				p.Regs = append(p.Regs, FP64IR{Op: FP64Mov, Dest: dst, Src: []string{src}})
+			if i >= len(fn.Args) {
+				break
+			}
+			src := resolveHaskellAtom(p, arg)
+			argReg := fn.ArgRegs[i]
+			remap[argReg] = src
+		}
+		// Allocate fresh registers (and remap) for every other register the
+		// body uses, so a nested call does not alias the enclosing body's
+		// registers either.
+		for _, inst := range fn.Body {
+			regs := append([]string{inst.Dest}, inst.Src...)
+			for _, r := range regs {
+				if _, ok := remap[r]; !ok {
+					remap[r] = p.allocReg()
+				}
 			}
 		}
+		// Emit the body with remapped registers; the top-level destination we
+		// were called for (dest) receives the body's final result so the call
+		// site can consume it.
+		var resultReg string
 		for _, inst := range fn.Body {
-			p.Regs = append(p.Regs, inst)
+			ni := inst
+			ni.Dest = remap[ni.Dest]
+			// Deep-copy Src: the body's Src slices share backing arrays with
+			// the stored function body, so an in-place remap would corrupt the
+			// cached definition (and any earlier caller that captured it).
+			ni.Src = append([]string(nil), inst.Src...)
+			for j := range ni.Src {
+				ni.Src[j] = remap[ni.Src[j]]
+			}
+			p.Regs = append(p.Regs, ni)
+			resultReg = ni.Dest
+		}
+		if dest != resultReg {
+			p.Regs = append(p.Regs, FP64IR{Op: FP64Mov, Dest: dest, Src: []string{resultReg}})
 		}
 		return nil
 	}

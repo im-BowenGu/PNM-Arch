@@ -61,7 +61,7 @@ module kv_cache_bank #(
 
     output wire        kv_full,
     output wire        kv_empty,
-    output wire [ADDR_BITS-1:0] kv_occupancy,
+    output wire [ADDR_BITS:0] kv_occupancy,
     output wire [ADDR_BITS-1:0] kv_read_ptr,
     input  wire        evict_req,
     input  wire [ADDR_BITS-1:0] evict_addr,
@@ -82,12 +82,27 @@ module kv_cache_bank #(
     localparam KV_OP_STORE  = 2'b10;
     localparam KV_OP_LOAD   = 2'b11;
 
+    // SRAM address width: ADDR_BITS only covers the entry COUNT (read/write
+    // pointers); byte addressing inside the SRAM needs count + byte-offset
+    // bits.  Using ADDR_BITS here truncated addresses to 2^ADDR_BITS bytes,
+    // aliasing every entry past that boundary onto the first few.
+    function integer clog2;
+        input integer x;
+        integer n;
+        begin
+            n = 0;
+            while ((1 << n) < x) n = n + 1;
+            clog2 = n;
+        end
+    endfunction
+    localparam SRAM_AW = clog2(BANK_DEPTH * ENTRY_BYTES);
+
     // =========================================================================
     // Internal state
     // =========================================================================
     reg [ADDR_BITS-1:0] write_ptr;
     reg [ADDR_BITS-1:0] read_ptr;
-    reg [ADDR_BITS-1:0] occupancy;
+    reg [ADDR_BITS:0] occupancy;   // 0..BANK_DEPTH (needs DEPTH, not DEPTH-1)
     reg                  full_r;
     reg                  empty_r;
 
@@ -118,16 +133,17 @@ assign kv_read_ptr = read_ptr;
     localparam KL_IDLE   = 2'd0;
     localparam KL_HEADER = 2'd1;
     localparam KL_DATA   = 2'd2;
+    localparam KL_TAIL   = 2'd3;
 
     reg [1:0]  ks_state;
     reg [15:0] ks_len;
     reg [15:0] ks_pos;
-    reg [ADDR_BITS-1:0] ks_addr;
+    reg [SRAM_AW-1:0] ks_addr;
 
     reg [1:0]  kl_state;
     reg [15:0] kl_len;
     reg [15:0] kl_pos;
-    reg [ADDR_BITS-1:0] kl_addr;
+    reg [SRAM_AW-1:0] kl_addr;
     reg [7:0]  kl_out_data;
     reg        kl_out_valid;
     reg        kl_out_sop;
@@ -260,12 +276,23 @@ assign kv_read_ptr = read_ptr;
                         ks_pos   <= 1;
                         ks_addr  <= write_ptr * ENTRY_BYTES + 1;
                         kv_sram[write_ptr * ENTRY_BYTES] <= nob_in_data;
-                    end
-                    if (reclaim_req && reclaim_valid && !full_r) begin
+                    end else if (reclaim_req && reclaim_valid && !full_r) begin
+                        // else-if (not a separate if): a coincident KV store
+                        // must win — a store consumes the NoB link (backpressured
+                        // via nob_in_ready) and cannot be deferred, whereas a
+                        // reclaim is a deferrable background offload held off by
+                        // reclaim_ready. Two independent ifs here would
+                        // double-fire: the reclaim (source-last) would clobber
+                        // ks_state to KS_DATA and overwrite the store's SOP byte,
+                        // silently dropping the in-flight store.
                         ks_state <= KS_DATA;
                         ks_pos   <= 0;
-                        ks_addr  <= write_ptr * ENTRY_BYTES;
+                        ks_addr  <= write_ptr * ENTRY_BYTES + 1;
                         ks_len   <= ENTRY_BYTES[15:0];
+                        // Store the SOP byte like the KV_STORE branch does —
+                        // otherwise the first reclaim byte is dropped and the
+                        // entry is aliased one byte short with a stale head.
+                        kv_sram[write_ptr * ENTRY_BYTES] <= reclaim_data;
                     end
                 end
 
@@ -316,10 +343,17 @@ assign kv_read_ptr = read_ptr;
                         kl_pos      <= 0;
                         kl_addr     <= evict_addr * ENTRY_BYTES;
                         kl_len      <= ENTRY_BYTES[15:0];
-                        kl_out_data <= 8'hEE;
-                        kl_out_valid <= 1;
-                        kl_out_sop  <= 1;
+                        // Eviction reads drive the evict port, not the NoB —
+                        // keep the NoB silent (kl_out_valid holds stale 1s
+                        // left over from the header path otherwise).
+                        kl_out_data <= 8'h00;
+                        kl_out_valid <= 0;
+                        kl_out_sop  <= 0;
                         kl_out_eop  <= 0;
+                        // Pipeline may have shadowed a NoB byte: drop it so
+                        // it is not re-emitted when injection ends.
+                        pt_valid    <= 0;
+                        pt_active   <= 0;
                     end else if (is_kv_load && !empty_r && !kv_injecting) begin
                         kl_state    <= KL_HEADER;
                         kl_pos      <= 0;
@@ -329,17 +363,21 @@ assign kv_read_ptr = read_ptr;
                         kl_out_valid <= 1;
                         kl_out_sop  <= 1;
                         kl_out_eop  <= 0;
+                        pt_valid    <= 0;
+                        pt_active   <= 0;
                     end
                 end
 
                 KL_HEADER: begin
                     if (nob_out_ready) begin
                         kl_pos <= kl_pos + 1;
-                        case (kl_pos)
-                            0: begin kl_out_data <= 8'h80; kl_out_sop <= 0; end
-                            1: begin kl_out_data <= kl_len[7:0];  end
-                            2: begin kl_out_data <= kl_len[15:8]; end
-                        endcase
+                        if (!evict_req) begin
+                            case (kl_pos)
+                                0: begin kl_out_data <= 8'h80; kl_out_sop <= 0; end
+                                1: begin kl_out_data <= kl_len[7:0];  end
+                                2: begin kl_out_data <= kl_len[15:8]; end
+                            endcase
+                        end
                         if (kl_pos == 2) begin
                             kl_state <= KL_DATA;
                             kl_pos   <= 0;
@@ -349,6 +387,7 @@ assign kv_read_ptr = read_ptr;
 
                 KL_DATA: begin
                     if (evict_req && evict_ready) begin
+                        kl_out_valid <= 0;  // eviction drives evict port, not NoB
                         if (kl_addr < BANK_DEPTH * ENTRY_BYTES) begin
                             evict_data_r  <= kv_sram[kl_addr];
                             evict_valid_r <= 1;
@@ -370,6 +409,23 @@ assign kv_read_ptr = read_ptr;
                     end
                 end
 
+                KL_TAIL: begin
+                    // Final-byte hold: kl_out_* still carry the last payload
+                    // byte with eop set, so the muxed NoB shows it for one
+                    // full accepted cycle. After an eviction, wait for
+                    // evict_req to release first — returning to KL_IDLE while
+                    // it is still high re-triggers a duplicate eviction of the
+                    // same entry (and streams the entry to the NoB).
+                    if (evict_req) begin
+                        // controller is still reacting to evict_done
+                    end else if (nob_out_ready) begin
+                        kl_out_valid       <= 0;
+                        kl_out_eop         <= 0;
+                        kv_load_sram_valid <= 0;
+                        kl_state           <= KL_IDLE;
+                    end
+                end
+
                 default: kl_state <= KL_IDLE;
             endcase
 
@@ -386,23 +442,26 @@ assign kv_read_ptr = read_ptr;
                 evict_done = (kl_state == KL_DATA) && evict_req && (kl_pos == kl_len - 1);
 
                 if (store_done && !load_done && !evict_done) begin
-                    write_ptr <= (write_ptr == BANK_DEPTH-1) ? 0 : write_ptr + 1;
+                    write_ptr <= (write_ptr == {ADDR_BITS{1'b1}}) ? 0 : write_ptr + 1;
                     occupancy <= occupancy + 1;
                     full_r    <= (occupancy == BANK_DEPTH - 1);
                     empty_r   <= 0;
                     ks_state  <= KS_IDLE;
                 end else if (load_done) begin
-                    // KV_LOAD is a read — does NOT decrement occupancy
+                    // KV_LOAD is a read — does NOT decrement occupancy.
+                    // Park in KL_TAIL so the final byte stays presented on
+                    // the muxed NoB for one full cycle; returning straight to
+                    // KL_IDLE cuts the last byte off (kv_injecting goes low).
                     kl_out_eop       <= 1;
                     kv_load_sram_eop <= 1;
-                    kl_state  <= KL_IDLE;
+                    kl_state  <= KL_TAIL;
                 end else if (evict_done) begin
-                    read_ptr <= (read_ptr == BANK_DEPTH-1) ? 0 : read_ptr + 1;
+                    read_ptr <= (read_ptr == {ADDR_BITS{1'b1}}) ? 0 : read_ptr + 1;
                     occupancy <= occupancy - 1;
                     full_r    <= 0;
                     empty_r   <= (occupancy <= 1);
                     evict_done_r <= 1;
-                    kl_state  <= KL_IDLE;
+                    kl_state  <= KL_TAIL;
                 end
             end
         end
