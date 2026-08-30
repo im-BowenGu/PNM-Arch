@@ -27,7 +27,7 @@ Verilog-2005 model of the **routing fabric**, **compute units**, and **co-simula
 | `fp32_alu_chip.v` | FP32 ALU chip — wraps `fp32_alu.v` with AXI-Stream flit interface for PNM fabric integration |
 | `int8_mac.v` | INT8 multiply-accumulate |
 | **Fabric integration** | |
-| `router_chip.v` | Central router chip — PCIe ingress, flit builder, POST discovery FSM, spine injection |
+| `orchestrator_chip.v` | Central router chip — PCIe ingress, flit builder, POST discovery FSM, spine injection |
 | `kv_cache_bank.v` | KV cache bank (on-node) |
 | `kv_offload.v` | KV cache offload engine |
 | `moe_gating.v` | MoE expert gating (top-K selection) |
@@ -48,7 +48,7 @@ Verilog-2005 model of the **routing fabric**, **compute units**, and **co-simula
 | `tb_fp16_mac_array.v` | FP16 MAC array testbench |
 | `tb_bf16_mac_array.v` | BF16 MAC array testbench |
 | `tb_int8_mac.v` | INT8 MAC testbench |
-| `tb_router_chip.v` | Router chip testbench |
+| `tb_orchestrator_chip.v` | Router chip testbench |
 | `tb_moe_gating.v` | MoE gating testbench |
 | `tb_dma_lpddr6.v` | Host→BMC→DMA→LPDDR6 roundtrip with mid-transfer refresh stalls |
 | `tb_sodimm_lpddr.v` | Same protocol stack across DDR4/DDR5/LPDDR6 timing generations |
@@ -68,13 +68,13 @@ Each node's PE tile (`pe_tile_stub.v`) instantiates one of several compute unit 
 | `fp64_fma.v` | FMA | FP64 | 3 cycles | Double-precision scientific |
 | `bf16_mac_array.v` | Systolic array | BF16 | variable | Attention QKV |
 | `fp16_mac_array.v` | Systolic array | FP16 | variable | FP16 attention |
-| `fp32_alu.v` | ALU | FP32 | 1-25 cycles | Layernorm (divider + multiplier) |
+| `fp32_alu.v` | ALU | FP32 | 3 (MIN/MAX/CMP), 4 (FMA), 25 (DIV) | Layernorm (divider + multiplier) |
 | `fp32_alu_chip.v` | ALU chip | FP32 | 5-29 cycles | AXI-Stream integrated ALU for fabric |
-| `int8_mac.v` | MAC | INT8 | 1 cycle | Quantized inference |
+| `int8_mac.v` | MAC | INT8 | 2 cycles | Quantized inference |
 
 All FMA modules share an identical interface: `clk, rst_n, a, b, c, valid_in → result, valid_out`
-(3-cycle pipeline). The `pe_tile_stub.v` uses `USE_FMA` parameter to select between
-bias-add (0) and BF16 FMA (1) compute paths.
+(3-cycle pipeline). The `pe_tile_stub.v` uses `USE_FMA` (0=bias-add, 1=BF16 FMA) and `CU_TYPE`
+(0=bias-add, 1=BF16 FMA, 2=INT4 MAC) parameters to select the compute path.
 
 ## Packet format (byte-wide links, CRC-protected destination)
 
@@ -82,7 +82,7 @@ bias-add (0) and BF16 FMA (1) compute paths.
 wire format:
 byte 0 : LAYER_ID            (stripped by lxy_repeater)
 byte 1 : MODULE_ID = {X[3:0], Y[3:0]}   (forwarded to DMA as DEST)
-byte 2 : CTRL      = {vc_class[1:0], op[1:0], rsvd[3:0]}
+byte 2 : CTRL      = {vc_class[7:6], op[5:4], rsvd[3:0]}
 byte 3 : LEN_LO
 byte 4 : LEN_HI
 byte 5.. : payload (LEN bytes)
@@ -167,7 +167,7 @@ vvp tb_load.out
 
 # doorbell DMA (pe_tile_stub → doorbell, CRC-16 end-to-end)
 iverilog -g2005 -o tb_doorbell.out \
-  tb_doorbell.v pe_tile_stub.v doorbell.v crc16.v
+  core/tb_doorbell.v core/pe_tile_stub.v core/doorbell.v core/crc16.v core/bf16_fma.v core/weight_dequant.v core/int8_mac.v
 vvp tb_doorbell.out
 
 # banked DDR SODIMM controller (row hit/miss/conflict latencies, refresh)
@@ -350,13 +350,13 @@ occurs on the router chip.
 | `f64.div` | `fp64_fma.v` | 3 cycles | Uses FMA's add path for div |
 | `f64.add/mul/min/max/cmp` | `fp64_fma.v` | 3 cycles | All via FMA pipeline |
 | `alu.add/sub/mul` | `fp32_alu.v` | 4 cycles | Via internal `fp32_fma` |
-| `alu.div` | `fp32_alu.v` | 27 cycles | Left-shifting restoring division |
-| `alu.min/max/cmp` | `fp32_alu.v` | 4 cycles | Pipelined signed comparison |
+| `alu.div` | `fp32_alu.v` | 25 cycles | Left-shifting restoring division |
+| `alu.min/max/cmp` | `fp32_alu.v` | 3 cycles | Pipelined signed comparison |
 | `alu.dot` | `fp32_alu.v` | N×4 cycles | Expanded to N multiply+add ops |
 | `alu.lerp` | `fp32_alu.v` | 3×4 cycles | `a + t*(b-a)` via MUL+ADD |
 | `alu.clamp` | `fp32_alu.v` | 2×4 cycles | Two MIN/MAX operations |
-| `alu.rcp` | `fp32_alu.v` | 27 cycles | Reciprocal via division |
-| `alu.sqrt` | `fp32_alu.v` | ~24 cycles | Newton-Raphson iteration |
+| `alu.rcp` | software-lowered | ~27 cycles | Not an ALU datapath; lowered via div/cmp-select in the IR compilers |
+| `alu.sqrt` | software-lowered | ~24 cycles | Not an ALU datapath; binary compare-select ladder in the IR compilers |
 | BF16 FMA | `bf16_fma.v` | 3 cycles | MoE expert compute |
 | BF16 array | `bf16_mac_array.v` | variable | Systolic attention QKV |
 | INT8 MAC | `int8_mac.v` | 2 cycles | Quantized inference |
@@ -376,7 +376,7 @@ All three compilers produce **straight-line code**: the IR is a linear sequence
 of instructions with no control flow. This is sufficient for inference
 workloads (forward pass only) but not for training or iterative algorithms.
 
-### Router chip architecture (`router_chip.v`)
+### Router chip architecture (`orchestrator_chip.v`)
 
 The router chip is the only stateful silicon in the fabric. It contains four
 independent FSMs that run concurrently:

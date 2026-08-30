@@ -8,7 +8,7 @@ import (
 // ============================================================================
 // NVMe + Lustre storage models for the PNM orchestrator chip firmware.
 //
-// These mirror sim/fw/pnm_nvme.c and sim/fw/pnm_lustre.c so the Go
+// These mirror fw/pnm_nvme.c and fw/pnm_lustre.c so the Go
 // verification harness can check that weight persistence, KV cache
 // overflow to NVMe, and Lustre striping produce identical layouts on
 // both sides.
@@ -227,9 +227,13 @@ func (lc *LustreClient) ostForStripe(f *LustreFile, stripeIdx int) *OST {
 	return &lc.OSTs[idx]
 }
 
-// objLBA computes the starting LBA for an object within an OST.
-func (lc *LustreClient) objLBA(ost *OST, objID uint64) uint64 {
-	return ost.LBABase + (objID % ost.LBACount)
+// objLBA computes the starting LBA for an object within an OST. Each object
+// owns stripeSize bytes (stripeSize/512 blocks), so consecutive object IDs on
+// one OST are spaced by that extent; a single LBA per object would alias
+// adjacent stripes and clobber each other's blocks. (Keep in sync with
+// fw/pnm_lustre.c obj_lba.)
+func (lc *LustreClient) objLBA(ost *OST, objID uint64, stripeSize uint32) uint64 {
+	return ost.LBABase + (objID*uint64(stripeSize/NVMEBlockSize))%ost.LBACount
 }
 
 // Write stripes data across OSTs at the given byte offset.
@@ -252,7 +256,7 @@ func (lc *LustreClient) Write(fd int, offset uint64, data []byte) (int64, error)
 
 		ost := lc.ostForStripe(f, stripeIdx)
 		objID := f.ObjIDBase + uint64(stripeIdx)
-		lba := lc.objLBA(ost, objID) + stripeOff/NVMEBlockSize
+		lba := lc.objLBA(ost, objID, f.StripeSize) + stripeOff/NVMEBlockSize
 		nlb := uint16(((chunk + NVMEBlockSize - 1) / NVMEBlockSize) - 1)
 
 		end := written + chunk

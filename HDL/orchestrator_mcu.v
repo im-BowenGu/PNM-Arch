@@ -15,7 +15,7 @@
 //   - PNM flit builder (same wire format as bmc_orchestrator_top)
 //
 // Target workloads: jacobi5, reduction, broadcast on <=64-node chassis.
-// Firmware: sim/toolchain/mcu/ (bare-metal static allocation).
+// Firmware: toolchain/mcu/ (bare-metal static allocation).
 //
 // Memory map:
 //   0x0000_0000 - 0x0000_1FFF  Boot ROM (8KB, read-only)

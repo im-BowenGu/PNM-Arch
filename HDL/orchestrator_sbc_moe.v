@@ -19,7 +19,7 @@
 //   - UART console, CLINT timer, PNM router engine
 //
 // Target workloads: MoE transformer inference, dense LLM dispatch.
-// Firmware: sim/toolchain/soc/ (NOMMU Linux daemon).
+// Firmware: toolchain/soc/ (NOMMU Linux daemon).
 //
 // Memory map:
 //   0x0000_0000 - 0x0000_FFFF  Boot ROM (64KB, read-only)
@@ -346,6 +346,7 @@ module orchestrator_sbc_moe #(
         .done(mg_done),
         .hidden_addr(mg_hidden_addr),
         .hidden_data(mg_hidden_data),
+        .hidden_valid(1'b1),      // hidden_buf preloaded by firmware: free-run load
         .weight_load(1'b0),       // weights loaded via CPU writes to SRAM
         .weight_addr(mg_weight_addr),
         .weight_data(mg_weight_data),

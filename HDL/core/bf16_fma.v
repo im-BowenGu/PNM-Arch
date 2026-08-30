@@ -74,10 +74,12 @@ module bf16_fma (
     assign b_mantissa_w[6:0] = b_zero_w ? 7'd0 : (b_den_w ? {1'b0, b_man_w} : b_man_w);
     wire [8:0]  b_exponent_w = b_zero_w ? 9'd0 : (b_den_w ? 9'd1 : {1'b0, b_exp_w});
 
-    // Multiply
+    // Multiply — zero-guard ported from fp16_fma (Bug fix: 0*x must not produce exp=-127)
     wire        mul_sign_w = a_sign_w ^ b_sign_w;
-    wire signed [9:0] mul_exp_w  = $signed({1'b0, a_exponent_w}) + $signed({1'b0, b_exponent_w}) - 10'sd127;
-    wire [15:0] mul_man_w  = a_mantissa_w * b_mantissa_w;
+    wire signed [9:0] mul_exp_w  = (a_zero_w || b_zero_w) ? 10'sd0 :
+        $signed({1'b0, a_exponent_w}) + $signed({1'b0, b_exponent_w}) - 10'sd127;
+    wire [15:0] mul_man_w  = (a_zero_w || b_zero_w) ? 16'd0 :
+                             (a_mantissa_w * b_mantissa_w);
     wire        mul_ovf_w  = mul_man_w[15];
 
     always @(posedge clk or negedge rst_n) begin
@@ -126,42 +128,62 @@ module bf16_fma (
     wire signed [9:0] mul_exp_eff = s1_mul_overflow ? (s1_mul_exp + 10'sd1) : s1_mul_exp;
     wire signed [9:0] add_exp = (mul_exp_eff > $signed({1'b0, c_exponent})) ? mul_exp_eff : $signed({1'b0, c_exponent});
 
-    // Align mantissas: only shift left by 1 when product did NOT overflow;
-    // when s1_mul_overflow=1 the implicit leading 1 is already at bit 15.
-    wire [16:0] mul_man_17 = s1_mul_overflow ? {s1_mul_man, 1'b0} : {1'b0, s1_mul_man};
+    // Align mantissas in a 24-bit window with the implicit leading 1 at bit 23.
+    // The product and c are zero-padded below so a right-shifted operand keeps
+    // its discarded low bits inside the window as guard/round/sticky precision;
+    // sticky is taken from the window (not a separate boolean), so the
+    // subtractive path (different signs) rounds correctly (mirrors fp16_fma).
+    wire [23:0] mul_man_norm = s1_mul_overflow ? {s1_mul_man, 8'd0} : ({s1_mul_man, 8'd0} << 1);
     wire signed [9:0] exp_diff = mul_exp_eff - $signed({1'b0, c_exponent});
-    wire [16:0] mul_man_aligned_w = s1_mul_overflow ? mul_man_17 :
-        (exp_diff >= 0) ?
-        (mul_man_17 << 1) :
-        (mul_man_17 << 1) >> (-exp_diff);
-    wire [15:0] mul_man_aligned = mul_man_aligned_w[15:0];
-    // Sticky: any bits lost from product during right-shift
-    wire mul_sticky = (exp_diff < -10'sd1) ? (|(mul_man_17 & ((17'd1 << (-exp_diff - 10'sd1)) - 17'd1))) : 1'b0;
-
-    wire [15:0] c_man_aligned = (c_exponent > mul_exp_eff) ?
-        ({c_mantissa, 8'd0}) :
-        ({c_mantissa, 8'd0} >> (mul_exp_eff - c_exponent));
-    // Sticky: any bits lost from c during right-shift
-    wire c_sticky = (mul_exp_eff > c_exponent && (mul_exp_eff - c_exponent) > 9'd1) ?
-        (|({c_mantissa, 8'd0} & ((16'd1 << (mul_exp_eff - c_exponent - 9'd1)) - 16'd1))) : 1'b0;
+    wire [23:0] mul_man_aligned = (exp_diff >= 0) ?
+        mul_man_norm :
+        (mul_man_norm >> (-exp_diff));
+    wire [23:0] c_man_norm = {c_mantissa, 16'd0};
+    wire [23:0] c_man_aligned = (exp_diff < 0) ?
+        c_man_norm :
+        (c_man_norm >> exp_diff);
+    // Far sticky: bits of the right-shifted operand that fall entirely below
+    // the aligned window's LSB (position 0) are gone from norm_man, so OR them
+    // back in as a sticky so a tiny addend still rounds the mantissa up.
+    wire [8:0] mul_shift_w = (exp_diff < 0) ? (-exp_diff) : 9'd0;
+    wire [8:0] c_shift_w  = (exp_diff > 0) ?  exp_diff : 9'd0;
+    wire [8:0] mul_shift  = (mul_shift_w > 9'd24) ? 9'd24 : mul_shift_w;
+    wire [8:0] c_shift    = (c_shift_w   > 9'd24) ? 9'd24 : c_shift_w;
+    wire mul_far_sticky = |(mul_man_norm & ((24'd1 << mul_shift) - 24'd1));
+    wire c_far_sticky  = |(c_man_norm & ((24'd1 << c_shift) - 24'd1));
+    // The far sticky only applies to addition (same signs): when operands have
+    // opposite signs (subtraction) the discarded residual of the smaller
+    // operand must not push a guard=1 result over the round-up half-way point
+    // (it pulls the exact magnitude down, mirroring the fp64_alu fix).
+    wire add_op = (s1_mul_sign == c_sign);
+    wire mul_far_eff = add_op & mul_far_sticky;
+    wire c_far_eff  = add_op & c_far_sticky;
+    // In subtraction (opposite signs) a fully-below-window residual reduces the
+    // true magnitude, so it must pull a bare tie (guard=1, round=0, sticky=0)
+    // DOWN instead of RNE-to-even. Signal that for the rounding decision.
+    wire sub_far = (!add_op) & (mul_far_sticky | c_far_sticky);
 
     // Add
     wire        mul_ge_c = (mul_man_aligned >= c_man_aligned);
-    wire [16:0] abs_diff = mul_ge_c ?
+    wire [24:0] abs_diff = mul_ge_c ?
         ({1'b0, mul_man_aligned} - {1'b0, c_man_aligned}) :
         ({1'b0, c_man_aligned} - {1'b0, mul_man_aligned});
 
     wire        add_sign = (s1_mul_sign == c_sign) ? s1_mul_sign :
                            mul_ge_c ? s1_mul_sign : c_sign;
-    wire [16:0] add_result = (s1_mul_sign == c_sign) ?
+    wire [24:0] add_result = (s1_mul_sign == c_sign) ?
         ({1'b0, mul_man_aligned} + {1'b0, c_man_aligned}) :
         abs_diff;
 
+    // Carry-drop sticky: normalize (add_result[24:1]) shifts bit 0 out of the
+    // window when the add carries; fold it back in so it still rounds.
+    wire carry_drop = add_op & add_result[24] & add_result[0];
+
     // Normalize (signed exponent)
-    reg [15:0] norm_man;
+    reg [23:0] norm_man;
     reg signed [9:0] norm_exp;
     reg        norm_sign;
-    reg [3:0]  lead_pos;
+    reg [4:0]  lead_pos;
     integer shift;
 
     always @(*) begin
@@ -169,29 +191,37 @@ module bf16_fma (
         if (add_result == 0) begin
             norm_man = 0;
             norm_exp = 0;
-        end else if (add_result[16]) begin
-            norm_man = add_result[16:1];
+        end else if (add_result[24]) begin
+            norm_man = add_result[24:1];
             norm_exp = {1'b0, add_exp} + 10'd1;
         end else begin
-            norm_man = add_result[15:0];
+            norm_man = add_result[23:0];
             norm_exp = {1'b0, add_exp};
-            if (!norm_man[15]) begin
+            if (!norm_man[23]) begin
                 lead_pos = 0;
-                if      (norm_man[14]) lead_pos = 1;
-                else if (norm_man[13]) lead_pos = 2;
-                else if (norm_man[12]) lead_pos = 3;
-                else if (norm_man[11]) lead_pos = 4;
-                else if (norm_man[10]) lead_pos = 5;
-                else if (norm_man[9])  lead_pos = 6;
-                else if (norm_man[8])  lead_pos = 7;
-                else if (norm_man[7])  lead_pos = 8;
-                else if (norm_man[6])  lead_pos = 9;
-                else if (norm_man[5])  lead_pos = 10;
-                else if (norm_man[4])  lead_pos = 11;
-                else if (norm_man[3])  lead_pos = 12;
-                else if (norm_man[2])  lead_pos = 13;
-                else if (norm_man[1])  lead_pos = 14;
-                else                   lead_pos = 15;
+                if      (norm_man[22]) lead_pos = 1;
+                else if (norm_man[21]) lead_pos = 2;
+                else if (norm_man[20]) lead_pos = 3;
+                else if (norm_man[19]) lead_pos = 4;
+                else if (norm_man[18]) lead_pos = 5;
+                else if (norm_man[17]) lead_pos = 6;
+                else if (norm_man[16]) lead_pos = 7;
+                else if (norm_man[15]) lead_pos = 8;
+                else if (norm_man[14]) lead_pos = 9;
+                else if (norm_man[13]) lead_pos = 10;
+                else if (norm_man[12]) lead_pos = 11;
+                else if (norm_man[11]) lead_pos = 12;
+                else if (norm_man[10]) lead_pos = 13;
+                else if (norm_man[9])  lead_pos = 14;
+                else if (norm_man[8])  lead_pos = 15;
+                else if (norm_man[7])  lead_pos = 16;
+                else if (norm_man[6])  lead_pos = 17;
+                else if (norm_man[5])  lead_pos = 18;
+                else if (norm_man[4])  lead_pos = 19;
+                else if (norm_man[3])  lead_pos = 20;
+                else if (norm_man[2])  lead_pos = 21;
+                else if (norm_man[1])  lead_pos = 22;
+                else                   lead_pos = 23;
                 shift = lead_pos;
                 norm_man = norm_man << shift;
                 norm_exp = norm_exp - shift;
@@ -200,17 +230,17 @@ module bf16_fma (
     end
 
     // Round-to-nearest-even
-    // Mantissa field: norm_man[14:8] (7 bits)
-    // Guard: [7], Round: [6], Sticky: |[5:0]
-    wire guard  = norm_man[7];
-    wire round  = norm_man[6];
-    wire sticky = |norm_man[5:0] | mul_sticky | c_sticky;
-    wire round_up = guard & (round | sticky | norm_man[8]);
+    // Mantissa field: norm_man[22:16] (7 bits)
+    // Guard: [15], Round: [14], Sticky: |[13:0]
+    wire guard  = norm_man[15];
+    wire round  = norm_man[14];
+    wire sticky = |norm_man[13:0] | mul_far_eff | c_far_eff | carry_drop;
+    wire round_up = guard & (round | sticky | (norm_man[16] & ~sub_far));
 
-    wire [15:0] rounded_man = norm_man + (round_up ? 16'd128 : 16'd0);  // add 1 at bit 7
-    wire rounded_carry = ~rounded_man[15] & norm_man[15];
+    wire [23:0] rounded_man = norm_man + (round_up ? 24'h008000 : 24'd0);  // add 1 at bit 15
+    wire rounded_carry = ~rounded_man[23] & norm_man[23];
 
-    wire [15:0] final_man = rounded_carry ? 16'h8000 : rounded_man;  // 1<<15
+    wire [23:0] final_man = rounded_carry ? 24'h800000 : rounded_man;  // 1<<23
     wire [9:0]  final_exp = rounded_carry ? (norm_exp + 10'd1) : norm_exp;
 
     // Pack result
@@ -219,7 +249,7 @@ module bf16_fma (
     wire [15:0] packed_result;
     assign packed_result = result_underflow ? (norm_sign ? 16'h8000 : BF16_ZERO) :
                            result_overflow  ? {norm_sign, 8'd255, 7'd0} :
-                           {norm_sign, final_exp[7:0], final_man[14:8]};
+                           {norm_sign, final_exp[7:0], final_man[22:16]};
 
     // Special cases
     wire any_nan = s1_a_nan | s1_b_nan | s1_c_nan;
