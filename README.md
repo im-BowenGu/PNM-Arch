@@ -4,7 +4,7 @@
 > from commodity LPDDR6 CAMM2 modules, mature-node DUV MAC ASICs, and a
 > deterministic single-spine wormhole routing fabric.
 
-**Paper:** [*Breaking the HBM wall: A Distributed Spatial Processing-Near-Memory Architecture using DUV ASICs and Deterministic Routing*](paper/Paper.MD) · [TL;DR](TLDR.md) · [Architecture brief](paper/TLDR_Paper.md)
+**Paper:** [*Breaking the HBM wall*](paper/readme.md) · [TL;DR](TLDR.md) · [Architecture brief](paper/TLDR_Paper.md)
 
 ## What this is
 
@@ -38,21 +38,6 @@ paper/                  ← The paper + its proofs
   build.py                build pipeline → submission/*.docx
   submission/             generated artifacts (DOCX, PDF, TeX)
   HDL/                    routing fabric RTL + verification testbenches
-    pnm_defs.vh             shared definitions (wire format, parameters)
-    hfr.v                   Hardware Flit Repeater
-    flit_gate.v             shared demux core
-    vc_merge.v              VC arbitration for egress
-    lxy_repeater.v          layer gate (strips LAYER_ID on match)
-    xy_turn.v               X→Y dimension-order turn gate
-    node_eject.v            node eject gate
-    core/doorbell.v         doorbell discipline (three-condition fire)
-    core/crc16.v            CRC-16/CCITT-FALSE
-    core/pe_tile_stub.v     PE tile stub (bias add + CRC recompute)
-    tb_fabric.v             functional smoke test
-    tb_load.v               500-packet load test with backpressure
-    tb_flit_gate.v          flit_gate unit tests
-    tb_hfr.v                HFR unit tests
-    core/tb_doorbell.v      doorbell unit tests
 
 HDL/                    ← Full Verilog fabric (RTL + all compute units + SoC)
   core/                   compute primitives (FMA, ALU, MAC, systolic arrays)
@@ -67,10 +52,16 @@ pcb/                    ← Manufacturable PCB assembly
 sim/                    ← Go co-simulation harness (stdlib only)
   cmd/pnm/                orchestrator + verification scenarios
   cmd/pnmc/               program compiler + model compiler + driver CLI
+  cmd/pnmhost/            unified host driver (all workloads)
+  cmd/haskell_pnm/        Haskell → PNM compiler + co-simulation runner
+  cmd/r_pnm/              R → PNM compiler + co-simulation runner
+  cmd/hlsl_pnm/           HLSL → PNM compiler + co-simulation runner
   internal/pnm/           harness library (topology gen, doorbell, DES, RNG)
-  fw/                     C firmware port for MCU targets
-  toolchain/              MCU, SoC, fw-linux, fw-sel4, pi_host drivers
   examples/               test configs (gemma4_test, mini_glm_moe)
+
+fw/                       C firmware port for MCU targets
+toolchain/                MCU, SoC, fw-linux, fw-sel4 toolchains
+pi_host/                  Raspberry Pi Compute Module host drivers
 
 implementations/        ← Board netlist assembly + schema
 docs/                   ← Usage manual, profiling guide
@@ -84,30 +75,20 @@ Requires [Nix](https://nixos.org) with flakes-style `nix-shell` support.
 nix-shell                    # enter environment (iverilog, go, pdflatex, pandoc)
 ```
 
-### Build the paper
+| What you want | Where to go |
+|---------------|-------------|
+| Build the paper | [`paper/readme.md`](paper/readme.md) |
+| Verify fabric proofs (paper) | [`paper/readme.md`](paper/readme.md#verifying-the-fabric-paper-proofs) |
+| Run co-simulation | [Simulation](#simulation) below |
+| Run HPC workloads | [Simulation → HPC workloads](#hpc-workloads) below |
+| Build hardware | [Build system](#build-system) below |
 
-```bash
-cd paper && python3 build.py           # → submission/paper.docx
-python3 build.py --review              # → submission/paper_review.pdf (single-column)
-```
+## Simulation
 
-### Verify the fabric (paper proofs)
-
-```bash
-cd paper/HDL
-
-# 500-packet load test: byte-exact delivery, zero drops, zero misroutes
-iverilog -g2005 -o tb_load.out \
-  hfr.v flit_gate.v vc_merge.v lxy_repeater.v xy_turn.v node_eject.v tb_load.v && vvp tb_load.out
-
-# doorbell discipline: six activations, two refusals, two corrupt_out pulses
-iverilog -g2005 -o tb_doorbell.out \
-  core/tb_doorbell.v core/pe_tile_stub.v core/doorbell.v core/crc16.v core/bf16_fma.v && vvp tb_doorbell.out
-
-# full fabric smoke test
-iverilog -g2005 -o tb_fabric.out \
-  hfr.v flit_gate.v vc_merge.v lxy_repeater.v xy_turn.v node_eject.v tb_fabric.v && vvp tb_fabric.out
-```
+The co-simulation harness compiles a Go stimulus program into Verilog
+testbenches, runs them through `iverilog`/`vvp` in parallel slices, then
+verifies byte-exact delivery against a golden model. Every scenario
+checks all five properties the paper proves.
 
 ### Co-simulation (6 scenarios at any chassis scale)
 
@@ -121,14 +102,87 @@ Scenarios: `sweep` (exact closed-form latency), `vcsweep` (all VC classes),
 `load` (500 flits, lossless), `hotspot` (MoE hot expert), `stress` (3%
 corrupt CRC the doorbell must reject), `replay` (bit-identical determinism).
 
-### All HDL testbenches
+### Unified host driver (`pnmhost`)
 
-See [`paper/HDL/`](paper/HDL/) for the paper-verification subset. The full
-test suite lives in [`HDL/`](HDL/) — run all tests with:
+A single entry point for all PNM workloads — scenarios, HPC benchmarks,
+programs, model compilation, and LLM inference — with timestamped logging
+and structured result export:
+
+```bash
+go run ./cmd/pnmhost/ scenario sweep load stress -output results/
+go run ./cmd/pnmhost/ workload matvec -l 4 -x 4 -y 4 -frag 32
+go run ./cmd/pnmhost/ program examples/bias_add.pnm
+go run ./cmd/pnmhost/ model examples/gemma4_test -o results/
+go run ./cmd/pnmhost/ inference examples/gemma4_test "Hello" -max-tokens 16
+```
+
+See [`docs/usage_manual.md`](docs/usage_manual.md#unified-host-driver)
+for full command reference and all options.
+
+### Source-language compilation
+
+A subset of Haskell, R, and HLSL compiles to FP64 dispatch instructions
+on the chassis:
+
+```bash
+cd sim
+go run ./cmd/haskell_pnm examples/hello.hs -l 2 -x 2 -y 2 -run
+go run ./cmd/r_pnm examples/hello.R -l 2 -x 2 -y 2 -run
+go run ./cmd/hlsl_pnm examples/hello.hlsl -l 2 -x 2 -y 2 -run
+```
+
+Each FP64 operation (add, mul, fma) maps to a node running an `f64_*`
+kernel. Operands are packed as big-endian FP64 bytes in token payloads.
+See [`docs/usage_manual.md`](docs/usage_manual.md#haskell-to-pnm-compilation)
+for the full syntax reference and three-column comparison table.
+
+### HPC workloads
+
+Five built-in HPC benchmarks exercise different routing patterns:
+
+| Workload | Routing pattern | Description |
+|----------|----------------|-------------|
+| `jacobi5` | Intra-layer X→Y dimension-order | 5-point Jacobi stencil, one grid point per node |
+| `matvec` | Spine descent (cross-layer) | Matrix-vector product, row-per-node weight-stationary |
+| `reduction` | Reverse-path merge (egress→Y→X→spine) | Merge tree collecting partial sums |
+| `broadcast` | Spine descent + X→Y fan-out | Weight distribution from root to every node |
+| `nbody` | All paths saturated (worst case) | O(N²) all-pairs interaction, limited to 64 nodes |
+
+```bash
+go run ./cmd/pnmc workload jacobi5 -l 1 -x 4 -y 4 -run
+go run ./cmd/pnmc workload matvec -l 4 -x 4 -y 4 -frag 16 -run
+go run ./cmd/pnmc workload reduction -l 4 -x 4 -y 4 -frag 32 -run
+go run ./cmd/pnmc workload broadcast -l 4 -x 4 -y 4 -frag 64 -run
+go run ./cmd/pnmc workload nbody -l 4 -x 2 -y 2 -frag 8 -run
+```
+
+Or via the unified driver:
+```bash
+go run ./cmd/pnmhost/ workload matvec -l 4 -x 4 -y 4 -frag 32
+```
+
+### Data output and logging
+
+All simulation tools support structured output (CSV/JSON) and timestamped
+logging. Add `--output <dir>` to any command:
+
+```bash
+go run ./cmd/pnm --output results/                              # scenario CSV/JSON
+go run ./cmd/pnmc run-driver examples/gemma4_test -o results/   # dispatch CSV
+go run ./cmd/pnmhost/ scenario sweep -output results/ -log results/run.log
+```
+
+See [`docs/usage_manual.md`](docs/usage_manual.md#data-output-and-logging)
+for the full list of output files and their schemas.
+
+### HDL testbenches
+
+The paper-verification subset lives in [`paper/HDL/`](paper/HDL/).
+The full test suite (30+ testbenches) lives in [`HDL/`](HDL/):
 
 ```bash
 cd HDL
-# See HDL/README.md for the full list of 30+ testbenches
+# See HDL/README.md for the full list
 ```
 
 ## Build system
@@ -178,10 +232,10 @@ Four toolchains for the RISC-V orchestrator chip, from bare-metal to Linux:
 
 | Toolchain | Target | ISA | Output |
 |-----------|--------|-----|--------|
-| `sim/toolchain/mcu/` | Bare-metal MCU | RV32I | `firmware.bin` (8 KB ROM) |
-| `sim/toolchain/soc/` | NOMMU Linux daemon | RV32IMA | `pnm_socd` (static musl) |
-| `sim/toolchain/fw-linux/` | Linux tinyconfig | RV32I | `Image` + `initrd.cpio` (16 MB) |
-| `sim/toolchain/fw-sel4/` | seL4 microkernel | RV32IMA | root task ELF |
+| `toolchain/mcu/` | Bare-metal MCU | RV32I | `firmware.bin` (8 KB ROM) |
+| `toolchain/soc/` | NOMMU Linux daemon | RV32IMA | `pnm_socd` (static musl) |
+| `toolchain/fw-linux/` | Linux tinyconfig | RV32I | `Image` + `initrd.cpio` (16 MB) |
+| `toolchain/fw-sel4/` | seL4 microkernel | RV32IMA | root task ELF |
 
 Build any toolchain with `make` in its directory. See
 [`docs/usage_manual.md`](docs/usage_manual.md) for details.
@@ -197,25 +251,18 @@ and MoE expert maps, then dispatches workloads to the fabric. On the SoC
 variant, `pnm_socd` mmaps `/dev/pnm` and runs the dispatch loop from
 userspace.
 
-## What the paper proves
-
-Five properties are machine-checked on every run:
-
-1. **Byte-exact delivery** — bytes delivered to each node equal bytes injected; no loss, no duplication, no reorder
-2. **Zero drops and zero misroutes** — every injected flit reaches its declared destination; dimension-order routing leaves no residual
-3. **Doorbell accounting** — hardware verdicts (activations, refusals, corrupt_out pulses) match the three-condition fire logic message by message
-4. **Kernel correctness** — each resident kernel executes on what the hardware delivered and matches the golden model
-5. **Latency bounds** — sweep checks every packet against the closed form (hop count × per-hop delay + serialization) exactly
-
 ## Manufacturable design
 
 Everything outside `paper/` is the production design:
 
 | Directory | What it contains | License |
 |-----------|-----------------|---------|
-| `HDL/` | Full Verilog-2005 fabric: routing gates, compute units (BF16/FP16/FP32/FP64 FMA, FP32 ALU, INT8 MAC, systolic arrays), RISC-V SoCs, memory controllers, PHYs, testbenches | CERN-OHL-S v2 |
+| `HDL/` | Full Verilog-2005 fabric: routing gates, compute units (BF16/FP16/FP32/FP64 FMA, FP32 ALU, INT8/INT4/FP4/MXFP4 MAC + systolic arrays, weight dequant), RISC-V SoCs, memory controllers, PHYs, testbenches | CERN-OHL-S v2 |
 | `pcb/` | PCB assembly: interconnect board (SEARAY 12G spine, >2 TB/s), processor board (Pi Bridge / MCU / Custom SoC), gating ASIC (MoE + DRAM) | CERN-OHL-S v2 |
-| `sim/` | Go co-simulation, model compiler (HuggingFace → PNM), inference client, firmware (Go + C), MCU/SoC/Linux toolchains, Pi host drivers (Python/Go/Rust/C) | AGPL-3.0 |
+| `sim/` | Go co-simulation, model compiler (HuggingFace → PNM), inference client, firmware (Go), source-language compilers (R/Haskell/HLSL) | AGPL-3.0 |
+| `fw/` | C firmware port for MCU targets (ARM Cortex-M/R, RISC-V) | AGPL-3.0 |
+| `toolchain/` | MCU/SoC/Linux/seL4 cross-compilation toolchains | AGPL-3.0 |
+| `pi_host/` | Raspberry Pi Compute Module host drivers (Python/Go/Rust/C) | AGPL-3.0 |
 | `implementations/` | Board netlist assembly, build scripts, schema | AGPL-3.0 |
 | `docs/` | Usage manual, profiling guide | AGPL-3.0 |
 

@@ -71,10 +71,16 @@ Each node's PE tile (`pe_tile_stub.v`) instantiates one of several compute unit 
 | `fp32_alu.v` | ALU | FP32 | 3 (MIN/MAX/CMP), 4 (FMA), 28 (DIV) | Layernorm (divider + multiplier) |
 | `fp32_alu_chip.v` | ALU chip | FP32 | 5-29 cycles | AXI-Stream integrated ALU for fabric |
 | `int8_mac.v` | MAC | INT8 | 2 cycles | Quantized inference |
+| `int4_mac.v` | MAC | INT4 | 2 cycles | INT4 quantized (packed nibbles) |
+| `int4_mac_array.v` | Systolic array | INT4/INT8 | variable | INT4 quantized inference (4x density) |
+| `fp4_mac.v` | MAC | FP4 (E2M1) | 2 cycles | FP4 quantized (packed nibbles) |
+| `fp4_mac_array.v` | Systolic array | FP4 | variable | FP4 quantized inference (4x density vs BF16) |
+| `mxfp4_mac_array.v` | Systolic array | MXFP4 | variable | MXFP4 (block-scaled E2M1) inference |
+| `weight_dequant.v` | Dequantizer | INT4/INT8/FP4/MXFP4 → BF16 | 1 cycle | Weight-only quantization |
 
 All FMA modules share an identical interface: `clk, rst_n, a, b, c, valid_in → result, valid_out`
 (3-cycle pipeline). The `pe_tile_stub.v` uses `USE_FMA` (0=bias-add, 1=BF16 FMA) and `CU_TYPE`
-(0=bias-add, 1=BF16 FMA, 2=INT4 MAC) parameters to select the compute path.
+(0=bias-add, 1=BF16 FMA, 2=INT4 MAC, 3=FP4 MAC, 4=MXFP4 MAC) parameters to select the compute path.
 
 ## Packet format (byte-wide links, CRC-protected destination)
 

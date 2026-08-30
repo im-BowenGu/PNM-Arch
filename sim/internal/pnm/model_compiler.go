@@ -2,6 +2,7 @@ package pnm
 
 import (
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 )
@@ -52,6 +53,8 @@ const (
 	CUTypeINT8ALU                  // int8_alu: INT8 ALU (add/sub/shift)
 	CUTypeINT4MAC                  // int4_mac: INT4 Multiply-Accumulate (2x density vs INT8)
 	CUTypeINT4Array                // int4_mac_array: INT4 systolic MAC array (4x density vs BF16)
+	CUTypeFP4Array                 // fp4_mac_array: FP4 (E2M1) systolic MAC array (4x density vs BF16)
+	CUTypeMXFP4Array               // mxfp4_mac_array: MXFP4 (E2M1 + block scale) systolic MAC array
 )
 
 // String returns the human-readable name of the compute unit type.
@@ -83,6 +86,10 @@ func (t ComputeUnitType) String() string {
 		return "int4_mac"
 	case CUTypeINT4Array:
 		return "int4_mac_array"
+	case CUTypeFP4Array:
+		return "fp4_mac_array"
+	case CUTypeMXFP4Array:
+		return "mxfp4_mac_array"
 	default:
 		return "none"
 	}
@@ -97,6 +104,8 @@ func (t ComputeUnitType) DTypeBytes() int {
 		return 1
 	case CUTypeINT4MAC, CUTypeINT4Array:
 		return 1 // 4-bit values packed 2 per byte
+	case CUTypeFP4Array, CUTypeMXFP4Array:
+		return 1 // FP4 (E2M1) values packed 2 per byte
 	case CUTypeFP32FMA, CUTypeFP32ALU, CUTypeFP32Array:
 		return 4
 	case CUTypeFP64FMA, CUTypeFP64ALU:
@@ -216,26 +225,44 @@ func (mc *ModelCompiler) EmitListing() string {
 }
 
 // estimateCrossLayerTraffic estimates the cross-layer traffic fraction.
+// With layer-local expert placement (see PopulateSchema), every expert of a
+// model layer sits on physLayerOf(ModelLayer), the same physical layer as its
+// attention/dense weights, so alpha approaches 0. The (layers-1)/layers
+// formula only applies to random expert placement and is not used here;
+// instead alpha is measured directly from the actual expert tensor placements.
 func (mc *ModelCompiler) estimateCrossLayerTraffic() string {
 	tc := &mc.Config.TextConfig
-	// For MoE with random placement, alpha = (layers-1)/layers
-	// With layer-local expert placement, alpha approaches 0
+	modelLayersPerPhysical := int(math.Ceil(float64(tc.NumHiddenLayers) / float64(mc.Dims.Layers)))
 	layersWithExperts := 0
+	expertTensors := 0
+	crossLayerExperts := 0
 	for pl := 0; pl < mc.Dims.Layers; pl++ {
 		hasExperts := false
 		for _, na := range mc.NodeAssignments {
-			if na.Node.L == pl && na.TotalBytes > 0 {
+			if na.Node.L != pl {
+				continue
+			}
+			for _, t := range na.Tensors {
+				if !strings.HasPrefix(t.Role, "expert_") || t.ModelLayer < 0 {
+					continue
+				}
+				expertTensors++
 				hasExperts = true
-				break
+				if pl != t.ModelLayer/modelLayersPerPhysical {
+					crossLayerExperts++
+				}
 			}
 		}
 		if hasExperts {
 			layersWithExperts++
 		}
 	}
-	alpha := float64(mc.Dims.Layers-1) / float64(mc.Dims.Layers)
-	return fmt.Sprintf("alpha=%.2f (%d/%d layers with experts, %d active/tok)",
-		alpha, layersWithExperts, mc.Dims.Layers, tc.TopKExperts)
+	alpha := 0.0
+	if expertTensors > 0 {
+		alpha = float64(crossLayerExperts) / float64(expertTensors)
+	}
+	return fmt.Sprintf("alpha=%.2f (%d/%d layers with experts, %d active/tok, %d/%d expert tensors cross-layer)",
+		alpha, layersWithExperts, mc.Dims.Layers, tc.TopKExperts, crossLayerExperts, expertTensors)
 }
 
 // EmitProgram generates the .pnm program text.
