@@ -41,14 +41,18 @@ go run ./cmd/pnmc --cpuprofile /tmp/pnmc.cpu compile-model examples/gemma4_test 
 The sweep scenario asserts exact equality to:
 
 ```
-latency = wire_len - 1 + l_eff * spine_hops + x * X_hops + PE_PIPE_DELAY
+latency = wire_len - 1 + l_eff + x + PE_PIPE_DELAY
 ```
 
 Where:
 - `wire_len`: byte-wide link pipeline depth (HFR stages)
-- `l_eff`: effective spine hops (layer repeater + crossbar)
+- `l_eff`: effective spine hops scoped to this slice (layer repeater + crossbar)
 - `x`: X-dimension hops
 - `PE_PIPE_DELAY = 2`: generated MAC stub elastic pipe
+
+This is the exact closed form asserted by the sweep scenario (`verify()`
+in `sim/internal/pnm/run.go`): one cycle per HFR/stage (`wire_len - 1`),
+plus `l_eff` spine hops and `x` X-lane hops, plus the node MAC pipe.
 
 ### Workloads
 

@@ -146,7 +146,7 @@ module lpddr6_camm #(
             end else begin
                 bus_rdv   <= 1'b0;
                 bus_resp  <= 1'b0;
-                if (bus_valid && bus_ready && !refresh_pending) begin
+                if (bus_valid && bus_ready) begin
                     cmd_addr_r  <= bus_addr;
                     cmd_wdata_r <= bus_wdata;
                     cmd_we_r    <= bus_we;

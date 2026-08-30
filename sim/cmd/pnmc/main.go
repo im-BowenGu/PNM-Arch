@@ -422,7 +422,7 @@ func runDriver(argv []string) int {
 func totalPayloadBytes(cmds []pnm.WeightUploadCommand) int64 {
 	var total int64
 	for _, c := range cmds {
-		total += int64(len(c.Payload))
+		total += c.SizeBytes
 	}
 	return total
 }

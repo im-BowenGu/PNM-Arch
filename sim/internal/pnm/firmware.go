@@ -656,7 +656,7 @@ func (fw *Firmware) VerifyWeightUpload(cmds []WeightUploadCommand) error {
 			X: int(cmd.TargetModule >> 4),
 			Y: int(cmd.TargetModule & 0x0F),
 		}
-		nodeBytes[nid] += int64(len(cmd.Payload))
+		nodeBytes[nid] += cmd.SizeBytes
 	}
 
 	for nid, total := range nodeBytes {

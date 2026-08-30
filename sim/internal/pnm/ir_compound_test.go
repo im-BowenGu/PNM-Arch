@@ -186,6 +186,28 @@ func TestHaskellCrossFunctionCallMulti(t *testing.T) {
 	}
 }
 
+// TestHaskellDoBlockInResult guards against a multi-line do block dropping its
+// `in <expr>` tail: the function must return the in-expression value, not the
+// value of the last body statement.
+func TestHaskellDoBlockInResult(t *testing.T) {
+	prog, err := CompileHaskell("f x = do\n    let y = x + 1.0\n    y * 2.0\n    in y\nmain = f 5.0")
+	if err != nil {
+		t.Fatalf("CompileHaskell: %v", err)
+	}
+	fn := prog.Funcs["main"]
+	if fn == nil || len(fn.Body) == 0 {
+		t.Fatal("no main body")
+	}
+	state, err := EvalFP64(fn.Body, nil)
+	if err != nil {
+		t.Fatalf("interpret main: %v", err)
+	}
+	last := fn.Body[len(fn.Body)-1]
+	if got := state[last.Dest]; got != 6.0 { // in y = x+1 with x=5 => 6
+		t.Errorf("f 5.0 (do-block, in y) = %v, want 6.0", got)
+	}
+}
+
 // TestHLSLCompoundOperand guards against "b + c" inside "a.x + b.x + c.x"
 // being lowered to an uninitialized (value-0) register.
 func TestHLSLCompoundOperand(t *testing.T) {
@@ -209,5 +231,51 @@ float4 main(float4 a : TEXCOORD0, float4 b : TEXCOORD1, float4 c : TEXCOORD2) : 
 	// a.x + b.x + c.x needs two adds; the old parser emitted one (a + 0).
 	if addCount < 2 {
 		t.Errorf("expected 2 add instructions for a.x + b.x + c.x, got %d", addCount)
+	}
+}
+
+// TestHLSLUnaryMinusOnVariable guards against "-b" inside a compound operand
+// (e.g. "2.0 * -b") being lowered to a read of an unwritten register named
+// "-b".  The resolver must negate the variable instead.
+func TestHLSLUnaryMinusOnVariable(t *testing.T) {
+	src := "float b;\nfloat out = 2.0 * -b;"
+	prog, err := CompileHLSL(src)
+	if err != nil {
+		t.Fatalf("CompileHLSL: %v", err)
+	}
+	regInputs := hlslVarsToInputs(prog.Vars, map[string]float32{"b": 5})
+	state, err := EvalHLSL(prog.Regs, regInputs)
+	if err != nil {
+		t.Fatalf("EvalHLSL: %v", err)
+	}
+	outReg := prog.getOrCreateReg("out")
+	if got := state[outReg]; got != -10.0 {
+		t.Fatalf("out = %v, want -10 (2.0 * -5)", got)
+	}
+}
+
+// TestHaskellUnaryMinusOnVariable guards against "-b" inside a compound body
+// (e.g. "f b = 2.0 * -b") being lowered to a read of an unwritten register
+// named "-b".  The resolver must negate the variable instead.
+func TestHaskellUnaryMinusOnVariable(t *testing.T) {
+	prog, err := CompileHaskell("f b = 2.0 * -b")
+	if err != nil {
+		t.Fatalf("CompileHaskell: %v", err)
+	}
+	hf, ok := prog.Funcs["f"]
+	if !ok {
+		t.Fatalf("no function f in compiled program")
+	}
+	inputs := map[string]float64{}
+	for i, r := range hf.ArgRegs {
+		inputs[r] = []float64{5}[i]
+	}
+	state, err := EvalFP64(hf.Body, inputs)
+	if err != nil {
+		t.Fatalf("EvalFP64: %v", err)
+	}
+	last := hf.Body[len(hf.Body)-1]
+	if got := state[last.Dest]; got != -10.0 {
+		t.Fatalf("f 5 = %v, want -10 (2.0 * -5)", got)
 	}
 }
