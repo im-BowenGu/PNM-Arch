@@ -22,6 +22,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/pprof"
+	"sort"
 	"strings"
 
 	"pnm/sim/internal/pnm"
@@ -60,6 +61,12 @@ func run(argv []string) int {
 	if len(argv) > 0 && argv[0] == "run-driver" {
 		return runDriver(argv[1:])
 	}
+	if len(argv) > 0 && argv[0] == "run-fabric" {
+		return runFabric(argv[1:])
+	}
+	if len(argv) > 0 && argv[0] == "run-tasks" {
+		return runTasks(argv[1:])
+	}
 	if len(argv) > 0 && argv[0] == "workload" {
 		return runWorkload(argv[1:])
 	}
@@ -89,6 +96,9 @@ func runPNMC(argv []string) int {
 		fmt.Fprintln(os.Stderr, "usage: pnmc <program.pnm> [-l layers] [-x bx] [-y by] [--groups G]")
 		fmt.Fprintln(os.Stderr, "       pnmc compile-model <model_dir> [-l layers] [-x bx] [-y by] [-o output]")
 		fmt.Fprintln(os.Stderr, "       pnmc run-driver <model_dir> [-l layers] [-x bx] [-y by] [-o output]")
+		fmt.Fprintln(os.Stderr, "       pnmc run-fabric <model_dir> [-l layers] [-x bx] [-y by] [-n tokens] [--weights] [--groups G] [--replays R]")
+		fmt.Fprintln(os.Stderr, "       pnmc run-tasks <model_dir> [-l layers] [-x bx] [-y by] [-max-tokens N] [-fabric N]")
+		fmt.Fprintln(os.Stderr, "       pnmc workload <name> [-l layers] [-x bx] [-y by] [-frag N] [-run]")
 		return 2
 	}
 
@@ -222,6 +232,17 @@ func runCompileModel(argv []string) int {
 		return 1
 	}
 
+	// Tokenizer: load the real BPE vocab when the model carries one so the
+	// compiled artifacts (and the host SDK) speak the model actual token
+	// vocabulary rather than synthetic token_N placeholders.
+	var bpe *pnm.BPEVocab
+	if tb, terr := pnm.LoadBPEVocab(filepath.Join(modelDir, "tokenizer.json")); terr == nil {
+		bpe = tb
+		fmt.Printf("  tokenizer: loaded %d tokens (BPE, tokenizer.json)\n", tb.VocabSize())
+	} else {
+		fmt.Printf("  tokenizer: none found (%v); synthetic token map\n", terr)
+	}
+
 	// Print listing
 	fmt.Println()
 	fmt.Println(mc.EmitListing())
@@ -232,14 +253,28 @@ func runCompileModel(argv []string) int {
 		return 1
 	}
 
-	schemaPath := filepath.Join(*outDir, "gemma4_schema.txt")
+	schemaPath := filepath.Join(*outDir, filepath.Base(modelDir)+"_schema.txt")
 	if err := os.WriteFile(schemaPath, []byte(mc.EmitSchema()), 0o644); err != nil {
 		fmt.Fprintf(os.Stderr, "writing schema: %v\n", err)
 		return 1
 	}
 	fmt.Printf("Wrote schema: %s\n", schemaPath)
+	if bpe != nil {
+		vocabPath := filepath.Join(*outDir, filepath.Base(modelDir)+"_vocab.txt")
+		var vb strings.Builder
+		fmt.Fprintf(&vb, "# %d-token Gemma BPE vocabulary (id<TAB>token)\n", bpe.VocabSize())
+		for id := 0; id < len(bpe.IDToToken); id++ {
+			fmt.Fprintf(&vb, "%d	%s\n", id, bpe.IDToToken[id])
+		}
+		if err := os.WriteFile(vocabPath, []byte(vb.String()), 0o644); err != nil {
+			fmt.Fprintf(os.Stderr, "writing vocab: %v\n", err)
+			return 1
+		}
+		fmt.Printf("Wrote vocab: %s\n", vocabPath)
+	}
 
-	programPath := filepath.Join(*outDir, "gemma4.pnm")
+
+	programPath := filepath.Join(*outDir, filepath.Base(modelDir)+".pnm")
 	if err := os.WriteFile(programPath, []byte(mc.EmitProgram()), 0o644); err != nil {
 		fmt.Fprintf(os.Stderr, "writing program: %v\n", err)
 		return 1
@@ -352,11 +387,25 @@ func runDriver(argv []string) int {
 	fmt.Println("Phase 5: READY")
 	fmt.Println()
 
-	// Plan inference
+	// Plan inference: tokenize the model tokenizer.json when present so the
+	// dispatch plan carries real token bytes through the gating network,
+	// else fall back to a deterministic synthetic token.
 	fmt.Println("--- Inference Dispatch Plan ---")
-	token := make([]byte, 32)
-	for i := range token {
-		token[i] = byte(i)
+	var token []byte
+	if tb, terr := pnm.LoadBPEVocab(filepath.Join(modelDir, "tokenizer.json")); terr == nil {
+		if ids, ierr := tb.Encode("The capital of France is"); ierr == nil && len(ids) > 0 {
+			token = make([]byte, 32)
+			for w := 0; w < 16; w++ {
+				token[2*w] = byte(ids[w%len(ids)] >> 8)
+				token[2*w+1] = byte(ids[w%len(ids)] & 0xFF)
+			}
+		}
+	}
+	if token == nil {
+		token = make([]byte, 32)
+		for i := range token {
+			token[i] = byte(i)
+		}
 	}
 	records, err := fw.PlanInference(token)
 	if err != nil {
@@ -411,12 +460,262 @@ func runDriver(argv []string) int {
 	}
 	fmt.Printf("Wrote: %s\n", dpPath)
 
+	dpCSV := filepath.Join(*outDir, "dispatch_plan.csv")
+	if err := pnm.WriteDispatchCSV(dpCSV, pnm.DispatchRecordsToResults(records)); err != nil {
+		fmt.Fprintf(os.Stderr, "writing dispatch CSV: %v\n", err)
+		return 1
+	}
+	fmt.Printf("Wrote: %s\n", dpCSV)
+
 	fmt.Println()
 	fmt.Println(fw.Summary())
 	fmt.Println()
 	fmt.Println("=== ALL CHECKS PASSED ===")
 
 	return 0
+}
+
+// runFabric: the model-driven cycle-exact co-simulation proof.  Runs the
+// driver + firmware boot to READY, plans cfg.Tokens tokens through
+// PlanInference, converts every weight-upload command and dispatch record
+// into the exact wire flit the orchestrator would inject, and pushes the
+// whole stream through the real Verilog fabric (iverilog + vvp) via RunOne.
+// Exits non-zero if the gates drop, misroute, or mis-deliver a single byte.
+func runFabric(argv []string) int {
+	fs := flag.NewFlagSet("run-fabric", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+
+	var layers, bx, by, tokens, groups, replays int
+	fs.IntVar(&layers, "l", 4, "spine layers / boards")
+	fs.IntVar(&layers, "layers", 4, "spine layers / boards")
+	fs.IntVar(&bx, "x", 4, "X columns per board")
+	fs.IntVar(&bx, "board-x", 4, "X columns per board")
+	fs.IntVar(&by, "y", 4, "Y rows per board")
+	fs.IntVar(&by, "board-y", 4, "Y rows per board")
+	fs.IntVar(&tokens, "n", 1, "tokens to dispatch through the fabric (each = dense + top-k MoE dispatches per layer)")
+	fs.IntVar(&tokens, "tokens", 1, "tokens to dispatch through the fabric")
+	uploadWeights := fs.Bool("weights", false, "also inject the Phase-3 weight-upload flits through the fabric")
+	fs.IntVar(&groups, "groups", 0, "partition layers into G vvp slices (default: min(layers, cpu_count))")
+	fs.IntVar(&replays, "replays", 0, "determinism replays (2 = assert bit-identical delivery logs; default 1)")
+	seed := fs.Int64("seed", 0xC0FFEE, "RNG seed (node weight vectors)")
+	prompt := fs.String("prompt", "", "tokenize this prompt and run it through the MoE gating network and Verilog fabric")
+	outDir := fs.String("o", ".", "output directory for artifacts (default: sim/)")
+	cpuProf := fs.String("cpuprofile", "", "write CPU profile to file")
+	memProf := fs.String("memprofile", "", "write heap profile to file")
+	modelDir, argv := splitProgram(argv)
+	if err := fs.Parse(argv); err != nil {
+		return 2
+	}
+	if modelDir == "" {
+		fmt.Fprintln(os.Stderr, "usage: pnmc run-fabric <model_dir> [-l layers] [-x bx] [-y by] [-n tokens] [--weights] [--groups G] [--replays R]")
+		fmt.Fprintln(os.Stderr, "  Plans realistic MoE dispatches for a real model config and runs them")
+		fmt.Fprintln(os.Stderr, "  through the cycle-exact Verilog fabric (iverilog + vvp), slower than real")
+		fmt.Fprintln(os.Stderr, "  time, proving byte-exact delivery, kernel correctness, and determinism.")
+		return 2
+	}
+	stopCPU := startCPUProfile(*cpuProf)
+	defer writeHeapProfile(*memProf)
+	defer stopCPU()
+
+	fmt.Printf("=== PNM Model -> Verilog Fabric co-simulation ===\n")
+	fmt.Printf("Model: %s\n", modelDir)
+	fmt.Printf("Chassis: %dx%dx%d = %d nodes\n\n", layers, bx, by, layers*bx*by)
+
+	dims := pnm.Dims{Layers: layers, Bx: bx, By: by}
+	drv, err := pnm.NewDriver(pnm.DriverConfig{ModelDir: modelDir, Dims: dims})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "driver init: %v\n", err)
+		return 1
+	}
+	tc := drv.Config.TextConfig
+	fmt.Printf("Model: %d layers, hidden=%d, experts=%d, active=%d, kv_heads=%d\n",
+		tc.NumHiddenLayers, tc.HiddenSize, tc.NumExperts, tc.TopKExperts, tc.NumKeyValueHeads)
+	fmt.Printf("Total weights: %.1f MB (BF16)\n\n", float64(drv.MC.TotalBytes)/1e6)
+
+	fw := drv.FW
+	fmt.Println("--- Boot Sequence (host side) ---")
+	cmds, err := fw.BootPhase()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "boot phase 1: %v\n", err)
+		return 1
+	}
+	fmt.Printf("Phase 1 POST Discovery: %d nodes found\n", fw.NodeCount)
+	if _, err = fw.BootPhase(); err != nil {
+		fmt.Fprintf(os.Stderr, "boot phase 2: %v\n", err)
+		return 1
+	}
+	fmt.Printf("Phase 2 Routing Table: %d entries\n", len(drv.RouteBitmaps))
+	cmds, err = fw.BootPhase()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "boot phase 3: %v\n", err)
+		return 1
+	}
+	fmt.Printf("Phase 3 Weight Upload: %d commands (%.1f MB total)\n",
+		fw.WeightCount, float64(totalPayloadBytes(cmds))/1e6)
+	if err := fw.VerifyWeightUpload(cmds); err != nil {
+		fmt.Fprintf(os.Stderr, "weight verification: %v\n", err)
+		return 1
+	}
+	fmt.Println("  Weight upload verification: PASSED")
+	if _, err = fw.BootPhase(); err != nil {
+		fmt.Fprintf(os.Stderr, "boot phase 4: %v\n", err)
+		return 1
+	}
+	fmt.Printf("Phase 4 MoE Gating: %d expert mappings\n", len(drv.MoeMap))
+	if _, err = fw.BootPhase(); err != nil {
+		fmt.Fprintf(os.Stderr, "boot phase 5: %v\n", err)
+		return 1
+	}
+	fmt.Println("Phase 5: READY")
+	fmt.Println()
+
+	// Run the prompt through the MoE gating network: score the full expert
+	// population per model layer and print the top-k decisions with the
+	// physical node each winner maps to.
+	var promptPayloads [][]byte
+	if *prompt != "" {
+		promptPayloads = pnm.PromptTokenPayloads(drv, *prompt, tokens)
+		fmt.Println("--- MoE Gating Network (prompt) ---")
+		fmt.Printf("prompt: %q -> token IDs packed into %d x 32-byte payload(s)\n", *prompt, len(promptPayloads))
+		for ml := 0; ml < tc.NumHiddenLayers; ml++ {
+			decisions, err := fw.GateToken(promptPayloads[0], ml)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "gate token at layer %d: %v\n", ml, err)
+				return 1
+			}
+			fmt.Printf("  layer %d: top-%d of %d experts\n", ml, len(decisions), tc.NumExperts)
+			for _, d := range decisions {
+				fmt.Printf("    expert %-3d score 0x%016x -> node (%d, %d, %d)\n",
+					d.Expert, d.Score, d.Node.L, d.Node.X, d.Node.Y)
+			}
+		}
+		fmt.Println()
+	}
+
+	// Build the fabric program from the planned dispatches.
+	fmt.Println("--- Fabric Dispatch Plan ---")
+	cfg := pnm.ModelFabricConfig{
+		Tokens:        tokens,
+		Seed:          *seed,
+		UploadWeights: *uploadWeights,
+		Groups:        groups,
+		Replays:       replays,
+		Prompt:        *prompt,
+	}
+	res, err := pnm.BuildModelProgram(drv, fw, cfg)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "building fabric program: %v\n", err)
+		return 1
+	}
+	pnm.ModelFabricSummary(res, cfg, fw)
+
+	// Verify the planned dispatch the way run-driver does, then push the
+	// whole stream through the Verilog gates.
+	if err := fw.VerifyDispatch(res.Records); err != nil {
+		fmt.Fprintf(os.Stderr, "dispatch verification: %v\n", err)
+		return 1
+	}
+	fmt.Println("  Dispatch verification: PASSED")
+
+	if *outDir != "." {
+		if err := os.MkdirAll(*outDir, 0o755); err != nil {
+			fmt.Fprintf(os.Stderr, "creating output dir: %v\n", err)
+			return 1
+		}
+		if err := drv.WriteRoutingTable(filepath.Join(*outDir, "routing_table.json")); err != nil {
+			fmt.Fprintf(os.Stderr, "writing routing table: %v\n", err)
+			return 1
+		}
+		if err := drv.WriteMoeMap(filepath.Join(*outDir, "moe_map.json")); err != nil {
+			fmt.Fprintf(os.Stderr, "writing MoE map: %v\n", err)
+			return 1
+		}
+	}
+	_ = cmds
+
+	fmt.Println()
+	fmt.Println("--- Cycle-Exact Verilog Fabric (slower than real time) ---")
+	result, ok := pnm.RunModelFabric(res, dims, cfg)
+	if !ok {
+		return 1
+	}
+	fmt.Println()
+	fmt.Println(result.Summary())
+	fmt.Println()
+	if !result.Pass {
+		fmt.Println("=== FABRIC PROOF FAILED ===")
+		return 1
+	}
+	if *prompt != "" {
+		printVerifiedNodeResults(result, res)
+	}
+	fmt.Println("=== FABRIC PROOF PASSED ===")
+	return 0
+}
+
+// printVerifiedNodeResults prints each node's verified kernel results (from
+// the resident-kernel execution over hardware-delivered data) after a fabric
+// run, labeling MoE-expert nodes (which received prompt-gated dispatch
+// traffic) versus dense-attention nodes.
+func printVerifiedNodeResults(result *pnm.ScenarioResult, res *pnm.ModelFabricResult) {
+	denseCount := map[pnm.NodeID]int{}
+	moeCount := map[pnm.NodeID]int{}
+	// expert identity per node, in injection (= result) order: each record
+	// with wire traffic maps 1:1 to one delivered packet on its target node
+	expertSeq := map[pnm.NodeID][]int{}
+	for _, r := range res.Records {
+		expertSeq[r.TargetNode] = append(expertSeq[r.TargetNode], r.ExpertIdx)
+		if r.Phase == "moe" {
+			moeCount[r.TargetNode]++
+		} else {
+			denseCount[r.TargetNode]++
+		}
+	}
+	fmt.Println("--- Verified per-node expert outputs (resident kernel over delivered data) ---")
+	nodes := make([]string, 0, len(result.NodeResults))
+	for n := range result.NodeResults {
+		nodes = append(nodes, n)
+	}
+	sort.Strings(nodes)
+	for _, n := range nodes {
+		results, _ := result.NodeResults[n].([]interface{})
+		if len(results) == 0 {
+			continue
+		}
+		role := "dense-attention"
+		id, ok := parseNodeIDString(n)
+		if ok {
+			d, m := denseCount[id], moeCount[id]
+			if m > 0 {
+				role = fmt.Sprintf("%d dense + %d MoE expert packet(s)", d, m)
+			} else if d > 0 {
+				role = "dense-attention"
+			}
+		}
+		distinct := map[interface{}]bool{}
+		for _, r := range results {
+			distinct[r] = true
+		}
+		fmt.Printf("  node %s [%s, %d distinct output(s) across %d packet(s)]:\n", n, role, len(distinct), len(results))
+		ex := expertSeq[id]
+		for i, r := range results {
+			label := "dense"
+			if i < len(ex) && ex[i] >= 0 {
+				label = fmt.Sprintf("expert %d", ex[i])
+			}
+			fmt.Printf("    packet %d (%s) -> dot-product result %v\n", i, label, r)
+		}
+	}
+	fmt.Println()
+}
+
+// parseNodeIDString recovers a NodeID from its String() form "(l, x, y)".
+func parseNodeIDString(s string) (pnm.NodeID, bool) {
+	var l, x, y int
+	if _, err := fmt.Sscanf(s, "(%d, %d, %d)", &l, &x, &y); err != nil {
+		return pnm.NodeID{}, false
+	}
+	return pnm.NodeID{L: l, X: x, Y: y}, true
 }
 
 func totalPayloadBytes(cmds []pnm.WeightUploadCommand) int64 {

@@ -1,6 +1,10 @@
 package pnm
 
-import "fmt"
+import (
+	"fmt"
+	"math"
+	"strings"
+)
 
 // Virtual execution units — the node's MAC ASIC + LPDDR6 CAMM2 socket,
 // ported from sim/virtual_units.py.
@@ -123,9 +127,163 @@ func kDot(pkt *Pkt, state *UnitState) interface{} {
 	return acc & 0xFFFFFFFF
 }
 
+// kF64Add: FP64 addition — unpacks two FP64 values from the payload,
+// adds them, and returns the 8-byte result.
+func kF64Add(pkt *Pkt, state *UnitState) interface{} {
+	p := pkt.Payload
+	if len(p) < 16 {
+		return []byte{0, 0, 0, 0, 0, 0, 0, 0}
+	}
+	a := bytesToFP64(p[0:8])
+	b := bytesToFP64(p[8:16])
+	result := a + b
+	return fp64ToBytes(result)
+}
+
+// kF64Mul: FP64 multiplication — unpacks two FP64 values from the payload,
+// multiplies them, and returns the 8-byte result.
+func kF64Mul(pkt *Pkt, state *UnitState) interface{} {
+	p := pkt.Payload
+	if len(p) < 16 {
+		return []byte{0, 0, 0, 0, 0, 0, 0, 0}
+	}
+	a := bytesToFP64(p[0:8])
+	b := bytesToFP64(p[8:16])
+	result := a * b
+	return fp64ToBytes(result)
+}
+
+// kF64Fma: FP64 fused multiply-add — unpacks three FP64 values (a, b, c)
+// from the payload and returns a*b + c as 8 bytes.
+func kF64Fma(pkt *Pkt, state *UnitState) interface{} {
+	p := pkt.Payload
+	if len(p) < 24 {
+		return []byte{0, 0, 0, 0, 0, 0, 0, 0}
+	}
+	a := bytesToFP64(p[0:8])
+	b := bytesToFP64(p[8:16])
+	c := bytesToFP64(p[16:24])
+	result := a*b + c
+	return fp64ToBytes(result)
+}
+
+// kF64Sub: FP64 subtraction — returns a - b as 8 bytes.
+func kF64Sub(pkt *Pkt, state *UnitState) interface{} {
+	p := pkt.Payload
+	if len(p) < 16 {
+		return []byte{0, 0, 0, 0, 0, 0, 0, 0}
+	}
+	a := bytesToFP64(p[0:8])
+	b := bytesToFP64(p[8:16])
+	return fp64ToBytes(a - b)
+}
+
+// kF64Div: FP64 division — returns a / b as 8 bytes. Division by zero
+// yields IEEE 754 infinities/NaN via Go's float64 semantics.
+func kF64Div(pkt *Pkt, state *UnitState) interface{} {
+	p := pkt.Payload
+	if len(p) < 16 {
+		return []byte{0, 0, 0, 0, 0, 0, 0, 0}
+	}
+	a := bytesToFP64(p[0:8])
+	b := bytesToFP64(p[8:16])
+	return fp64ToBytes(a / b)
+}
+
+// kF64Min: FP64 minimum — returns the smaller of a and b (IEEE unordered
+// handling: NaN operands yield a NaN result via math.Min semantics).
+func kF64Min(pkt *Pkt, state *UnitState) interface{} {
+	p := pkt.Payload
+	if len(p) < 16 {
+		return []byte{0, 0, 0, 0, 0, 0, 0, 0}
+	}
+	a := bytesToFP64(p[0:8])
+	b := bytesToFP64(p[8:16])
+	return fp64ToBytes(math.Min(a, b))
+}
+
+// kF64Max: FP64 maximum — returns the larger of a and b (see kF64Min).
+func kF64Max(pkt *Pkt, state *UnitState) interface{} {
+	p := pkt.Payload
+	if len(p) < 16 {
+		return []byte{0, 0, 0, 0, 0, 0, 0, 0}
+	}
+	a := bytesToFP64(p[0:8])
+	b := bytesToFP64(p[8:16])
+	return fp64ToBytes(math.Max(a, b))
+}
+
+// kF64Neg: FP64 negation — flips the sign bit of the single FP64 value.
+func kF64Neg(pkt *Pkt, state *UnitState) interface{} {
+	p := pkt.Payload
+	if len(p) < 8 {
+		return []byte{0, 0, 0, 0, 0, 0, 0, 0}
+	}
+	a := bytesToFP64(p[0:8])
+	return fp64ToBytes(-a)
+}
+
+// kF64Cmp: FP64 comparison — payload is a(8) + b(8) + op(2 ASCII bytes).
+// Returns 1.0 when the comparison holds, 0.0 otherwise. NaN operands make
+// every ordered comparison false (IEEE 754 unordered semantics); the
+// "==" / "!=" operators are the only ones that can see a NaN operand.
+func kF64Cmp(pkt *Pkt, state *UnitState) interface{} {
+	p := pkt.Payload
+	if len(p) < 17 {
+		return []byte{0, 0, 0, 0, 0, 0, 0, 0}
+	}
+	a := bytesToFP64(p[0:8])
+	b := bytesToFP64(p[8:16])
+	op := strings.TrimSpace(string(p[16:]))
+	var holds bool
+	switch op {
+	case "==":
+		holds = a == b
+	case "!=", "/=":
+		holds = a != b
+	case "<":
+		holds = a < b
+	case ">":
+		holds = a > b
+	case "<=":
+		holds = a <= b
+	case ">=":
+		holds = a >= b
+	default:
+		holds = false
+	}
+	if holds {
+		return fp64ToBytes(1.0)
+	}
+	return fp64ToBytes(0.0)
+}
+
+// bytesToFP64 decodes a big-endian 8-byte slice into float64.
+func bytesToFP64(b []byte) float64 {
+	var bits uint64
+	for i := 0; i < 8 && i < len(b); i++ {
+		bits = (bits << 8) | uint64(b[i])
+	}
+	return math.Float64frombits(bits)
+}
+
+// fp64ToBytes encodes a float64 into a big-endian 8-byte slice.
+func fp64ToBytes(v float64) []byte {
+	bits := math.Float64bits(v)
+	b := make([]byte, 8)
+	for i := 7; i >= 0; i-- {
+		b[i] = byte(bits & 0xFF)
+		bits >>= 8
+	}
+	return b
+}
+
 // KERNEL_MIX is the resident-kernel menu; index 0..3 order must match
 // virtual_units.py KERNELS and run.py KERNEL_MIX.
 var KERNEL_MIX = []string{"dot", "sum", "accum", "echo"}
+
+// KERNELS_ALL lists all known kernels (including FP64 extensions).
+var KERNELS_ALL = []string{"dot", "sum", "accum", "echo", "f64_add", "f64_mul", "f64_fma", "f64_sub", "f64_div", "f64_min", "f64_max", "f64_neg", "f64_cmp"}
 
 func kernelFunc(name string) func(*Pkt, *UnitState) interface{} {
 	switch name {
@@ -137,16 +295,40 @@ func kernelFunc(name string) func(*Pkt, *UnitState) interface{} {
 		return kAccum
 	case "dot":
 		return kDot
+	case "f64_add":
+		return kF64Add
+	case "f64_mul":
+		return kF64Mul
+	case "f64_fma":
+		return kF64Fma
+	case "f64_sub":
+		return kF64Sub
+	case "f64_div":
+		return kF64Div
+	case "f64_min":
+		return kF64Min
+	case "f64_max":
+		return kF64Max
+	case "f64_neg":
+		return kF64Neg
+	case "f64_cmp":
+		return kF64Cmp
+	default:
+		return nil // unknown kernel: caller must check for nil
 	}
-	panic("unknown kernel: " + name)
 }
 
 // NewVirtualUnit mirrors VirtualUnit.__init__.
 func NewVirtualUnit(node NodeID, kernel string, weights []int) *VirtualUnit {
+	kf := kernelFunc(kernel)
+	if kf == nil {
+		// Unknown kernel: use echo as fallback (passthrough)
+		kf = kEcho
+	}
 	return &VirtualUnit{
 		Node:       node,
 		KernelName: kernel,
-		Kernel:     kernelFunc(kernel),
+		Kernel:     kf,
 		State:      &UnitState{Weights: append([]int(nil), weights...)},
 	}
 }

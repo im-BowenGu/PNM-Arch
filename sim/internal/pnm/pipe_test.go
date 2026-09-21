@@ -449,3 +449,63 @@ func TestIPC_FlitIntegration(t *testing.T) {
 		t.Errorf("MODULE_ID = 0x%02X, want 0x23", reconstructed[1])
 	}
 }
+
+func TestRecvFlit_PartialReadReassembly(t *testing.T) {
+	// A single FlitMessage delivered in two socket reads must reassemble.
+	c1, c2 := net.Pipe()
+	defer c1.Close()
+	defer c2.Close()
+
+	msg := &FlitMessage{Type: MsgFlit, SourceID: 0x07, SeqNum: 0x03, Payload: []byte{1, 2, 3, 4, 5}}
+	encoded := msg.Encode()
+
+	// Write the message in two halves from the far side.
+	go func() {
+		mid := len(encoded) / 2
+		c2.Write(encoded[:mid])
+		time.Sleep(20 * time.Millisecond)
+		c2.Write(encoded[mid:])
+	}()
+
+	got, err := RecvFlit(c1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Type != MsgFlit || got.SourceID != 0x07 || got.SeqNum != 0x03 {
+		t.Errorf("decoded header mismatch: %+v", got)
+	}
+	if len(got.Payload) != 5 || got.Payload[4] != 5 {
+		t.Errorf("payload = %v, want [1 2 3 4 5]", got.Payload)
+	}
+}
+
+func TestRecvFlit_TwoMessagesKeepsBuffered(t *testing.T) {
+	// Two back-to-back messages in one read: the first is returned, the
+	// second stays buffered on the wire for the next call.
+	c1, c2 := net.Pipe()
+	defer c1.Close()
+	defer c2.Close()
+
+	m1 := &FlitMessage{Type: MsgPing, SourceID: 0x01, SeqNum: 0x00, Payload: []byte{0xAA}}
+	m2 := &FlitMessage{Type: MsgPong, SourceID: 0x02, SeqNum: 0x01, Payload: []byte{0xBB}}
+	both := append(m1.Encode(), m2.Encode()...)
+
+	go func() {
+		c2.Write(both)
+	}()
+
+	got1, err := RecvFlit(c1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got1.Type != MsgPing || got1.Payload[0] != 0xAA {
+		t.Errorf("first message = %+v, want MsgPing/0xAA", got1)
+	}
+	got2, err := RecvFlit(c1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got2.Type != MsgPong || got2.Payload[0] != 0xBB {
+		t.Errorf("second message = %+v, want MsgPong/0xBB", got2)
+	}
+}

@@ -65,9 +65,10 @@ module tb_rst_sync;
             errors = errors + 1;
         end
 
-        if (errors == 0)
+        if (errors == 0) begin
             $display("*** RST_SYNC TEST PASSED ***");
-        else begin
+            $finish;
+        end else begin
             $display("*** RST_SYNC TEST FAILED (%0d errors) ***", errors);
             $finish(1);
         end

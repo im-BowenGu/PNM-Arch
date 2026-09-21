@@ -22,7 +22,7 @@ go tool pprof -http=:8080 /tmp/pnm.cpu
 
 **Model compiler profiling:**
 ```bash
-go run ./cmd/pnmc --cpuprofile /tmp/pnmc.cpu compile-model examples/gemma4_test -l 8 -x 8 -y 8
+go run ./cmd/pnmc --cpuprofile /tmp/pnmc.cpu compile-model examples/gemma4_test_synthetic -l 8 -x 8 -y 8
 ```
 
 ### Scenario Descriptions
@@ -72,8 +72,8 @@ go run ./cmd/pnmc workload nbody -l 4 -x 2 -y 2 -frag 8 -run     # O(N^2) satura
 # Individual modules
 verilator --lint-only <module>.v
 
-# Full router_sbc
-verilator --lint-only -Wno-MULTITOP router_sbc.v rv32_core.v uart.v clint.v pcie_phy.v nvme_ctrl.v
+# Full orchestrator_sbc
+verilator --lint-only -Wno-MULTITOP orchestrator_sbc.v rv32_core.v uart.v clint.v pcie_phy.v nvme_ctrl.v
 
 # Full fabric
 verilator --lint-only -Wno-MULTITOP hfr.v flit_gate.v vc_merge.v lxy_repeater.v xy_turn.v node_eject.v
@@ -86,9 +86,9 @@ verilator --lint-only -Wno-MULTITOP hfr.v flit_gate.v vc_merge.v lxy_repeater.v 
 | `rv32_core.v` | ~3K | 5-stage FSM, no caches |
 | `uart.v` | ~200 | 16550-compatible |
 | `clint.v` | ~150 | mtime + msip |
-| `bmc_router_top.v` | ~8K | Full BMC SoC |
-| `router_sbc.v` | ~15K | SBC + SRAM + PCIe + NVMe |
-| `router_sbc_moe.v` | ~12K | SBC + MoE gating + BF16 |
+| `bmc_orchestrator_top.v` | ~8K | Full BMC SoC |
+| `orchestrator_sbc.v` | ~15K | SBC + SRAM + PCIe + NVMe |
+| `orchestrator_sbc_moe.v` | ~12K | SBC + MoE gating + BF16 |
 | `pcie_phy.v` | ~4K | Gen5 x16 LTSSM + DMA |
 | `nvme_ctrl.v` | ~3K | NVMe command FSM + DMA |
 | `bf16_fma.v` | ~1K | 3-cycle FMA pipeline |
@@ -103,8 +103,8 @@ verilator --lint-only -Wno-MULTITOP hfr.v flit_gate.v vc_merge.v lxy_repeater.v 
 | Testbench | Sim time | Notes |
 |-----------|----------|-------|
 | `tb_fabric` | ~500 us | 500 flits, 6 scenarios |
-| `tb_router_sbc` | ~945 us | SRAM + DRAM + PCIe + NVMe |
-| `tb_bmc_router` | ~50 ms | Full BMC boot sequence |
+| `tb_orchestrator_sbc` | ~945 us | SRAM + DRAM + PCIe + NVMe |
+| `tb_bmc_orchestrator` | ~50 ms | Full BMC boot sequence |
 | `tb_pcie_phy` | ~19 ms | 12-test suite |
 | `tb_nvme_ctrl` | ~10 ms | 8-block read/write |
 | `tb_lpddr5_phy` | ~3.5 ms | Write/read + telemetry |
@@ -134,12 +134,12 @@ go test -bench=. ./internal/pnm/                 # microbenchmarks
 
 ```bash
 # C firmware (compile check)
-gcc -Wall -Wextra -std=c11 -c sim/fw/pnm_fw.c -o /dev/null
+gcc -Wall -Wextra -std=c11 -c fw/pnm_fw.c -o /dev/null
 
 # Model compiler
-go run ./cmd/pnmc compile-model examples/gemma4_test -l 8 -x 8 -y 8
-go run ./cmd/pnmc run-driver examples/gemma4_test -l 8 -x 8 -y 8
+go run ./cmd/pnmc compile-model examples/gemma4_test_synthetic -l 8 -x 8 -y 8
+go run ./cmd/pnmc run-driver examples/gemma4_test_synthetic -l 8 -x 8 -y 8
 
-# Source-language compilers
-go run ./cmd/pnmc compile examples/bias_add.pnm -l 8 -x 8 -y 8
+# Program compiler (default mode; no subcommand)
+go run ./cmd/pnmc examples/bias_add.pnm -l 8 -x 8 -y 8
 ```

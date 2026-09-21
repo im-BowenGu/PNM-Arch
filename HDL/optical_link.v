@@ -62,6 +62,7 @@ module optical_link #(
     reg [PTRW-1:0] rbin, rgray;
     reg [PTRW-1:0] wgray_s1, wgray_s2;
     reg [PTRW-1:0] rgray_s1, rgray_s2;
+    reg [PTRW-1:0] rgray_ws1, rgray_ws2;
 
     wire [PTRW-1:0] wbin_rd  = gray2bin(wgray_s2);
     wire            not_empty = (wbin_rd != rbin);
@@ -152,7 +153,6 @@ module optical_link #(
     end
 
     // Write-side CDC: synchronize rgray (rd_clk domain) to wr_clk
-    reg [PTRW-1:0] rgray_ws1, rgray_ws2;
     always @(posedge wr_clk or negedge rst_n) begin
         if (!rst_n) begin
             rgray_ws1 <= {PTRW{1'b0}};

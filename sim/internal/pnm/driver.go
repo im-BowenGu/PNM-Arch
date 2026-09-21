@@ -29,13 +29,19 @@ type Driver struct {
 	Config  *ModelConfig
 	Index   *SafetensorsIndex
 	Tensors map[string]*TensorMeta
+	ModelDir string // directory the index/config were loaded from (real shards live here)
 
 	// Routing tables (pre-computed by AOT, loaded into orchestrator chip SRAM)
 	RouteBitmaps map[NodeID]uint16
 
-	// MoE expert map: (model_layer, expert_idx) → all nodes hosting that expert
-	// The first entry is the primary; additional entries are replicas for hot experts.
-	MoeMap map[MoeKey][]NodeID
+	// MoE expert map: (model_layer, expert_idx) → node hosting that expert
+	MoeMap map[MoeKey]NodeID
+
+	// TensorData holds byte-offset descriptors for the REAL safetensors shards
+	// when the model directory contains downloaded weights; nil when only the
+	// synthetic fixture is present (weight payloads then stay deterministic).
+	// Plumbed from NewDriver via ParseSafetensorsHeaders.
+	TensorData map[string]*safetensorsTensorDescriptor
 
 	// Firmware state
 	FW *Firmware
@@ -72,6 +78,12 @@ func NewDriver(dc DriverConfig) (*Driver, error) {
 	// Collect tensor metadata
 	tensors, _ := CollectTensors(idx, cfg)
 
+	// Scan the real safetensors shard headers (if the weights are present).
+	// Missing shards fall back to synthetic payload generation in
+	// generateWeightPayload, so the same code path serves both the synthetic
+	// fixture and a fully downloaded checkpoint.
+	realTensorData, _ := ParseSafetensorsHeaders(dc.ModelDir, idx)
+
 	// AOT compile
 	mc, err := CompileModel(cfg, idx, dc.Dims)
 	if err != nil {
@@ -79,11 +91,13 @@ func NewDriver(dc DriverConfig) (*Driver, error) {
 	}
 
 	d := &Driver{
-		Dims:    dc.Dims,
-		MC:      mc,
-		Config:  cfg,
-		Index:   idx,
-		Tensors: tensors,
+		Dims:       dc.Dims,
+		MC:         mc,
+		Config:     cfg,
+		Index:      idx,
+		Tensors:    tensors,
+		ModelDir:   dc.ModelDir,
+		TensorData: realTensorData,
 	}
 
 	// Pre-compute routing tables
@@ -123,10 +137,10 @@ func (d *Driver) computeRouteBitmaps() map[NodeID]uint16 {
 // ============================================================================
 
 // computeMoeMap builds the expert→coordinate mapping from the AOT compilation.
-// For each (model_layer, expert_idx), it records all physical nodes that
-// hold that expert's weights (primary + any replicas).
-func (d *Driver) computeMoeMap() map[MoeKey][]NodeID {
-	m := make(map[MoeKey][]NodeID)
+// For each (model_layer, expert_idx), it records the physical node that
+// holds that expert's weights.
+func (d *Driver) computeMoeMap() map[MoeKey]NodeID {
+	m := make(map[MoeKey]NodeID)
 	for nid, na := range d.MC.NodeAssignments {
 		if nid.L < 0 {
 			continue
@@ -134,7 +148,7 @@ func (d *Driver) computeMoeMap() map[MoeKey][]NodeID {
 		for _, t := range na.Tensors {
 			if t.Role == "expert_gate_up" {
 				key := MoeKey{ModelLayer: t.ModelLayer, ExpertIdx: t.ExpertIdx}
-				m[key] = append(m[key], nid)
+				m[key] = nid
 			}
 		}
 	}
@@ -212,11 +226,13 @@ func (d *Driver) BuildWeightCommands() ([]WeightUploadCommand, error) {
 
 		for _, ml := range layerIndices {
 			for _, t := range byLayer[ml] {
-				// Generate synthetic weight bytes (in production, read from safetensors)
+				// Prefer REAL tensor bytes from the downloaded safetensors
+				// shards; fall back to the deterministic synthetic sample
+				// when only the fixture (or a partial download) is present.
 				key := payloadKey{t.ModelLayer, t.ExpertIdx, int(t.SizeBytes)}
 				payload, ok := payloads[key]
 				if !ok {
-					payload = d.generateWeightPayload(t)
+					payload = d.weightPayloadFor(t)
 					payloads[key] = payload
 				}
 
@@ -243,12 +259,42 @@ func (d *Driver) BuildWeightCommands() ([]WeightUploadCommand, error) {
 // buffer is capped to keep a large model from exhausting host RAM when the whole
 // chassis's weights are enumerated at once. In production the full tensor would be
 // read from safetensors and streamed per command rather than held in one map.
+// weightPayloadFor returns the payload bytes for a tensor.  When the model
+// directory contains a real safetensors shard covering this tensor, the
+// genuine bytes are streamed; otherwise a bounded deterministic sample keeps
+// the synthetic fixture reproducible.  (The boot/verify path consumes only
+// SizeBytes, so a bounded real slice is safe for accounting; the RTL flit
+// path streams whatever is materialized.)
+func (d *Driver) weightPayloadFor(t TensorRef) []byte {
+	if d.TensorData != nil {
+		desc := d.TensorData[t.Name]
+		if desc != nil && desc.Size > 0 && desc.ShardFile != "" {
+			if buf := ReadRealTensorBytes(d.ModelDir, desc); buf != nil {
+				// Cap very large tensors like the synthetic path does; the
+				// boot/verify path uses only SizeBytes for accounting, and the
+				// RTL flit path carries the materialized (bounded) slice.
+				if len(buf) > sampleCapBytes {
+					return buf[:sampleCapBytes]
+				}
+				return buf
+			}
+		}
+	}
+	return d.generateWeightPayload(t)
+}
+
+// sampleCapBytes bounds any single materialized weight payload.  Weight
+// uploads carry a representative slice; the authoritative byte count is
+// SizeBytes on the command, so capping keeps a full checkpoint from being
+// mirrored in host RAM when every tensor is enumerated at once.
+const sampleCapBytes = 4096
+
 func (d *Driver) generateWeightPayload(t TensorRef) []byte {
 	nbytes := int(t.SizeBytes)
 	if nbytes == 0 {
 		return nil
 	}
-	const sampleCap = 4096
+	const sampleCap = sampleCapBytes
 	if nbytes > sampleCap {
 		nbytes = sampleCap
 	}
@@ -344,17 +390,14 @@ func (d *Driver) WriteRoutingTable(path string) error {
 // WriteMoeMap writes the MoE expert map as JSON.
 func (d *Driver) WriteMoeMap(path string) error {
 	schema := MoeMapSchema{}
-	for key, nodes := range d.MoeMap {
-		for i, nid := range nodes {
-			schema.Entries = append(schema.Entries, MoeEntrySchema{
-				ModelLayer:    key.ModelLayer,
-				ExpertIdx:     key.ExpertIdx,
-				PhysicalLayer: nid.L,
-				X:             nid.X,
-				Y:             nid.Y,
-			})
-			_ = i // primary is index 0, replicas are 1+
-		}
+	for key, nid := range d.MoeMap {
+		schema.Entries = append(schema.Entries, MoeEntrySchema{
+			ModelLayer:    key.ModelLayer,
+			ExpertIdx:     key.ExpertIdx,
+			PhysicalLayer: nid.L,
+			X:             nid.X,
+			Y:             nid.Y,
+		})
 	}
 	sort.Slice(schema.Entries, func(i, j int) bool {
 		a, b := schema.Entries[i], schema.Entries[j]

@@ -20,6 +20,7 @@ module tb_moe_gating;
 
     wire [9:0]  hidden_addr;
     reg  [15:0] hidden_data;
+    reg         hidden_valid;
 
     reg         weight_load;
     reg  [9:0]  weight_addr;
@@ -56,7 +57,7 @@ module tb_moe_gating;
     ) dut (
         .clk(clk), .rst_n(rst_n),
         .start(start), .done(done),
-        .hidden_addr(hidden_addr), .hidden_data(hidden_data),
+        .hidden_addr(hidden_addr), .hidden_data(hidden_data), .hidden_valid(hidden_valid),
         .weight_load(weight_load), .weight_addr(weight_addr), .weight_data(weight_data),
         .current_layer(current_layer), .moe_layer_in(moe_layer_in), .moe_module_in(moe_module_in),
         .expert_idx_packed(expert_idx_packed), .expert_logit_packed(expert_logit_packed),
@@ -83,6 +84,7 @@ module tb_moe_gating;
         weight_addr = 0;
         weight_data = 0;
         hidden_data = BF16_1;
+        hidden_valid = 1;
         current_layer = 0;
         moe_layer_in = 0;
         moe_module_in = 0;

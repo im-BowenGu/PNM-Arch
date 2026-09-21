@@ -105,6 +105,23 @@ module tb_fp32_alu;
         // DIV: 0.0 / 5.0 = 0.0
         run_op(32'h00000000, 32'h40A00000, 3'd3, "0/5=0", 32'h00000000);
 
+        // DIV: 2^-126 / 2^127 = 2^-253 -> exponent underflow -> 0
+        // (regression: bare d_exp[8] test conflated wrapped underflow with
+        //  true overflow and returned +Inf)
+        run_op(32'h00800000, 32'h7F000000, 3'd3, "sub/sub=0", 32'h00000000);
+
+        // DIV: 2^127 / 2^-126 = 2^253 -> exponent overflow -> +Inf
+        run_op(32'h7F000000, 32'h00800000, 3'd3, "big/big=Inf", 32'h7F800000);
+
+        // DIV: 2.5 / 2.0 = 1.25
+        run_op(32'h40200000, 32'h40000000, 3'd3, "2.5/2=1.25", 32'h3FA00000);
+
+        // DIV: 2.0 / 1.5 = 4/3 -> round-toward-zero -> 3FAAAAAA
+        run_op(32'h40000000, 32'h3FC00000, 3'd3, "2/1.5=RZ", 32'h3FAAAAAA);
+
+        // DIV: 5.0 / 2.0 = 2.5
+        run_op(32'h40A00000, 32'h40000000, 3'd3, "5/2=2.5", 32'h40200000);
+
         // MIN: min(3.0, 2.0) = 2.0
         run_op(32'h40400000, 32'h40000000, 3'd4, "min(3,2)=2", 32'h40000000);
 
@@ -116,6 +133,27 @@ module tb_fp32_alu;
 
         // CMP: 2.0 > 3.0 = 0.0
         run_op(32'h40000000, 32'h40400000, 3'd7, "2>3=0", 32'h00000000);
+
+        // CMP: 3.0 >= 3.0 = 1.0 (contract is >=, equality must be true)
+        run_op(32'h40400000, 32'h40400000, 3'd7, "3>=3=1", 32'h3F800000);
+
+        // CMP: two identical NaN bit patterns = 0.0 (IEEE unordered)
+        run_op(32'h7FC00001, 32'h7FC00001, 3'd7, "CMP(sameNaN)=0", 32'h00000000);
+
+        // DIV: Inf / 0 -> +Inf (IEEE 754: only 0/0 and Inf/Inf are NaN)
+        run_op(32'h7F800000, 32'h00000000, 3'd3, "Inf/0=Inf", 32'h7F800000);
+
+        // DIV: Inf / -0 -> -Inf (sign = XOR of operand signs)
+        run_op(32'h7F800000, 32'h80000000, 3'd3, "Inf/-0=-Inf", 32'hFF800000);
+
+        // DIV: 0.0 / 0.0 -> NaN (invalid remains)
+        run_op(32'h00000000, 32'h00000000, 3'd3, "0/0=NaN", 32'h7FC00000);
+
+        // DIV: denormal input flush (fp64 policy): a_den -> +-0
+        run_op(32'h00000001, 32'h3F800000, 3'd3, "den/1=0", 32'h00000000);
+
+        // DIV: denormal input flush: b_den -> +-Inf (1.0 / min-denormal)
+        run_op(32'h3F800000, 32'h00000001, 3'd3, "1/den=Inf", 32'h7F800000);
 
         if (errors == 0)
             $display("*** FP32 ALU TEST PASSED ***");

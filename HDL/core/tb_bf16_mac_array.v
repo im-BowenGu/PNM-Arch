@@ -47,6 +47,7 @@ module tb_bf16_mac_array;
 
     integer errors;
     integer i;
+    reg result_seen;
 
     // BF16 constants (same as bf16_fma.v)
     // 1.0 = 0x3F80, 2.0 = 0x4000, 3.0 = 0x4040
@@ -128,13 +129,33 @@ module tb_bf16_mac_array;
         act_valid = 1;
         act_sop = 1;
         act_eop = 1;
-        @(posedge clk);
+        @(posedge clk); #1;
         act_valid = 0;
         act_sop = 0;
         act_eop = 0;
 
-        // Wait for pipeline: ARRAY_SIZE * PIPE_DEPTH + PIPE_DEPTH = 15 cycles
-        repeat (30) @(posedge clk);
+        // Wait for pipeline. Worst case: 4 rows x 3 cols x 3 stages + row
+        // stagger + FMA latency ~= 38 cycles; sample 60 to be safe.
+        // Track whether result_valid fired (regression: it used to never
+        // assert because the capture sampled fma_valid_out[bottom][0] after
+        // it pulsed).
+        result_seen = 0;
+        repeat (60) begin
+            @(posedge clk); #1;
+            if (result_valid)
+                result_seen = 1;
+        end
+        if (!result_seen) begin
+            $display("[TB] FAIL: result_valid never asserted");
+            errors = errors + 1;
+        end else begin
+            // Column 0 sums rows of act[r]*w[r][0]: only act[0]=1.0 with w=1.0
+            // -> 1.0; remaining columns have zero weights.
+            if (result_out[15:0] !== BF16_1) begin
+                $display("[TB] FAIL: result_out[0] = %h, expected %h", result_out[15:0], BF16_1);
+                errors = errors + 1;
+            end
+        end
 
         // MAC array should return to idle
         if (busy !== 1'b0) begin
@@ -162,7 +183,7 @@ module tb_bf16_mac_array;
         act_valid = 1;
         act_sop = 1;
         act_eop = 1;
-        @(posedge clk);
+        @(posedge clk); #1;
         act_valid = 0;
         act_sop = 0;
         act_eop = 0;

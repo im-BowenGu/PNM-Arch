@@ -40,6 +40,7 @@ module moe_gating #(
     // -- Hidden state read port (from token payload) ----------------------
     output reg  [ADDR_BITS-1:0] hidden_addr,
     input  wire [15:0] hidden_data,      // BF16 hidden[h]
+    input  wire        hidden_valid,     // hidden_data carries a new word
 
     // -- Weight SRAM write port (loaded during boot) ----------------------
     input  wire        weight_load,
@@ -184,7 +185,7 @@ module moe_gating #(
         if (!rst_n) begin
             for (i = 0; i < HIDDEN_DIM; i = i + 1)
                 hidden_latch[i] <= 16'h0000;
-        end else if (g_state == G_LOAD_HIDDEN) begin
+        end else if (g_state == G_LOAD_HIDDEN && hidden_valid) begin
             hidden_latch[dim_ptr] <= hidden_data;
         end
     end
@@ -231,13 +232,21 @@ module moe_gating #(
                 end
 
                 G_LOAD_HIDDEN: begin
-                    if (dim_ptr == HIDDEN_DIM - 1) begin
-                        dim_ptr <= 0;
-                        acc     <= 16'h0000;
-                        g_state <= G_COMPUTE;
-                    end else begin
-                        hidden_addr <= dim_ptr + 1;
-                        dim_ptr <= dim_ptr + 1;
+                    if (start) begin
+                        // New token arrived mid-load: restart from dim 0 so the
+                        // hidden words of the new payload align with dim_ptr.
+                        dim_ptr     <= 0;
+                        hidden_addr <= 0;
+                        acc         <= 16'h0000;
+                    end else if (hidden_valid) begin
+                        if (dim_ptr == HIDDEN_DIM - 1) begin
+                            dim_ptr <= 0;
+                            acc     <= 16'h0000;
+                            g_state <= G_COMPUTE;
+                        end else begin
+                            hidden_addr <= dim_ptr + 1;
+                            dim_ptr <= dim_ptr + 1;
+                        end
                     end
                 end
 

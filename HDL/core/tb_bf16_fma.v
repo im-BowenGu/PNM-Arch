@@ -82,6 +82,44 @@ module tb_bf16_fma;
         a = 16'h7F80; b = 16'h3F80; c = 16'hFF80;
         run_op; check(16'h7FC0, "Inf+(-Inf)");
 
+        // Test 9: 1.5 * 1.5 + 0.0 = 2.25 (mantissa-overflow [2,4) alignment)
+        a = 16'h3FC0; b = 16'h3FC0; c = 16'h0000;
+        run_op; check(16'h4010, "1.5*1.5+0");
+
+        // Test 10: subnormal result must be packed, not flushed to zero.
+        // 2^-126 (0x0080) * 0.5 = 2^-127 = subnormal 0.010... x 2^-126, mantissa 64 -> 0x0040
+        a = 16'h0080; b = 16'h3F00; c = 16'h0000;
+        run_op; check(16'h0040, "2^-126*0.5");
+
+        // Test 11: 2^-126*(1+2^-6) * 0.5 = 2^-127 + 2^-133 -> subnormal mantissa 65
+        a = 16'h0082; b = 16'h3F00; c = 16'h0000;
+        run_op; check(16'h0041, "subnormal man=65");
+
+        // Test 12: RNE tie at the subnormal boundary rounds to even (64).
+        // 2^-126*(1+2^-7) * 0.5 = 2^-127 + 2^-134 (half-ulp tie, m even)
+        a = 16'h0081; b = 16'h3F00; c = 16'h0000;
+        run_op; check(16'h0040, "subnormal RNE tie");
+
+        // Test 13: RNE tie at 65.5 ulp rounds to even (66).
+        // 2^-126*(1+3*2^-7) * 0.5 = 2^-127 + 1.5*2^-133
+        a = 16'h0083; b = 16'h3F00; c = 16'h0000;
+        run_op; check(16'h0042, "subnormal RNE even");
+
+        // Test 14: negative subnormal keeps its sign.
+        a = 16'h8080; b = 16'h3F00; c = 16'h0000;
+        run_op; check(16'h8040, "-2^-126*0.5");
+
+        // Test 15: mixed-magnitude subnormal: tiny product folded into a
+        // subnormal addend must round to the addend (8062 + miniscule).
+        // IEEE-exact reference: a=2c46 b=8ad2 c=8062 -> 8062 (see AGENTS.md).
+        a = 16'h2C46; b = 16'h8AD2; c = 16'h8062;
+        run_op; check(16'h8062, "subnormal addend dom");
+
+        // Test 16: far-below-range product underflows to zero (no spurious
+        // round-up): 2^-126 * 2^-126 = 2^-252, shift clamps, zero.
+        a = 16'h0080; b = 16'h0080; c = 16'h0000;
+        run_op; check(16'h0000, "deep underflow");
+
         if (errors == 0)
             $display("*** BF16 FMA TEST PASSED ***");
         else

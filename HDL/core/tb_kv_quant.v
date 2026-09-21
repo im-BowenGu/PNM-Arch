@@ -100,21 +100,48 @@ module tb_kv_quant;
         end
 
         // ---- Test 2: Dequantize ----
+        // Regression (magnitude-preserving dequant): each nonzero INT4 magnitude
+        // must reconstruct to |int4| * scale, NOT a constant full-scale value.
+        // With scale[14:0] = 0x40 = 64: int4 1->0x0040, 2->0x0080, 3->0x00C0.
+        // The old bug always returned {sign, scale} regardless of magnitude, so
+        // int4=2,3 would wrongly produce 0x0040.
         $display("--- Test 2: Dequantize ---");
         mode = 1;
+        d_valid_in = 0;
+        d_scale_in = 16'h0040;
         @(posedge clk);
+        #1;   // settle past the posedge race onto the registered output
 
-        d_int4_in = 4'h1; d_scale_in = 16'h3F80; d_valid_in = 1;
-        @(posedge clk);
-        d_int4_in = 4'h2; @(posedge clk);
-        d_int4_in = 4'h3; @(posedge clk);
-        d_int4_in = 4'h4; d_valid_in = 0; @(posedge clk);
+        // Stream one value per cycle; read each result one cycle later with #1
+        // so the non-blocking output update is visible.
+        d_int4_in = 4'h1; d_valid_in = 1;
+        @(posedge clk); #1;
+        if (d_data_out !== 16'h0040) begin
+            $display("FAIL dequant int4=1: out=%04h exp 0040", d_data_out);
+            errors = errors + 1;
+        end else $display("  Dequant int4=1 -> 0040");
 
-        for (i = 0; i < 4; i = i + 1) begin
-            @(posedge clk);
-            if (d_valid_out)
-                $display("  Dequantized: %04h", d_data_out);
-        end
+        d_int4_in = 4'h2;
+        @(posedge clk); #1;
+        if (d_data_out !== 16'h0080) begin
+            $display("FAIL dequant int4=2: out=%04h exp 0080", d_data_out);
+            errors = errors + 1;
+        end else $display("  Dequant int4=2 -> 0080");
+
+        d_int4_in = 4'h3;
+        @(posedge clk); #1;
+        if (d_data_out !== 16'h00C0) begin
+            $display("FAIL dequant int4=3: out=%04h exp 00C0", d_data_out);
+            errors = errors + 1;
+        end else $display("  Dequant int4=3 -> 00C0");
+
+        d_int4_in = 4'hF;   // -1, magnitude 1
+        @(posedge clk); #1;
+        if (d_data_out !== 16'h8040) begin
+            $display("FAIL dequant int4=-1: out=%04h exp 8040", d_data_out);
+            errors = errors + 1;
+        end else $display("  Dequant int4=-1 (0xF) -> 8040");
+        d_valid_in = 0;
 
         $display("PASS: dequantize path exercised");
 

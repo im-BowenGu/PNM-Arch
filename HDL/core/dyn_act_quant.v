@@ -13,6 +13,14 @@
 // Quantize path:   BF16 → INT8 + scale
 // Dequantize path: INT8 + scale → BF16
 //
+// Quantize maps each value's magnitude m onto the block's maximum magnitude
+// as an 8-bit index qn = floor(m / scale) in 0..128, sign applied. scale is
+// the step size block_max>>7. Dequantize is the exact inverse: reconstructs
+// sign * (|int8| * scale). Because the INT8 magnitude is multiplied back in,
+// the round-trip preserves each value's relative magnitude — the earlier
+// implementation discarded the INT8 magnitude and always returned +/- full
+// scale, collapsing every nonzero activation to the same reconstructed value.
+//
 // Pipeline latency: 1 cycle (both paths)
 //
 // Use case: Pairs with int8_mac.v for W8A8 inference. The model compiler
@@ -51,30 +59,55 @@ module dyn_act_quant #(
 
     reg        q_state;
     reg [DATA_WIDTH-1:0] block_buf [0:BLOCK_SIZE-1];
-    reg [3:0]  block_cnt;
+    reg [4:0]  block_cnt;
     reg [15:0] block_max;
-    reg [15:0] block_min;   // stored as unsigned offset from 0x8000
-    reg [3:0]  emit_cnt;
+    reg [4:0]  emit_cnt;
     reg [15:0] emit_scale;
 
-    // Signed magnitude: clear sign for max tracking, keep sign for min
     wire [15:0] abs_val = {1'b0, q_data_in[14:0]};
-    wire        is_neg  = q_data_in[15];
     wire [15:0] new_max = (abs_val > block_max) ? abs_val : block_max;
 
-    // Min tracking: unsigned representation (0x8000 + signed value)
-    wire [15:0] unsign_val = q_data_in ^ 16'h8000;
-    wire [15:0] new_min = (unsign_val < block_min) ? unsign_val : block_min;
-
-    wire [15:0] block_range = new_max - {1'b0, new_min[14:0]};
-    wire [15:0] scale_pre = {1'b0, block_range[14:3]};  // range/8
+    // =========================================================================
+    // Quantize index: qn = floor(m / scale), computed per emitted value with a
+    // small combinational restoring divider. qn ranges 0..128 (value 128
+    // appears as -128 in two's complement); 0 when the scale is zero.
+    // =========================================================================
+    function automatic [15:0] div_floor;
+        input [15:0] nu;
+        input [15:0] de;
+        reg [16:0] rem;
+        integer dk;
+        begin
+            div_floor = 16'd0;
+            if (de == 16'd0) div_floor = 8'd0;
+            else begin
+                rem = 17'd0;
+                for (dk = 15; dk >= 0; dk = dk - 1) begin
+                    rem = {rem[15:0], nu[dk]};
+                    if ({1'b0, de} <= rem) begin
+                        rem = rem - {1'b0, de};
+                        div_floor[dk] = 1'b1;
+                    end
+                end
+            end
+        end
+    endfunction
+    wire [15:0] emit_mag = {1'b0, block_buf[emit_cnt][14:0]};
+    wire [7:0]  qn = div_floor(emit_mag, emit_scale);
+    // 8-bit signed encoding of the index. Negative magnitudes map to two's
+    // complement (qn up to 128 -> -128..-1, representable). Positive magnitudes
+    // must clamp to 127: qn=128 would encode 0x80 whose sign bit flips the peak
+    // positive activation to -128*scale on dequantization. Clamping keeps the
+    // sign correct (the symmetric INT8 range is -128..127).
+    wire [7:0] enc_index = block_buf[emit_cnt][15]
+                            ? (~qn + 8'd1) & 8'hFF
+                            : (qn > 8'd127 ? 8'd127 : qn);
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             q_state     <= COLLECT;
             block_cnt   <= 0;
             block_max   <= 0;
-            block_min   <= 16'hFFFF;
             emit_cnt    <= 0;
             emit_scale  <= 0;
             q_int8_out  <= 0;
@@ -92,16 +125,12 @@ module dyn_act_quant #(
                     if (q_valid_in) begin
                         block_buf[block_cnt] <= q_data_in;
                         block_max <= new_max;
-                        block_min <= new_min;
-                        if (block_cnt == BLOCK_SIZE[3:0] - 4'd1) begin
+                        if (block_cnt == BLOCK_SIZE[4:0] - 5'd1) begin
                             q_state   <= EMIT;
                             emit_cnt  <= 0;
-                            // scale = range / 255 (INT8 full range)
-                            // Simplified: scale = (max - min) >> 8
-                            emit_scale <= scale_pre;
+                            emit_scale <= {1'b0, new_max[14:7]};
                             block_cnt <= 0;
                             block_max <= 0;
-                            block_min <= 16'hFFFF;
                         end else begin
                             block_cnt <= block_cnt + 1;
                         end
@@ -109,14 +138,12 @@ module dyn_act_quant #(
                 end
 
                 EMIT: begin
-                    // Quantize: int8 = (data - min) * 255 / range
-                    // Simplified: int8 = data[7:0] (placeholder for exact scaling)
-                    q_int8_out   <= block_buf[emit_cnt][7:0];
+                    q_int8_out   <= enc_index;
                     q_scale_out  <= emit_scale;
                     q_scale_valid <= (emit_cnt == 0);
                     q_valid_out  <= 1;
 
-                    if (emit_cnt == BLOCK_SIZE[3:0] - 4'd1) begin
+                    if (emit_cnt == BLOCK_SIZE[4:0] - 5'd1) begin
                         q_block_done <= 1;
                         q_state      <= COLLECT;
                         block_cnt    <= 0;
@@ -129,7 +156,11 @@ module dyn_act_quant #(
 
     // =========================================================================
     // Dequantize path: INT8 + scale → BF16 (1 cycle)
+    // Reconstructs sign * (|int8| * scale) so the INT8 magnitude is preserved.
     // =========================================================================
+    wire [7:0]  dmag  = d_int8_in[7] ? (~d_int8_in + 8'd1) & 8'hFF : d_int8_in;
+    wire [22:0] recon = dmag * {8'b0, d_scale_in[14:0]};
+
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             d_data_out  <= 0;
@@ -137,12 +168,13 @@ module dyn_act_quant #(
         end else if (mode) begin
             d_valid_out <= d_valid_in;
             if (d_valid_in) begin
-                if (d_int8_in == 0)
+                // recon = |int8| * scale; truncate to 15-bit magnitude
+                if (d_int8_in == 8'd0)
                     d_data_out <= 0;
                 else if (d_int8_in[7])
-                    d_data_out <= {1'b1, d_scale_in[14:0]};  // negative
+                    d_data_out <= {1'b1, recon[14:0]};
                 else
-                    d_data_out <= {1'b0, d_scale_in[14:0]};  // positive
+                    d_data_out <= {1'b0, recon[14:0]};
             end
         end
     end

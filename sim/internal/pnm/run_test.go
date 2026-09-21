@@ -235,6 +235,41 @@ func TestGolden_DotWithBias(t *testing.T) {
 	}
 }
 
+func TestGolden_F64Ops(t *testing.T) {
+	mk := func(parts ...[]byte) []byte {
+		var out []byte
+		for _, p := range parts {
+			out = append(out, p...)
+		}
+		return out
+	}
+	a := fp64ToBytes(5.5)
+	b := fp64ToBytes(2.25)
+
+	if got := bytesToFP64(Golden("f64_sub", mk(a, b), nil, nil, 0).([]byte)); got != 3.25 {
+		t.Errorf("Golden f64_sub = %v, want 3.25", got)
+	}
+	if got := bytesToFP64(Golden("f64_div", mk(fp64ToBytes(7.5), fp64ToBytes(2.5)), nil, nil, 0).([]byte)); got != 3.0 {
+		t.Errorf("Golden f64_div = %v, want 3.0", got)
+	}
+	if got := bytesToFP64(Golden("f64_min", mk(a, b), nil, nil, 0).([]byte)); got != 2.25 {
+		t.Errorf("Golden f64_min = %v, want 2.25", got)
+	}
+	if got := bytesToFP64(Golden("f64_max", mk(a, b), nil, nil, 0).([]byte)); got != 5.5 {
+		t.Errorf("Golden f64_max = %v, want 5.5", got)
+	}
+	if got := bytesToFP64(Golden("f64_neg", mk(a), nil, nil, 0).([]byte)); got != -5.5 {
+		t.Errorf("Golden f64_neg = %v, want -5.5", got)
+	}
+	// CMP: 18-byte payload a(8)+b(8)+op(2)
+	if got := bytesToFP64(Golden("f64_cmp", mk(a, b, []byte("> ")), nil, nil, 0).([]byte)); got != 1.0 {
+		t.Errorf("Golden f64_cmp(5.5 > 2.25) = %v, want 1.0", got)
+	}
+	if got := bytesToFP64(Golden("f64_cmp", mk(a, b, []byte("<=")), nil, nil, 0).([]byte)); got != 0.0 {
+		t.Errorf("Golden f64_cmp(5.5 <= 2.25) = %v, want 0.0", got)
+	}
+}
+
 // ============================================================================
 // WriteStimulus / ParseDelivery round-trip
 // ============================================================================

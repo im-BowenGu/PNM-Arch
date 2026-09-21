@@ -352,8 +352,8 @@ pnmhost workload matvec -l 4 -x 4 -y 4 -frag 32
 pnmhost program examples/bias_add.pnm -log results/run.log
 
 # Full model compilation + inference pipeline
-pnmhost model examples/gemma4_test -o results/
-pnmhost inference examples/gemma4_test "Hello, world!" -max-tokens 16
+pnmhost model examples/gemma4_test_synthetic -o results/
+pnmhost inference examples/gemma4_test_synthetic "Hello, world!" -max-tokens 16
 ```
 
 ### Global options
@@ -385,8 +385,8 @@ hd := pnm.NewHostDriver(pnm.HostConfig{
 hd.RunScenarios("sweep", "load", "stress")
 hd.RunWorkload("matvec", 32)
 hd.RunProgram("examples/bias_add.pnm")
-hd.RunModel("examples/gemma4_test")
-hd.RunInference("examples/gemma4_test", "Hello")
+hd.RunModel("examples/gemma4_test_synthetic")
+hd.RunInference("examples/gemma4_test_synthetic", "Hello")
 hd.WriteResults()
 fmt.Print(hd.Summary())
 ```
@@ -414,12 +414,27 @@ Writes four files:
 ### Inference results (`cmd/pnmc run-driver`)
 
 ```bash
-go run ./cmd/pnmc run-driver examples/gemma4_test -o results/
+go run ./cmd/pnmc run-driver examples/gemma4_test_synthetic -o results/
 ```
 
 In addition to `routing_table.json`, `moe_map.json`, and `dispatch_plan.txt`,
 writes `dispatch_plan.csv` with per-dispatch-step structured data (layer, phase,
 target node, expert index, flit bytes, compute unit, KV action).
+
+### MoE gating proof through real gates (`cmd/pnmc run-fabric -prompt`)
+
+```bash
+go run ./cmd/pnmc run-fabric examples/gemma4_test_synthetic -l 2 -x 2 -y 2 -n 1 -prompt "Hello world"
+```
+
+Runs the whole pipeline end-to-end on a scaled-down chassis: the prompt is
+tokenized (whitespace tokenizer over the model's `token_%d` vocabulary, IDs
+packed 2-byte big-endian, 16 per 32-byte payload), the firmware scores it against
+each model layer's full expert population (`Firmware.GateToken`, FNV-1a +
+splitmix64, top-k with node mapping), and the dispatch flits are driven through
+real iverilog/vvp gates. After the fabric proves byte-exact delivery, the
+verified per-node resident-kernel outputs are printed, labeled with their
+dense/MoE packet composition.
 
 ### LLM client token export
 
@@ -545,3 +560,21 @@ go run ./cmd/hlsl_pnm examples/hello.hlsl -l 2 -x 2 -y 2 -run
 - O(N^2) saturation: n-body all-pairs (tests bisection bandwidth)
 - Attention QKV: BF16/FP16 systolic array
 - Dense MLP: BF16 FMA across all nodes
+
+## Real-weight inference
+
+The harness runs the actual Gemma 4 26B-A4B checkpoint on the simulated
+hardware stack — a self-contained pure-Go forward pass over the real BF16
+weights with the real BPE tokenizer (no torch, no external runtime).
+See `docs/real_weights.md` for the benchmark numbers and examples:
+
+```
+cd sim && go run ./cmd/pnmhost inference /data/gemma4_dl/complete \
+  "What is the capital of France?" -max-tokens 40
+
+go run ./cmd/pnmc run-fabric /data/gemma4_dl/complete -l 2 -x 2 -y 2 \
+  --prompt "Who was Alan Turing?"
+```
+
+Summary: decode ≈ 6.5 s/token steady-state (single-threaded scalar Go),
+peak RSS ≈ 21 GB, deterministic splitmix64-seeded sampling.

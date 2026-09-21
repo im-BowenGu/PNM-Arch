@@ -30,7 +30,10 @@ module tb_fp64_alu;
     localparam [63:0] FP64_3_0  = 64'h4008000000000000; // 3.0
     localparam [63:0] FP64_5_0  = 64'h4014000000000000; // 5.0
     localparam [63:0] FP64_6_0  = 64'h4018000000000000; // 6.0
+    localparam [63:0] FP64_65   = 64'h401A000000000000; // 6.5
+    localparam [63:0] FP64_325  = 64'h400A000000000000; // 3.25
     localparam [63:0] FP64_NEG1 = 64'hBFF0000000000000; // -1.0
+    localparam [63:0] FP64_NEG2 = 64'hC000000000000000; // -2.0
     localparam [63:0] FP64_ZERO = 64'h0000000000000000; // 0.0
     localparam [63:0] FP64_INF  = 64'h7FF0000000000000; // +Inf
     localparam [63:0] FP64_NEG_INF = 64'hFFF0000000000000; // -Inf
@@ -132,6 +135,30 @@ module tb_fp64_alu;
         wait_result(res);
         check(res, FP64_3_0, "MAX(3,2)=3");
 
+        // Regression R2 CRITICAL #12: MIN/MAX must be sign-aware, not magnitude-only.
+        // MIN(-2.0, 1.0) = -2.0 (magnitude-compare would wrongly return 1.0).
+        feed(FP64_NEG2, FP64_1_0, OP_MIN);
+        wait_result(res);
+        check(res, FP64_NEG2, "MIN(-2,1)=-2");
+        // MIN(1.0, -2.0) = -2.0 (sign handling in either operand position).
+        feed(FP64_1_0, FP64_NEG2, OP_MIN);
+        wait_result(res);
+        check(res, FP64_NEG2, "MIN(1,-2)=-2");
+        // MAX(-2.0, 1.0) = 1.0.
+        feed(FP64_NEG2, FP64_1_0, OP_MAX);
+        wait_result(res);
+        check(res, FP64_1_0, "MAX(-2,1)=1");
+        // MAX(1.0, -2.0) = 1.0.
+        feed(FP64_1_0, FP64_NEG2, OP_MAX);
+        wait_result(res);
+        check(res, FP64_1_0, "MAX(1,-2)=1");
+
+        // Regression R8 CRITICAL #17: DIV must include fraction bits, not floor.
+        // 6.5 / 2.0 = 3.25 (floor-bug would return 3.0).
+        feed(FP64_65, FP64_2_0, OP_DIV);
+        wait_result(res);
+        check(res, FP64_325, "DIV 6.5/2=3.25");
+
         // CMP: CMP(2.0, 2.0) = 1.0
         feed(FP64_2_0, FP64_2_0, OP_CMP);
         wait_result(res);
@@ -142,6 +169,11 @@ module tb_fp64_alu;
         wait_result(res);
         check(res, FP64_ZERO, "CMP(2,3)=0.0");
 
+        // CMP: CMP(2.0, 1.0) = 0.0 (== is equality; a>b is NOT true)
+        feed(FP64_2_0, FP64_1_0, OP_CMP);
+        wait_result(res);
+        check(res, FP64_ZERO, "CMP(2,1)=0.0");
+
         // CMP with NaN: CMP(NaN, 1.0) = 0.0 (IEEE 754)
         feed(FP64_NAN, FP64_1_0, OP_CMP);
         wait_result(res);
@@ -151,6 +183,33 @@ module tb_fp64_alu;
         feed(FP64_NAN, FP64_1_0, OP_ADD);
         wait_result(res);
         check(res, FP64_NAN, "NaN+1=NaN");
+
+        // ADD overflow: 2^1023 * (1.0 + 1.5) carries past max exponent -> +Inf
+        // (regression for the missing carry-path overflow clamp that used to
+        // pack a nonzero mantissa under exponent 0x7FF, i.e. a NaN)
+        feed(64'h7FE0000000000000, 64'h7FE0004000000000, OP_ADD);
+        wait_result(res);
+        check(res, FP64_INF, "ADD overflow -> +Inf");
+
+        // DIV: Inf / 0 -> +Inf (IEEE 754: only 0/0 and Inf/Inf are NaN)
+        feed(FP64_INF, FP64_ZERO, OP_DIV);
+        wait_result(res);
+        check(res, FP64_INF, "Inf/0 = +Inf");
+
+        // DIV: Inf / -0 -> -Inf (sign = XOR of operand signs)
+        feed(FP64_INF, 64'h8000000000000000, OP_DIV);
+        wait_result(res);
+        check(res, FP64_NEG_INF, "Inf/-0 = -Inf");
+
+        // DIV: 0.0 / 0.0 -> NaN (invalid remains)
+        feed(FP64_ZERO, FP64_ZERO, OP_DIV);
+        wait_result(res);
+        check(res, FP64_NAN, "0/0 = NaN");
+
+        // CMP with two identical NaNs: must be 0.0 (unordered)
+        feed(64'h7FF8000000000001, 64'h7FF8000000000001, OP_CMP);
+        wait_result(res);
+        check(res, FP64_ZERO, "CMP(sameNaN,sameNaN)=0.0");
 
         $display("*** FP64 ALU TEST: %0d passed, %0d errors ***", pass_count, errors);
         if (errors != 0) $finish(1);

@@ -72,9 +72,10 @@ module tb_clk_gate;
             errors = errors + 1;
         end
 
-        if (errors == 0)
+        if (errors == 0) begin
             $display("*** CLK_GATE TEST PASSED ***");
-        else begin
+            $finish;
+        end else begin
             $display("*** CLK_GATE TEST FAILED (%0d errors) ***", errors);
             $finish(1);
         end

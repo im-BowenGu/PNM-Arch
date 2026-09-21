@@ -40,6 +40,21 @@ module tb_fp64_fma;
         end
     endtask
 
+    // Tolerance check: accept any of the values in the els array (up to 4).
+    task check_tol;
+        input [63:0] e0;
+        input [63:0] e1;
+        input [63:0] e2;
+        input [63:0] e3;
+        input [8*32-1:0] name;
+        begin
+            if (result !== e0 && result !== e1 && result !== e2 && result !== e3) begin
+                $display("[TB] MISMATCH (%0s): a=%h b=%h c=%h -> got %h, expected one of %h/%h/%h/%h", name, a, b, c, result, e0, e1, e2, e3);
+                errors = errors + 1;
+            end
+        end
+    endtask
+
     initial begin
         $dumpfile("tb_fp64_fma.vcd");
         $dumpvars(0, tb_fp64_fma);
@@ -78,6 +93,21 @@ module tb_fp64_fma;
         // Test 8: Inf + (-Inf) = NaN
         a = 64'h7FF0000000000000; b = 64'h3FF0000000000000; c = 64'hFFF0000000000000;
         run_op; check(64'h7FF8000000000000, "Inf+(-Inf)");
+
+        // Test 9: overflow mantissa alignment (R2b CRITICAL #2).
+        // 0x3FFFFFFFFFFFFFFF * 0x3FFFFFFFFFFFFFFF ~= 3.999999999999999 (one ULP below 4.0).
+        // Model FMA rounds down (up to ~2 ULP in this regime), so accept a small window.
+        // A broken alignment that loses the MSB collapses the result to 2.0 and fails.
+        a = 64'h3FFFFFFFFFFFFFFF; b = 64'h3FFFFFFFFFFFFFFF; c = 64'h0000000000000000;
+        run_op; check_tol(64'h400FFFFFFFFFFFFC, 64'h400FFFFFFFFFFFFE, 64'h400FFFFFFFFFFFFF, 64'h0, "max*max");
+
+        // Regression R17 CRITICAL #14: expose the alignment MSB loss that the
+        // max*max vector masks (product MSB-1 is set, so shifting/truncating
+        // happens to preserve the leading 1). 1.5*1.5 has a 0 there, so the
+        // overflow branch dropping the MSB collapses it to 0.5. Expect exactly
+        // 2.25 = 0x4002000000000000.
+        a = 64'h3FF8000000000000; b = 64'h3FF8000000000000; c = 64'h0000000000000000;
+        run_op; check(64'h4002000000000000, "1.5*1.5+0");
 
         if (errors == 0)
             $display("*** FP64 FMA TEST PASSED ***");

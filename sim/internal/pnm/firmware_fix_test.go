@@ -10,9 +10,9 @@ import (
 // newTestDriver builds a Driver for the synthetic Gemma-4 test model.
 func newTestDriver(t *testing.T, dims Dims) *Driver {
 	t.Helper()
-	modelDir := filepath.Join(SimDir(), "examples", "gemma4_test")
+	modelDir := filepath.Join(SimDir(), "examples", "gemma4_test_synthetic")
 	if _, err := os.Stat(filepath.Join(modelDir, "config.json")); err != nil {
-		t.Skip("gemma4_test model not found")
+		t.Skip("gemma4_test_synthetic model not found")
 	}
 	drv, err := NewDriver(DriverConfig{ModelDir: modelDir, Dims: dims})
 	if err != nil {
