@@ -69,10 +69,10 @@ docs/                   ← Usage manual, profiling guide
 
 ## Getting started
 
-Requires [Nix](https://nixos.org) with flakes-style `nix-shell` support.
+Requires [Nix](https://nixos.org) with flake support (`nix develop`).
 
 ```bash
-nix-shell                    # enter environment (iverilog, go, pdflatex, pandoc)
+nix develop                  # enter environment (iverilog, go, pdflatex, pandoc)
 ```
 
 | What you want | Where to go |
@@ -121,8 +121,9 @@ for full command reference and all options.
 
 ### Source-language compilation
 
-A subset of Haskell, R, and HLSL compiles to FP64 dispatch instructions
-on the chassis:
+A subset of Haskell, R, and HLSL compiles to PNM dispatch instructions
+on the chassis: Haskell and R through an FP64 IR, HLSL through an FP32
+ALU IR that is lowered to the same `f64_*` kernels for dispatch.
 
 ```bash
 cd sim
@@ -131,8 +132,11 @@ go run ./cmd/r_pnm examples/hello.R -l 2 -x 2 -y 2 -run
 go run ./cmd/hlsl_pnm examples/hello.hlsl -l 2 -x 2 -y 2 -run
 ```
 
-Each FP64 operation (add, mul, fma) maps to a node running an `f64_*`
-kernel. Operands are packed as big-endian FP64 bytes in token payloads.
+Each operation (add, mul, fma, ...) maps to a node running an `f64_*`
+kernel, with operands packed in the FP64 payload format in token
+payloads. HLSL's internal IR targets the FP32 ALU and is lowered to
+`f64_*` kernels for dispatch compatibility; Haskell and R compile
+through the FP64 IR directly.
 See [`docs/usage_manual.md`](docs/usage_manual.md#haskell-to-pnm-compilation)
 for the full syntax reference and three-column comparison table.
 

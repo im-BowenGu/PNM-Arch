@@ -213,6 +213,8 @@ func (r *runner) hdlCore() {
 		{"fp64_fma", []string{"core/fp64_fma.v", "core/tb_fp64_fma.v"}},
 		{"fp32_alu", []string{"core/fp32_alu.v", "core/fp32_fma.v", "core/tb_fp32_alu.v"}},
 		{"fp32_alu_edge", []string{"core/fp32_alu.v", "core/fp32_fma.v", "core/tb_fp32_alu_edge.v"}},
+		{"fp32_alu_chip", []string{"core/fp32_alu_chip.v", "core/fp32_alu.v", "core/fp32_fma.v", "core/crc16.v", "core/tb_fp32_alu_chip.v"}},
+		{"pe_int4", []string{"core/pe_tile_stub.v", "core/crc16.v", "core/bf16_fma.v", "core/weight_dequant.v", "core/int8_mac.v", "core/fp4_mac.v", "core/tb_pe_int4.v"}},
 		{"fp64_alu", []string{"core/fp64_alu.v", "core/fp64_fma.v", "core/tb_fp64_alu.v"}},
 		{"int8_mac", []string{"core/int8_mac.v", "core/tb_int8_mac.v"}},
 		{"int8_alu", []string{"core/int8_alu.v", "core/tb_int8_alu.v"}},

@@ -109,15 +109,22 @@ int hlsl_fw_plan_inference(hlsl_fw_t *fw, const uint8_t *token,
 
     /* Clamp planned model layers to the actual layer count when known,
      * mirroring the main twin (pnm_fw.c). */
-    int model_layers = mpl * fw->base.num_layers;
-    if (fw->base.num_hidden_layers > 0 && model_layers > fw->base.num_hidden_layers)
-        model_layers = fw->base.num_hidden_layers;
+    /* Plan every model layer the model actually has and group physical
+     * layers by Go's ceil(hidden/layers) mapping (firmware.go physLayerOf),
+     * mirroring the main twin (pnm_fw.c). The caller-supplied mpl is only a
+     * fallback when num_hidden_layers is unknown. */
+    int model_layers = fw->base.num_hidden_layers > 0
+        ? fw->base.num_hidden_layers : (mpl * fw->base.num_layers);
     if (model_layers > PNM_MAX_MODEL_LAYERS) model_layers = PNM_MAX_MODEL_LAYERS;
     if (model_layers < 0) model_layers = 0;
 
+    int perPhysical = fw->base.num_hidden_layers > 0
+        ? (fw->base.num_hidden_layers + fw->base.num_layers - 1) / fw->base.num_layers : mpl;
+    if (perPhysical < 1) perPhysical = 1;
+
     for (int ml = 0; ml < model_layers && idx < max_records; ml++) {
-        int pl = ml / mpl;
-        if (pl >= fw->base.num_layers) break;
+        int pl = ml / perPhysical;
+        if (pl >= fw->base.num_layers) pl = fw->base.num_layers - 1;
 
         /* Dense path — FP32 ALU for shader ops */
         int attn_node = ml % nodes_per_layer;

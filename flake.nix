@@ -58,7 +58,7 @@
               export GOTOOLCHAIN=local
 
               echo "=== Building paper ==="
-              python3 build.py
+              ( cd paper && python3 build.py )
 
               echo "=== Running Go co-sim tests ==="
               ( cd sim && go test ./internal/pnm/ )
@@ -78,10 +78,10 @@
 
               echo "=== PCB project validation ==="
               ( librepcb-cli open-project pcb/pnm_node/pnm_node.lpp 2>&1 | grep -q SUCCESS )
-              ( librepcb-cli open-project pcb/orchestrator_sbc/orchestrator_sbc.lpp 2>&1 | grep -q SUCCESS )
+              ( librepcb-cli open-project pcb/processor/processor.lpp 2>&1 | grep -q SUCCESS )
               ( librepcb-cli open-project pcb/gating_asic/gating_asic.lpp 2>&1 | grep -q SUCCESS )
               ( librepcb-cli open-project pcb/interconnect_board/interconnect_board.lpp 2>&1 | grep -q SUCCESS )
-              echo "PCB projects validated: pnm_node, orchestrator_sbc, gating_asic, interconnect_board"
+              echo "PCB projects validated: pnm_node, processor, gating_asic, interconnect_board"
 
               echo "=== Board assembly smoke test ==="
               ( python3 implementations/build_asm.py implementations/boards/node_board.json --no-sim )

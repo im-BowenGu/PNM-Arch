@@ -198,23 +198,30 @@ int fw_plan_inference(firmware_t *fw, const uint8_t *token,
     int nodes_per_layer = bx * by;
     int mpl = fw->model_layers_per_physical > 0 ? fw->model_layers_per_physical : 1;
 
-    /* For each model layer dispatched to this physical chassis */
-    int model_layers = mpl * fw->num_layers;
-    /* Clamp to the actual model layer count when known, so we never plan a
-     * phantom layer when mpl*num_layers exceeds NumHiddenLayers (mirrors the
-     * Go firmware's `for ml < tc.NumHiddenLayers` loop boundary). */
-    if (fw->num_hidden_layers > 0 && model_layers > fw->num_hidden_layers)
-        model_layers = fw->num_hidden_layers;
+    /* Plan every model layer the model actually has, mirroring the Go twin's
+     * `for ml < tc.NumHiddenLayers` loop. When the hidden-layer count is
+     * unknown (num_hidden_layers == 0) fall back to mpl*num_layers. */
+    int model_layers = fw->num_hidden_layers > 0
+        ? fw->num_hidden_layers : (mpl * fw->num_layers);
     if (model_layers > PNM_MAX_MODEL_LAYERS)
         model_layers = PNM_MAX_MODEL_LAYERS;
+
+    /* Match the Go physLayerOf mapping: physical layer = ceil(hidden/layers)
+     * grouping with the tail layers clamped onto the last physical layer
+     * (Go firmware.go:601-611). The caller-supplied mpl field is not used for
+     * the mapping -- it can disagree with ceil(hidden/layers) and, when it is
+     * too small, silently truncates the dispatch stream (under-provision). */
+    int perPhysical = fw->num_hidden_layers > 0
+        ? (fw->num_hidden_layers + fw->num_layers - 1) / fw->num_layers : mpl;
+    if (perPhysical < 1) perPhysical = 1;
 
     /* Track whether the plan is truncated: any record we cannot fit because
      * max_records is exhausted signals a caller-buffer sizing error rather
      * than a silent, partial dispatch plan. */
     int truncated = 0;
     for (int ml = 0; ml < model_layers; ml++) {
-        int pl = ml / mpl;  /* physical layer index */
-        if (pl >= fw->num_layers) break;
+        int pl = ml / perPhysical;  /* physical layer index */
+        if (pl >= fw->num_layers) pl = fw->num_layers - 1; /* clamp (Go physLayerOf) */
 
         /* Step 1: Dense path — attention node */
         int attn_node = ml % nodes_per_layer;
@@ -231,6 +238,25 @@ int fw_plan_inference(firmware_t *fw, const uint8_t *token,
         attn_target.L = (int8_t)pl;
         attn_target.X = (uint8_t)(attn_node / by);
         attn_target.Y = (uint8_t)(attn_node % by);
+        /* Per-model-layer sliding window (mirrors Go layerIsSliding):
+         * a nonzero configured window gives window_start = seq_pos - window + 1
+         * (clamped >= 0); otherwise full attention (-1).  Applied to both the
+         * flash and dense attention records for this layer. */
+        int win_start = -1, win_end = -1;
+        if (fw->sliding_window[ml] > 0) {
+            int w = fw->sliding_window[ml];
+            win_end = seq_pos;
+            win_start = seq_pos - w + 1;
+            if (win_start < 0) win_start = 0;
+        }
+        /* GQA metadata (mirrors Go firmware.go needRepeatKV = kl.GroupSize > 1,
+         * GroupSize = numAttnHeads / numKVHeads when numKVHeads > 0). */
+        int group_size = 1;
+        if (fw->num_kv_heads > 0 && fw->num_attention_heads > 0) {
+            group_size = fw->num_attention_heads / fw->num_kv_heads;
+            if (group_size < 1) group_size = 1;
+        }
+        int need_repeat_kv = group_size > 1;
         if (fw->flash_attn_enabled) {
             int num_kv_tiles = (seq_pos + tile_size_kv) / tile_size_kv;
             if (num_kv_tiles < 1) num_kv_tiles = 1;
@@ -249,8 +275,10 @@ int fw_plan_inference(firmware_t *fw, const uint8_t *token,
                 r->flash_tile_q = 0;
                 r->flash_tile_kv = kv_tile;
                 r->flash_num_tiles = num_kv_tiles;
-                r->window_start = -1; /* full attention (no sliding window config) */
-                r->window_end = -1;
+                r->window_start = win_start;
+                r->window_end = win_end;
+                r->repeat_kv = need_repeat_kv;
+                r->group_size = group_size;
                 idx++;
             }
             if (truncated) break;
@@ -268,9 +296,13 @@ int fw_plan_inference(firmware_t *fw, const uint8_t *token,
             lr->cu_type = CU_BF16_ARRAY;
             lr->flash_tile_q = 0;
             lr->flash_tile_kv = 0;
-            lr->flash_num_tiles = num_kv_tiles;
-            lr->window_start = -1;
-            lr->window_end = -1;
+            lr->flash_num_tiles = 0;
+            lr->repeat_kv = need_repeat_kv;
+            lr->group_size = group_size;
+            /* KV-load record mirrors the Go twin (firmware.go flash load
+               record): FlashNumTiles stays 0, matching the reference. */
+            lr->window_start = win_start;
+            lr->window_end = win_end;
             idx++;
         } else {
             dispatch_record_t *r = &records[idx];
@@ -283,6 +315,10 @@ int fw_plan_inference(firmware_t *fw, const uint8_t *token,
             r->flit_bytes = 5 + token_len + 2; /* LAYER + MODULE + CTRL + LEN2 + payload + CRC */
             memcpy(r->kv_action, "store", 6);
             r->cu_type = CU_BF16_ARRAY; /* attention uses systolic array */
+            r->window_start = win_start;
+            r->window_end = win_end;
+            r->repeat_kv = need_repeat_kv;
+            r->group_size = group_size;
             idx++;
 
             /* Step 2a: KV cache load for attention — mirrors the Go PlanInference
@@ -297,14 +333,22 @@ int fw_plan_inference(firmware_t *fw, const uint8_t *token,
             lr->flit_bytes = 0;
             memcpy(lr->kv_action, "load", 5);
             lr->cu_type = CU_BF16_ARRAY;
+            lr->window_start = win_start;
+            lr->window_end = win_end;
+            lr->repeat_kv = need_repeat_kv;
+            lr->group_size = group_size;
             idx++;
         }
         if (truncated) break;
 
         /* Step 2b: KV cache check — offload if needed. Mirrors the Go
-         * firmware's kv_offload/evict record (firmware.go PlanInference):
-         * emit a bookkeeping record and drain the layer's over-threshold
-         * banks. Threshold matches Go KVCacheConfig default (80%). */
+         * firmware's kv_offload/evict record (firmware.go PlanInference) and
+         * its KVCache.OffloadCycle drain (kv_cache.go), which evicts every
+         * over-threshold layer at the FIRST trigger rather than emitting a
+         * record per layer.  Draining only the current layer (the earlier
+         * port) diverged from Go's record stream on identical input: Go=1
+         * kv_offload record, C=N.  Threshold matches Go KVCacheConfig
+         * default (80%). */
         if (fw->kv.num_layers > pl && kv_needs_offload(&fw->kv.layers[pl], 80)) {
             if (idx >= max_records) { truncated = 1; break; }
             dispatch_record_t *kr = &records[idx];
@@ -316,12 +360,14 @@ int fw_plan_inference(firmware_t *fw, const uint8_t *token,
             memcpy(kr->kv_action, "evict", 6);
             kr->cu_type = CU_NONE;
             idx++;
-            while (kv_needs_offload(&fw->kv.layers[pl], 80)) {
-                int ev = fw->kv.layers[pl].evictions;
-                kv_evict_oldest(&fw->kv.layers[pl], NULL, 0,
-                                fw->eviction_mode, fw);
-                if (fw->kv.layers[pl].evictions == ev)
-                    break; /* no backing store / nothing to evict */
+            for (int dl = 0; dl < fw->kv.num_layers; dl++) {
+                while (kv_needs_offload(&fw->kv.layers[dl], 80)) {
+                    int ev = fw->kv.layers[dl].evictions;
+                    kv_evict_oldest(&fw->kv.layers[dl], NULL, 0,
+                                    fw->eviction_mode, fw);
+                    if (fw->kv.layers[dl].evictions == ev)
+                        break; /* no backing store / nothing to evict */
+                }
             }
         }
         if (truncated) break;
@@ -395,9 +441,11 @@ int fw_verify_dispatch(firmware_t *fw, const dispatch_record_t *records,
     /* Verify that every model layer has a dense (or flash_attn) dispatch as
      * its first record and that no layer is missing entirely. */
     int mpl = fw->model_layers_per_physical > 0 ? fw->model_layers_per_physical : 1;
-    int model_layers = mpl * fw->num_layers;
-    if (fw->num_hidden_layers > 0 && model_layers > fw->num_hidden_layers)
-        model_layers = fw->num_hidden_layers;
+    /* Same loop bound as fw_plan_inference: all num_hidden_layers model layers
+     * when known, else mpl*num_layers. Kept in sync so verify does not accept
+     * a truncated plan when the planner intends to cover every layer. */
+    int model_layers = fw->num_hidden_layers > 0
+        ? fw->num_hidden_layers : (mpl * fw->num_layers);
     if (model_layers > PNM_MAX_MODEL_LAYERS)
         model_layers = PNM_MAX_MODEL_LAYERS;
 
@@ -476,6 +524,13 @@ bool kv_store(kv_layer_t *layer, int seq_pos, const uint8_t *entry,
     int offset = bank->write_ptr * bank->entry_bytes;
     int copy_len = entry_len < bank->entry_bytes ? entry_len : bank->entry_bytes;
     memcpy(bank->entries + offset, entry, copy_len);
+    /* Zero-pad the remainder of the slot to the full frame, mirroring the
+       Go KVCacheBank.Store (make([]byte, EntryBytes) + copy). Without this,
+       a short entry leaves stale tail bytes that differ from the Go twin's
+       load result. */
+    if (copy_len < bank->entry_bytes)
+        memset(bank->entries + offset + copy_len, 0,
+               bank->entry_bytes - copy_len);
 
     if (bank->entry_seq)
         bank->entry_seq[bank->write_ptr] = seq_pos;

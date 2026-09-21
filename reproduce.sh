@@ -72,47 +72,47 @@ if skip_tool "tb_load" $IVERILOG; then
 fi
 
 if skip_tool "tb_doorbell" $IVERILOG; then
-    run "tb_doorbell" bash -c "cd $HDL && $IVERILOG -g2005 -o /tmp/tb_doorbell.out tb_doorbell.v pe_tile_stub.v doorbell.v crc16.v bf16_fma.v && $VVP /tmp/tb_doorbell.out"
+    run "tb_doorbell" bash -c "cd $HDL && $IVERILOG -g2005 -o /tmp/tb_doorbell.out core/tb_doorbell.v core/pe_tile_stub.v core/doorbell.v core/crc16.v core/bf16_fma.v core/weight_dequant.v core/int8_mac.v core/fp4_mac.v && $VVP /tmp/tb_doorbell.out"
 fi
 
 if skip_tool "tb_fp32_alu" $IVERILOG; then
-    run "tb_fp32_alu" bash -c "cd $HDL && $IVERILOG -g2005 -o /tmp/tb_fp32_alu.out fp32_alu.v fp32_fma.v tb_fp32_alu.v && $VVP /tmp/tb_fp32_alu.out"
+    run "tb_fp32_alu" bash -c "cd $HDL && $IVERILOG -g2005 -o /tmp/tb_fp32_alu.out core/fp32_alu.v core/fp32_fma.v core/tb_fp32_alu.v && $VVP /tmp/tb_fp32_alu.out"
 fi
 
 if skip_tool "tb_fp32_fma" $IVERILOG; then
-    run "tb_fp32_fma" bash -c "cd $HDL && $IVERILOG -g2005 -o /tmp/tb_fp32_fma.out fp32_fma.v tb_fp32_fma.v && $VVP /tmp/tb_fp32_fma.out"
+    run "tb_fp32_fma" bash -c "cd $HDL && $IVERILOG -g2005 -o /tmp/tb_fp32_fma.out core/fp32_fma.v core/tb_fp32_fma.v && $VVP /tmp/tb_fp32_fma.out"
 fi
 
 if skip_tool "tb_fp64_fma" $IVERILOG; then
-    run "tb_fp64_fma" bash -c "cd $HDL && $IVERILOG -g2005 -o /tmp/tb_fp64_fma.out fp64_fma.v tb_fp64_fma.v && $VVP /tmp/tb_fp64_fma.out"
+    run "tb_fp64_fma" bash -c "cd $HDL && $IVERILOG -g2005 -o /tmp/tb_fp64_fma.out core/fp64_fma.v core/tb_fp64_fma.v && $VVP /tmp/tb_fp64_fma.out"
 fi
 
 if skip_tool "tb_bf16_fma" $IVERILOG; then
-    run "tb_bf16_fma" bash -c "cd $HDL && $IVERILOG -g2005 -o /tmp/tb_bf16_fma.out bf16_fma.v tb_bf16_fma.v && $VVP /tmp/tb_bf16_fma.out"
+    run "tb_bf16_fma" bash -c "cd $HDL && $IVERILOG -g2005 -o /tmp/tb_bf16_fma.out core/bf16_fma.v core/tb_bf16_fma.v && $VVP /tmp/tb_bf16_fma.out"
 fi
 
 if skip_tool "tb_fp16_fma" $IVERILOG; then
-    run "tb_fp16_fma" bash -c "cd $HDL && $IVERILOG -g2005 -o /tmp/tb_fp16_fma.out fp16_fma.v tb_fp16_fma.v && $VVP /tmp/tb_fp16_fma.out"
+    run "tb_fp16_fma" bash -c "cd $HDL && $IVERILOG -g2005 -o /tmp/tb_fp16_fma.out core/fp16_fma.v core/tb_fp16_fma.v && $VVP /tmp/tb_fp16_fma.out"
 fi
 
 if skip_tool "tb_int8_mac" $IVERILOG; then
-    run "tb_int8_mac" bash -c "cd $HDL && $IVERILOG -g2005 -o /tmp/tb_int8_mac.out int8_mac.v tb_int8_mac.v && $VVP /tmp/tb_int8_mac.out"
+    run "tb_int8_mac" bash -c "cd $HDL && $IVERILOG -g2005 -o /tmp/tb_int8_mac.out core/int8_mac.v core/tb_int8_mac.v && $VVP /tmp/tb_int8_mac.out"
 fi
 
 if skip_tool "tb_moe_gating" $IVERILOG; then
-    run "tb_moe_gating" bash -c "cd $HDL && $IVERILOG -g2005 -o /tmp/tb_moe_gating.out moe_gating.v bf16_fma.v tb_moe_gating.v && $VVP /tmp/tb_moe_gating.out"
+    run "tb_moe_gating" bash -c "cd $HDL && $IVERILOG -g2005 -o /tmp/tb_moe_gating.out core/moe_gating.v core/bf16_fma.v core/tb_moe_gating.v && $VVP /tmp/tb_moe_gating.out"
 fi
 
-if skip_tool "tb_router_chip" $IVERILOG; then
-    run "tb_router_chip" bash -c "cd $HDL && $IVERILOG -g2005 -o /tmp/tb_router_chip.out router_chip.v moe_gating.v bf16_fma.v tb_router_chip.v && $VVP /tmp/tb_router_chip.out"
+if skip_tool "tb_orchestrator_chip" $IVERILOG; then
+    run "tb_orchestrator_chip" bash -c "cd $HDL && $IVERILOG -g2005 -o /tmp/tb_orchestrator_chip.out orchestrator_chip.v core/moe_gating.v core/bf16_fma.v tb_orchestrator_chip.v && $VVP /tmp/tb_orchestrator_chip.out"
 fi
 
 if skip_tool "tb_bf16_mac_array" $IVERILOG; then
-    run "tb_bf16_mac_array" bash -c "cd $HDL && $IVERILOG -g2005 -o /tmp/tb_bf16_mac_array.out bf16_mac_array.v bf16_fma.v tb_bf16_mac_array.v && $VVP /tmp/tb_bf16_mac_array.out"
+    run "tb_bf16_mac_array" bash -c "cd $HDL && $IVERILOG -g2005 -o /tmp/tb_bf16_mac_array.out core/bf16_mac_array.v core/bf16_fma.v core/tb_bf16_mac_array.v && $VVP /tmp/tb_bf16_mac_array.out"
 fi
 
 if skip_tool "tb_fp16_mac_array" $IVERILOG; then
-    run "tb_fp16_mac_array" bash -c "cd $HDL && $IVERILOG -g2005 -o /tmp/tb_fp16_mac_array.out fp16_mac_array.v fp16_fma.v tb_fp16_mac_array.v && $VVP /tmp/tb_fp16_mac_array.out"
+    run "tb_fp16_mac_array" bash -c "cd $HDL && $IVERILOG -g2005 -o /tmp/tb_fp16_mac_array.out core/fp16_mac_array.v core/fp16_fma.v core/tb_fp16_mac_array.v && $VVP /tmp/tb_fp16_mac_array.out"
 fi
 
 echo ""

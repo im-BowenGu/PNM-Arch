@@ -237,8 +237,10 @@ func NewFirmware(d *Driver) *Firmware {
 		Speculative:     DefaultSpeculativeConfig(),
 		SeqPositions:    make(map[int]int),
 	}
-	// Configure sliding window attention from model config
-	if d.Config.TextConfig.SlidingWindow > 0 && len(d.Config.TextConfig.LayerTypes) > 0 {
+	// Configure sliding window attention from model config.  Called even
+	// without per-model layer_types (Mistral/Gemma-1 style configs): the KV
+	// layer is then marked sliding for every physical layer.
+	if d.Config.TextConfig.SlidingWindow > 0 {
 		fw.KV.ConfigureSlidingWindow(d.Config.TextConfig.SlidingWindow, d.Config.TextConfig.LayerTypes)
 	}
 	// Configure GQA from model config
@@ -364,15 +366,11 @@ func (fw *Firmware) PlanInference(token []byte) ([]DispatchRecord, error) {
 	tc := &fw.Driver.Config.TextConfig
 	dims := fw.Driver.Dims
 	nodesPerLayer := dims.Bx * dims.By
-	modelLayersPerPhysical := (tc.NumHiddenLayers + dims.Layers - 1) / dims.Layers
 
 	var records []DispatchRecord
 
 	for ml := 0; ml < tc.NumHiddenLayers; ml++ {
-		pl := ml / modelLayersPerPhysical
-		if pl >= dims.Layers {
-			pl = dims.Layers - 1
-		}
+		pl := fw.physLayerOf(ml)
 
 		// Step 1: Dense path — dispatch to attention node
 		attnNodeIdx := ml % nodesPerLayer
@@ -380,16 +378,16 @@ func (fw *Firmware) PlanInference(token []byte) ([]DispatchRecord, error) {
 		attnY := attnNodeIdx % dims.By
 		attnNode := NodeID{L: pl, X: attnX, Y: attnY}
 
-		// Check if this layer uses sliding window
+		// Per-model-layer sliding window (not the physical layer's collapsed flag)
+		isSliding, slidingWin := fw.layerIsSliding(ml)
 		kl := fw.KV.Layers[pl]
-		isSliding := kl.IsSliding
 		windowStart := -1
 		windowEnd := -1
 		seqPos := fw.SeqPositions[ml]
 
-		if isSliding && kl.SlidingWindow > 0 {
+		if isSliding && slidingWin > 0 {
 			windowEnd = seqPos
-			windowStart = seqPos - kl.SlidingWindow + 1
+			windowStart = seqPos - slidingWin + 1
 			if windowStart < 0 {
 				windowStart = 0
 			}
@@ -487,15 +485,25 @@ func (fw *Firmware) PlanInference(token []byte) ([]DispatchRecord, error) {
 			fw.KV.OffloadCycle()
 		}
 
-		// Step 3: MoE gating — dispatch to top-k experts
-		for expIdx := 0; expIdx < tc.TopKExperts; expIdx++ {
+		// Step 3: MoE gating — dispatch to top-k experts.  Gating scores every
+		// expert for this (token, layer) and routes to the top-k by global expert
+		// index, so routing is token-dependent and the full expert population
+		// (not just experts 0..TopK-1) is reachable.  The candidate population
+		// is the layer's actual expert indices from the map (may be sparse); we
+		// score by those global indices, mirroring the C firmware.
+		var population []int
+		for mk := range fw.Driver.MoeMap {
+			if mk.ModelLayer == ml {
+				population = append(population, mk.ExpertIdx)
+			}
+		}
+		sort.Ints(population)
+		for _, expIdx := range selectTopExperts(token, ml, population, tc.TopKExperts) {
 			key := MoeKey{ModelLayer: ml, ExpertIdx: expIdx}
-			nodes, ok := fw.Driver.MoeMap[key]
-			if !ok || len(nodes) == 0 {
+			expertNode, ok := fw.Driver.MoeMap[key]
+			if !ok {
 				continue
 			}
-			// Select primary node (first in list); replicas available for load balancing
-			expertNode := nodes[0]
 
 			flit := Flit(expertNode.L+1, (expertNode.X<<4)|expertNode.Y,
 				CTRL_COMPUTE_SPINE, token, false)
@@ -516,6 +524,92 @@ func (fw *Firmware) PlanInference(token []byte) ([]DispatchRecord, error) {
 
 	fw.DispatchCount += len(records)
 	return records, nil
+}
+
+// selectTopExperts returns the top-k global expert indices for a token and
+// model layer, chosen by a deterministic gating score.  The score is seeded
+// from the token bytes and the model layer, and each expert in the layer's
+// actual population is scored so that routing varies across tokens and layers
+// while remaining reproducible for a given input (paper determinism).
+//
+// experts holds the layer's actual global expert indices (the candidate
+// population).  Each candidate is scored by its GLOBAL index, mirroring the C
+// firmware's select_topk (fw/pnm_fw.c) which scores by the actual expert_idx
+// in the map -- so both twins agree even for sparse per-layer populations
+// where the candidate set is not exactly 0..N-1.
+func selectTopExperts(token []byte, ml int, experts []int, topK int) []int {
+	if len(experts) <= 0 {
+		return nil
+	}
+	if topK > len(experts) {
+		topK = len(experts)
+	}
+	// Deterministic per-token per-layer seed (FNV-1a over token plus layer).
+	h := uint64(14695981039346656037)
+	for _, b := range token {
+		h ^= uint64(b)
+		h *= 1099511628211
+	}
+	h ^= uint64(ml) * 0x9E3779B97F4A7C15
+	h = (h * 1099511628211) >> 0
+
+	// Score every expert in the population, keyed by global index, with a
+	// stable (score, expert) tiebreak.
+	type scored struct {
+		score  uint64
+		expert int
+	}
+	scores := make([]scored, len(experts))
+	for i, ex := range experts {
+		sh := h ^ uint64(ex)*0x2545F4914F6CDD1D
+		sh ^= sh >> 33
+		sh *= 0xFF51AFD7ED558CCD
+		sh ^= sh >> 33
+		scores[i] = scored{score: sh, expert: ex}
+	}
+	sort.Slice(scores, func(i, j int) bool {
+		if scores[i].score != scores[j].score {
+			return scores[i].score > scores[j].score
+		}
+		return scores[i].expert < scores[j].expert
+	})
+	out := make([]int, topK)
+	for i := 0; i < topK; i++ {
+		out[i] = scores[i].expert
+	}
+	return out
+}
+
+// layerIsSliding reports whether the given model layer uses sliding window
+// attention.  It consults the model's per-layer type list when present,
+// falling back to the physical layer's KV-cache flag for models without one.
+func (fw *Firmware) layerIsSliding(ml int) (bool, int) {
+	tc := &fw.Driver.Config.TextConfig
+	if len(tc.LayerTypes) > 0 && ml >= 0 && ml < len(tc.LayerTypes) {
+		sliding := tc.LayerTypes[ml] == "sliding_attention"
+		if sliding {
+			if tc.SlidingWindow > 0 {
+				return true, tc.SlidingWindow
+			}
+			return true, fw.KV.Layers[fw.physLayerOf(ml)].SlidingWindow
+		}
+		return false, 0
+	}
+	pl := fw.physLayerOf(ml)
+	kl := fw.KV.Layers[pl]
+	return kl.IsSliding, kl.SlidingWindow
+}
+
+// physLayerOf maps a model layer index to its physical layer on the chassis.
+func (fw *Firmware) physLayerOf(ml int) int {
+	tc := &fw.Driver.Config.TextConfig
+	dims := fw.Driver.Dims
+	perPhysical := (tc.NumHiddenLayers + dims.Layers - 1) / dims.Layers
+	pl := ml / perPhysical
+	if pl >= dims.Layers {
+		pl = dims.Layers - 1
+	}
+	return pl
 }
 
 // PlanInferenceChunked computes the dispatch sequence for a prefill chunk.
@@ -569,6 +663,11 @@ func (fw *Firmware) PlanInferenceSpeculative(prevToken int) ([][]DispatchRecord,
 	}
 
 	// Phase 1: Draft tokens (lightweight model — uses same dispatch but with fewer layers)
+	// Save SeqPositions so the draft phase doesn't advance them (only the final accepted tokens should).
+	savedPositions := make(map[int]int)
+	for k, v := range fw.SeqPositions {
+		savedPositions[k] = v
+	}
 	var draftRecords [][]DispatchRecord
 	drafted := make([]int, 0, draftCount)
 	currentToken := prevToken
@@ -582,6 +681,22 @@ func (fw *Firmware) PlanInferenceSpeculative(prevToken int) ([][]DispatchRecord,
 		nextToken := fw.predictDraftToken(currentToken, i)
 		drafted = append(drafted, nextToken)
 		currentToken = nextToken
+	}
+	// Restore positions — draft phase was speculative, not committed.  Rebuild
+	// the map from scratch so any model-layer keys the draft phase created (that
+	// were not present before) are fully removed, not just re-valued.
+	fw.SeqPositions = make(map[int]int, len(savedPositions))
+	for k, v := range savedPositions {
+		fw.SeqPositions[k] = v
+	}
+
+	// Base positions after the (rolled-back) draft phase.  The verify phase
+	// below advances positions once per drafted token, but only the accepted
+	// prefix should be committed, so we rewrite positions to base + accepted
+	// per model layer after acceptance is determined.
+	basePositions := make(map[int]int, len(fw.SeqPositions))
+	for k, v := range fw.SeqPositions {
+		basePositions[k] = v
 	}
 
 	// Phase 2: Verify all drafted tokens at once (main model)
@@ -624,6 +739,14 @@ func (fw *Firmware) PlanInferenceSpeculative(prevToken int) ([][]DispatchRecord,
 			acceptedRecords = append(acceptedRecords, verifyRecords[i])
 			break
 		}
+	}
+
+	// Commit positions: only the accepted tokens advance the sequence
+	// positions.  The verify phase advanced basePositions once per drafted
+	// token; rewrite so each model layer reflects exactly len(accepted) new
+	// tokens rather than len(drafted).
+	for k := range fw.SeqPositions {
+		fw.SeqPositions[k] = basePositions[k] + len(accepted)
 	}
 
 	return acceptedRecords, accepted, nil

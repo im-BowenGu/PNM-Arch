@@ -76,11 +76,11 @@ SRAM (`orchestrator_sbc.v`); the Pi Bridge and MCU variants run from SRAM only.
 | Region | Address Range | Size | Description |
 |--------|--------------|------|-------------|
 | Boot ROM | `0x0000_0000` | 64KB | Bootstub: NVMe→SRAM copy + jump |
-| UART | `0x1000_0000` | 4KB | 16550-compatible debug console |
+| UART | `0x1000_0000` | 256B | 16550-compatible debug console |
 | CLINT | `0x2000_0000` | 64KB | Timer + software interrupt |
 | SRAM | `0x4000_0000` | 500KB-32MB | On-chip SRAM (kernel + runtime) |
 | DRAM | `0x8000_0000` | 1GB | LPDDR5/6 window (heap + data) |
-| PCIe | `0xC000_0000` | 4KB | PCIe config/status registers |
+| PCIe | `0xC000_0000` | 256MB | PCIe config/status registers |
 | NVMe | `0xD000_0000` | 64B | NVMe controller (boot + weights + swap) |
 | PNM | `0xF000_0000` | 64B | PNM orchestrator engine |
 

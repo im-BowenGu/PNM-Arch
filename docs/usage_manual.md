@@ -89,8 +89,12 @@ Each node's PE tile instantiates one compute unit type:
 | `fp64_fma.v` | FMA | FP64 | 3 cycles | Double-precision scientific |
 | `bf16_mac_array.v` | Systolic array | BF16 | variable | Attention QKV |
 | `fp16_mac_array.v` | Systolic array | FP16 | variable | FP16 attention |
+| `fp32_mac_array.v` | Systolic array | FP32 | variable | FP32 attention |
 | `fp32_alu.v` | ALU | FP32 | 3 (MIN/MAX/CMP), 4 (FMA), 28 (DIV) | Layernorm |
+| `fp64_alu.v` | ALU | FP64 | 3 (ADD/SUB/MUL/MIN/MAX/CMP), 56 (DIV) | Double-precision math |
+| `int8_alu.v` | ALU | INT8 | 1 (ADD/SUB/SHIFT/MIN/MAX), 2 (MUL) | INT8 element-wise ops |
 | `int8_mac.v` | MAC | INT8 | 2 cycles | Quantized inference |
+| `int4_mac.v` | MAC | INT4 | 2 cycles | INT4 quantized (packed nibbles) |
 | `int4_mac_array.v` | Systolic array | INT4/INT8 | variable | INT4 quantized inference (4x density vs BF16) |
 | `fp4_mac.v` | MAC | FP4 (E2M1) | 2 cycles | FP4 quantized (packed nibbles) |
 | `fp4_mac_array.v` | Systolic array | FP4 | variable | FP4 quantized inference (4x density vs BF16) |
@@ -111,11 +115,11 @@ Each node's PE tile instantiates one compute unit type:
 | Region | Address | Size | Description |
 |--------|---------|------|-------------|
 | Boot ROM | `0x0000_0000` | 64 KB | Reset vector + SPL |
-| UART | `0x1000_0000` | 4 KB | 16550-compatible console |
+| UART | `0x1000_0000` | 256 B | 16550-compatible console |
 | CLINT | `0x2000_0000` | 64 KB | Machine-mode timer + software IRQ (page-decoded) |
 | SRAM | `0x4000_0000` | 512 KB (default; configurable 500 KB–32 MB) | Kernel image + stack |
 | DRAM | `0x8000_0000` | 1 GB | LPDDR5/6 heap + data |
-| PCIe | `0xC000_0000` | 4 KB | Gen5 x16 PHY registers |
+| PCIe | `0xC000_0000` | 256 MB | Gen5 x16 PHY registers |
 | NVMe | `0xD000_0000` | 64 B | AXI-Lite register window |
 | PNM | `0xF000_0000` | 64 B | Router chip registers |
 
@@ -438,7 +442,10 @@ if result != nil {
 ## Haskell-to-PNM compilation
 
 The `haskell_pnm`, `r_pnm`, and `hlsl_pnm` tools compile a subset of
-Haskell, R, or HLSL to FP64 dispatch instructions on the PNM chassis.
+Haskell, R, or HLSL to dispatch instructions on the PNM chassis.
+Haskell and R compile through an FP64 IR; HLSL compiles through an
+FP32 ALU IR (`alu.*` ops targeting `fp32_alu.v`) that is then lowered
+to the same `f64_*` PNM kernels for chassis dispatch.
 
 ### Supported syntax
 
@@ -485,8 +492,11 @@ Haskell/R/HLSL source
   → co-simulation on the chassis
 ```
 
-Each operation maps to a node running an `f64_*` kernel. Operands
-are packed as big-endian FP64 bytes (8 bytes each) in token payloads.
+Each operation maps to a node running an `f64_*` kernel. Haskell and
+R emit the FP64 IR directly; HLSL emits an FP32 ALU IR that is
+lowered to `f64_*` kernels for ABI/dispatch compatibility on the
+chassis. Operands are packed in the FP64 payload format (8 bytes per
+slot) in token payloads.
 
 ### Usage
 

@@ -289,7 +289,12 @@ func (ir *ModelIR) PopulateSchema(dims Dims) (*ModelCompiler, error) {
 
 	// Reserve KV cache memory on attention nodes (chassis-dependent policy):
 	// 80% of the remaining per-node budget, capped at 16K entries.
-	kvEntryBytes := int64(tc.HiddenSize) * 4
+	// Per-entry bytes are pinned to the RTL/co-sim frame (kv_cache_bank
+	// ENTRY_BYTES=512, DefaultKVCacheConfig, PNM_KV_ENTRY_BYTES in the C
+	// twin).  A hiddenSize-derived frame (2*K+V*hidden*2) only coincides
+	// with silicon at hidden 128 and would silently inflate the schema's
+	// entry count beyond what the frame can hold.
+	kvEntryBytes := int64(512)
 	for nid, na := range mc.NodeAssignments {
 		if nid.L < 0 || len(na.Tensors) == 0 {
 			continue

@@ -132,7 +132,10 @@ module rv32_core #(
                     OP_OP_IMM: begin
                         alu_a_r = rs1_val;
                         alu_b_r = imm;
-                        alu_funct7_r = 7'h0;
+                        // SRAI/SRLI (funct3=101) need funct7 bit 5 to distinguish a
+                        // shift-right-arithmetic from shift-right-logical; propagate
+                        // ir[31:25] instead of forcing 0 (HIGH #24).
+                        alu_funct7_r = ir[31:25];
                     end
                     OP_OP: begin
                         alu_a_r = rs1_val;
@@ -172,7 +175,16 @@ module rv32_core #(
             3'b010: alu_out = ($signed(alu_a_r) < $signed(alu_b_r)) ? 32'd1 : 32'd0;
             3'b011: alu_out = (alu_a_r < alu_b_r) ? 32'd1 : 32'd0;
             3'b100: alu_out = alu_a_r ^ alu_b_r;
-            3'b101: alu_out = (alu_funct7_r[5]) ? ($signed(alu_a_r) >>> alu_b_r[4:0]) : (alu_a_r >> alu_b_r[4:0]);
+            3'b101: begin
+                // SRAI (funct7[5]) vs SRLI. Use an if/else, not a ternary: a
+                // ternary mixing a signed `>>>` branch with an unsigned `>>`
+                // branch is contextualized unsigned, silently demoting SRAI to
+                // a logical shift (HIGH #24 root cause #2).
+                if (alu_funct7_r[5])
+                    alu_out = $signed(alu_a_r) >>> alu_b_r[4:0];
+                else
+                    alu_out = alu_a_r >> alu_b_r[4:0];
+            end
             3'b110: alu_out = alu_a_r | alu_b_r;
             3'b111: alu_out = alu_a_r & alu_b_r;
         endcase
@@ -411,21 +423,23 @@ module rv32_core #(
                         end
 
                         OP_SYSTEM: begin
-                            csr_minstret <= csr_minstret + 64'd1;
                             case (ir[31:20])
                                 12'h000: begin  // ECALL
+                                    csr_minstret <= csr_minstret + 64'd1;
                                     csr_mepc    <= pc;
                                     csr_mcause  <= 32'd11;
                                     pc_next     <= csr_mtvec;
                                     state       <= S_CSR_MRET;
                                 end
                                 12'h001: begin  // EBREAK
+                                    csr_minstret <= csr_minstret + 64'd1;
                                     csr_mepc    <= pc;
                                     csr_mcause  <= 32'd3;
                                     pc_next     <= csr_mtvec;
                                     state       <= S_CSR_MRET;
                                 end
                                 12'h302: begin  // MRET
+                                    csr_minstret <= csr_minstret + 64'd1;
                                     pc_next     <= csr_mepc;
                                     state       <= S_CSR_MRET;
                                 end
@@ -434,17 +448,23 @@ module rv32_core #(
                                     case (ir[14:12])
                                         3'b001, 3'b010, 3'b011,
                                         3'b101, 3'b110, 3'b111: begin
-                                            case (ir[31:20])
-                                                CSR_MSTATUS:  csr_mstatus  <= csr_wval;
-                                                CSR_MIE:      csr_mie      <= csr_wval;
-                                                CSR_MTVEC:    csr_mtvec    <= csr_wval;
-                                                CSR_MEPC:     csr_mepc     <= csr_wval;
-                                                CSR_MCAUSE:   csr_mcause   <= csr_wval;
-                                                CSR_MSCRATCH: csr_mscratch <= csr_wval;
-                                                CSR_MCYCLE:   csr_mcycle[31:0]  <= csr_wval;
-                                                CSR_MCYCLEH:  csr_mcycle[63:32] <= csr_wval;
-                                                default: ;
-                                            endcase
+                                            // RISC-V: CSRRW with rs1=x0 and
+                                            // CSRRWI with zimm=0 must not write
+                                            // the CSR (read-only idiom).
+                                            if (!((ir[14:12] == 3'b001 && rs1 == 5'h0) ||
+                                                  (ir[14:12] == 3'b101 && zimm == 5'h0))) begin
+                                                case (ir[31:20])
+                                                    CSR_MSTATUS:  csr_mstatus  <= csr_wval;
+                                                    CSR_MIE:      csr_mie      <= csr_wval;
+                                                    CSR_MTVEC:    csr_mtvec    <= csr_wval;
+                                                    CSR_MEPC:     csr_mepc     <= csr_wval;
+                                                    CSR_MCAUSE:   csr_mcause   <= csr_wval;
+                                                    CSR_MSCRATCH: csr_mscratch <= csr_wval;
+                                                    CSR_MCYCLE:   csr_mcycle[31:0]  <= csr_wval;
+                                                    CSR_MCYCLEH:  csr_mcycle[63:32] <= csr_wval;
+                                                    default: ;
+                                                endcase
+                                            end
                                             alu_result <= csr_rdata;
                                             rd_we <= 1'b1;
                                             state <= S_WRITEBACK;
@@ -515,12 +535,39 @@ module rv32_core #(
                     if (rd_we && rd_addr != 5'h0) begin
                         case (opcode)
                             OP_LOAD: begin
+                                // Sub-word load: select the addressed byte/halfword
+                                // lane from the returned word, mirroring the SB/SH
+                                // store-lane shifts in the MEM state.
                                 case (funct3)
-                                    3'b000: rf[rd_addr] <= {{24{mem_result[7]}},  mem_result[7:0]};   // LB
-                                    3'b001: rf[rd_addr] <= {{16{mem_result[15]}}, mem_result[15:0]};  // LH
+                                    3'b000: begin // LB (byte lane 0..3)
+                                        case (alu_result[1:0])
+                                            2'b00: rf[rd_addr] <= {{24{mem_result[7]}},  mem_result[7:0]};
+                                            2'b01: rf[rd_addr] <= {{24{mem_result[15]}}, mem_result[15:8]};
+                                            2'b10: rf[rd_addr] <= {{24{mem_result[23]}}, mem_result[23:16]};
+                                            2'b11: rf[rd_addr] <= {{24{mem_result[31]}}, mem_result[31:24]};
+                                        endcase
+                                    end
+                                    3'b001: begin // LH (halfword lane 0..2)
+                                        case (alu_result[1])
+                                            1'b0: rf[rd_addr] <= {{16{mem_result[15]}}, mem_result[15:0]};
+                                            1'b1: rf[rd_addr] <= {{16{mem_result[31]}}, mem_result[31:16]};
+                                        endcase
+                                    end
                                     3'b010: rf[rd_addr] <= mem_result;                                // LW
-                                    3'b100: rf[rd_addr] <= {24'h0, mem_result[7:0]};                 // LBU
-                                    3'b101: rf[rd_addr] <= {16'h0, mem_result[15:0]};                // LHU
+                                    3'b100: begin // LBU
+                                        case (alu_result[1:0])
+                                            2'b00: rf[rd_addr] <= {24'h0, mem_result[7:0]};
+                                            2'b01: rf[rd_addr] <= {24'h0, mem_result[15:8]};
+                                            2'b10: rf[rd_addr] <= {24'h0, mem_result[23:16]};
+                                            2'b11: rf[rd_addr] <= {24'h0, mem_result[31:24]};
+                                        endcase
+                                    end
+                                    3'b101: begin // LHU
+                                        case (alu_result[1])
+                                            1'b0: rf[rd_addr] <= {16'h0, mem_result[15:0]};
+                                            1'b1: rf[rd_addr] <= {16'h0, mem_result[31:16]};
+                                        endcase
+                                    end
                                     default: rf[rd_addr] <= mem_result;
                                 endcase
                             end
