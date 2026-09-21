@@ -9,9 +9,9 @@ import (
 // TestDriverFirmware exercises the full driver + firmware pipeline on the
 // synthetic Gemma-4 test model.
 func TestDriverFirmware(t *testing.T) {
-	modelDir := filepath.Join(SimDir(), "examples", "gemma4_test")
+	modelDir := filepath.Join(SimDir(), "examples", "gemma4_test_synthetic")
 	if _, err := os.Stat(filepath.Join(modelDir, "config.json")); err != nil {
-		t.Skip("gemma4_test model not found")
+		t.Skip("gemma4_test_synthetic model not found")
 	}
 
 	dims := Dims{Layers: 4, Bx: 4, By: 4}
@@ -124,9 +124,9 @@ func TestDriverFirmware(t *testing.T) {
 
 // TestRouterBitmaps verifies the routing bitmap computation.
 func TestRouterBitmaps(t *testing.T) {
-	modelDir := filepath.Join(SimDir(), "examples", "gemma4_test")
+	modelDir := filepath.Join(SimDir(), "examples", "gemma4_test_synthetic")
 	if _, err := os.Stat(filepath.Join(modelDir, "config.json")); err != nil {
-		t.Skip("gemma4_test model not found")
+		t.Skip("gemma4_test_synthetic model not found")
 	}
 
 	dims := Dims{Layers: 4, Bx: 4, By: 4}
@@ -160,9 +160,9 @@ func TestRouterBitmaps(t *testing.T) {
 
 // TestLLMClient exercises the FP16/BF16 LLM inference client.
 func TestLLMClient(t *testing.T) {
-	modelDir := filepath.Join(SimDir(), "examples", "gemma4_test")
+	modelDir := filepath.Join(SimDir(), "examples", "gemma4_test_synthetic")
 	if _, err := os.Stat(filepath.Join(modelDir, "config.json")); err != nil {
-		t.Skip("gemma4_test model not found")
+		t.Skip("gemma4_test_synthetic model not found")
 	}
 
 	dims := Dims{Layers: 4, Bx: 4, By: 4}
@@ -217,9 +217,9 @@ func TestLLMClient(t *testing.T) {
 
 // TestComputeUnitTypes verifies CU type assignment.
 func TestComputeUnitTypes(t *testing.T) {
-	modelDir := filepath.Join(SimDir(), "examples", "gemma4_test")
+	modelDir := filepath.Join(SimDir(), "examples", "gemma4_test_synthetic")
 	if _, err := os.Stat(filepath.Join(modelDir, "config.json")); err != nil {
-		t.Skip("gemma4_test model not found")
+		t.Skip("gemma4_test_synthetic model not found")
 	}
 
 	dims := Dims{Layers: 4, Bx: 4, By: 4}

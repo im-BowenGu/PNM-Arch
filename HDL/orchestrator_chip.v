@@ -86,7 +86,7 @@ module orchestrator_chip #(
     // =========================================================================
     // Internal constants
     // =========================================================================
-    localparam CTRL_WEIGHT_UPLOAD = 8'h80;  // vc_class=2 | OP_COMPUTE
+    localparam CTRL_WEIGHT_UPLOAD = 8'hA0;  // vc_class=2 | OP_WEIGHT (distinct from OP_COMPUTE)
     localparam CTRL_COMPUTE       = 8'h80;  // vc_class=2 | OP_COMPUTE
     localparam CTRL_FORWARD       = 8'h90;  // vc_class=2 | OP_FORWARD
     localparam REQ_MODULE         = 8'hEE;  // AOT-fixed requester (spine root)
@@ -123,17 +123,10 @@ module orchestrator_chip #(
     reg [7:0]  moe_module [0:NUM_LAYERS*MAX_EXPERTS-1];
 
     // =========================================================================
-    // MoE gating weights: router.proj.weight[layer][expert][hidden]
-    // On-chip SRAM (21.6 MB for Gemma-4: 30 layers × 128 experts × 2816 × BF16)
-    // =========================================================================
-    reg [7:0]  moe_weights [0:NUM_LAYERS*MAX_EXPERTS*HIDDEN_SIZE-1];
-
-    // =========================================================================
     // Forward declarations (Verilog-2005: must declare before use)
     // =========================================================================
     localparam ADDR_BITS = 20;  // must hold NUM_EXPERTS*HIDDEN_DIM (e.g. 128*2816=360448 for Gemma-4)
 
-    reg [2:0]  pie_state;
     reg [3:0]  pie_pos;
     reg [7:0]  pie_buf [0:5];
     reg [7:0]  fb_layer;
@@ -150,6 +143,17 @@ module orchestrator_chip #(
     wire [ADDR_BITS-1:0] gate_hidden_addr;
     wire        gate_fma_busy;
     reg  [15:0] gate_hidden_data;
+    reg         gate_hidden_valid;   // pulse: fresh hidden word on gate_hidden_data
+    // MoE gating weight upload (PIE_MOE_W): BF16 word stream
+    reg [7:0]  mw_hi;
+    reg        mw_odd;
+    reg [15:0] mw_dim;
+    reg [19:0] gate_weight_addr;
+    reg [15:0] gate_weight_data;
+    reg        gate_weight_load;
+    // Hidden-state feed from the token payload (16-bit BF16 words)
+    reg [7:0]  gh_hi;
+    reg        gh_odd;
 
     // Latched gating results for dispatch (stable after gate_done)
     reg  [7:0]  dispatch_layer;
@@ -168,9 +172,10 @@ module orchestrator_chip #(
         .current_layer (fb_layer),
         .hidden_addr   (gate_hidden_addr),
         .hidden_data   (gate_hidden_data),
-        .weight_load   (1'b0),
-        .weight_addr   ({ADDR_BITS{1'b0}}),
-        .weight_data   (16'h0000),
+        .hidden_valid  (gate_hidden_valid),
+        .weight_load   (gate_weight_load),
+        .weight_addr   (gate_weight_addr),
+        .weight_data   (gate_weight_data),
         .moe_layer_in  (moe_layer[pie_buf[0] * MAX_EXPERTS + pie_buf[1]]),
         .moe_module_in (moe_module[pie_buf[0] * MAX_EXPERTS + pie_buf[1]]),
         .expert_idx_packed   (gate_expert_idx_packed),
@@ -206,14 +211,18 @@ module orchestrator_chip #(
     // =========================================================================
     // PCIe ingress parser state machine
     // =========================================================================
-    localparam PIE_IDLE      = 3'd0;
-    localparam PIE_CMD       = 3'd1;  // command byte
-    localparam PIE_WEIGHT_H  = 3'd2;  // weight upload header
-    localparam PIE_WEIGHT_P  = 3'd3;  // weight upload payload
-    localparam PIE_RT_NODE   = 3'd4;  // routing table entry
-    localparam PIE_MOE_H     = 3'd5;  // MoE map entry
-    localparam PIE_INF_TOKEN = 3'd6;  // inference token header
-    localparam PIE_INF_TOKEN_P = 3'd7; // inference token payload
+    localparam PIE_IDLE      = 4'd0;
+    localparam PIE_CMD       = 4'd1;  // command byte
+    localparam PIE_WEIGHT_H  = 4'd2;  // weight upload header
+    localparam PIE_WEIGHT_P  = 4'd3;  // weight upload payload
+    localparam PIE_RT_NODE   = 4'd4;  // routing table entry
+    localparam PIE_MOE_H     = 4'd5;  // MoE map entry
+    localparam PIE_INF_TOKEN = 4'd6;  // inference token header
+    localparam PIE_INF_TOKEN_P = 4'd7; // inference token payload
+    localparam PIE_MOE_W     = 4'd8;  // MoE gating weight header
+    localparam PIE_MOE_WP    = 4'd9;  // MoE gating weight payload
+
+    reg [3:0]  pie_state;
 
     reg [7:0]  pie_cmd;
     reg [15:0] pie_len;
@@ -225,9 +234,13 @@ module orchestrator_chip #(
     localparam RC_SEND = 2'd1;
 
     reg [1:0]  rc_state;
-    reg [7:0]  rc_buf [0:9]; // result header + up to 4 payload bytes
+    reg [7:0]  rc_buf [0:9]; // result bytes FIFO (head at rc_fifo_head)
+    reg        rc_sop [0:9];
+    reg        rc_eop [0:9];
     reg [3:0]  rc_pos;
     reg [3:0]  rc_len;
+    reg [3:0]  rc_fifo_head;
+    reg [3:0]  rc_fifo_cnt;
 
     // =========================================================================
     // CRC-16 computation (inline, matches crc16.v / crc.go)
@@ -317,12 +330,19 @@ module orchestrator_chip #(
             rc_state      <= RC_IDLE;
             rc_pos        <= 0;
             rc_len        <= 0;
+            rc_fifo_head  <= 0;
+            rc_fifo_cnt   <= 0;
+            gate_hidden_valid <= 0;
+            gate_weight_load  <= 0;
+            mw_odd <= 0; mw_dim <= 0; gh_odd <= 0;
         end else begin
             // Defaults
             fb_out_valid <= 1'b0;
             fb_out_sop   <= 1'b0;
             fb_out_eop   <= 1'b0;
             gate_start   <= 1'b0;
+            gate_hidden_valid <= 1'b0;
+            gate_weight_load  <= 1'b0;
 
             // =================================================================
             // Latch MoE gating results when done
@@ -416,6 +436,7 @@ module orchestrator_chip #(
                             8'h02: pie_state <= PIE_RT_NODE;   // routing table
                             8'h03: pie_state <= PIE_MOE_H;     // MoE map
                             8'h04: pie_state <= PIE_INF_TOKEN; // inference token
+                            8'h05: pie_state <= PIE_MOE_W;     // MoE gating weight
                             8'hFF: ; // boot phase advance (no-op, handled above)
                             default: errors <= errors + 1;
                         endcase
@@ -482,6 +503,41 @@ module orchestrator_chip #(
                             pie_pos <= pie_pos + 1;
                     end
 
+                    PIE_MOE_W: begin
+                        // Collect: layer(1) + expert(1) + rsvd(1); then
+                        // HIDDEN_SIZE BF16 words stream (2 bytes each) into the
+                        // gating unit's weight SRAM.  pie_buf[0]/[1] stay
+                        // latched as layer/expert so the moe_layer_in/
+                        // moe_module_in port presents the expert's coordinates
+                        // at every weight_load pulse.
+                        pie_buf[pie_pos[2:0]] <= pcie_in_data;
+                        if (pie_pos == 2) begin
+                            pie_state <= PIE_MOE_WP;
+                            pie_pos   <= 0;
+                            mw_dim    <= 0;
+                            mw_odd    <= 0;
+                        end else
+                            pie_pos <= pie_pos + 1;
+                    end
+
+                    PIE_MOE_WP: begin
+                        // Stream weight words: {2nd byte, 1st byte} per word.
+                        if (!mw_odd) begin
+                            mw_hi  <= pcie_in_data;
+                            mw_odd <= 1;
+                        end else begin
+                            gate_weight_data <= {mw_hi, pcie_in_data};
+                            gate_weight_addr <= pie_buf[1] * HIDDEN_SIZE + mw_dim;
+                            gate_weight_load <= 1'b1;
+                            mw_odd <= 0;
+                            if (mw_dim == HIDDEN_SIZE - 1) begin
+                                pie_state <= PIE_IDLE;
+                                pie_pos   <= 0;
+                            end else
+                                mw_dim <= mw_dim + 1;
+                        end
+                    end
+
                     PIE_INF_TOKEN: begin
                         // Inference: collect len_hi(1) + len_lo(1), then payload
                         pie_buf[pie_pos[2:0]] <= pcie_in_data;
@@ -537,12 +593,14 @@ module orchestrator_chip #(
                 FB_HDR: begin
                     if (fb_out_ready || !fb_out_valid) begin
                         // Emit: LAYER_ID | MODULE_ID | CTRL | LEN_LO | LEN_HI
+                        // Every header byte must assert valid (a valid&&ready
+                        // sink otherwise skips MODULE/CTRL/LEN entirely).
                         case (fb_pos)
                             0: begin fb_out_data <= fb_layer;  fb_out_sop <= 1; fb_out_valid <= 1; end
-                            1: begin fb_out_data <= fb_module; fb_out_sop <= 0; end
-                            2: begin fb_out_data <= fb_ctrl;   end
-                            3: begin fb_out_data <= fb_len[7:0];  end  // LEN_LO
-                            4: begin fb_out_data <= fb_len[15:8]; end  // LEN_HI
+                            1: begin fb_out_data <= fb_module; fb_out_sop <= 0; fb_out_valid <= 1; end
+                            2: begin fb_out_data <= fb_ctrl;   fb_out_sop <= 0; fb_out_valid <= 1; end
+                            3: begin fb_out_data <= fb_len[7:0];  fb_out_sop <= 0; fb_out_valid <= 1; end  // LEN_LO
+                            4: begin fb_out_data <= fb_len[15:8]; fb_out_sop <= 0; fb_out_valid <= 1; end  // LEN_HI
                         endcase
                         // Update CRC over header bytes (CRC covers MODULE_ID, CTRL, LEN, payload)
                         if (fb_pos >= 1 && fb_pos <= 4) begin
@@ -569,13 +627,27 @@ module orchestrator_chip #(
                 end
 
                 FB_PAYLOAD: begin
-                    // Forward payload bytes from PCIe parser, respecting backpressure
+                    // Forward payload bytes from PCIe parser, respecting backpressure.
+                    // During inference, the payload doubles as the gating unit's
+                    // hidden-state vector: every pair of forwarded bytes is
+                    // presented to moe_gating as one BF16 word (paced by
+                    // gate_hidden_valid, consumed by G_LOAD_HIDDEN).
                     if (fb_out_ready || !fb_out_valid) begin
                         if (fb_in_ready && pcie_in_valid) begin
                             fb_out_data  <= pcie_in_data;
                             fb_out_valid <= 1;
                             fb_out_sop   <= 0;
                             fb_crc       <= crc16_next(fb_crc, pcie_in_data);
+                            if (pie_state == PIE_INF_TOKEN_P) begin
+                                if (!gh_odd) begin
+                                    gh_hi  <= pcie_in_data;
+                                    gh_odd <= 1;
+                                end else begin
+                                    gate_hidden_data  <= {gh_hi, pcie_in_data};
+                                    gate_hidden_valid <= 1'b1;
+                                    gh_odd <= 0;
+                                end
+                            end
                             if (fb_pos == fb_len - 1) begin
                                 fb_state <= FB_CRC;
                                 fb_pos   <= 0;

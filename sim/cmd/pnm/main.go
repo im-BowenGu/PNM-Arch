@@ -67,6 +67,7 @@ func run(argv []string) int {
 	groups := fs.Int("groups", 0, "partition layers into G slices, one parallel vvp process each (default: min(layers, cpu_count))")
 	cpuProf := fs.String("cpuprofile", "", "write CPU profile to file")
 	memProf := fs.String("memprofile", "", "write heap profile to file")
+	outDir := fs.String("output", "", "write structured results (CSV/JSON) to directory")
 
 	argv, scenarios := extractScenarios(argv)
 	if err := fs.Parse(argv); err != nil {
@@ -96,7 +97,7 @@ func run(argv []string) int {
 		defer pprof.StopCPUProfile()
 	}
 
-	code := pnm.RunMain(layers, bx, by, scenarios, *seed, flitsPtr, *hotFrac, *groups)
+	code := pnm.RunMain(layers, bx, by, scenarios, *seed, flitsPtr, *hotFrac, *groups, *outDir)
 
 	if *memProf != "" {
 		f, err := os.Create(*memProf)

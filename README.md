@@ -57,7 +57,7 @@ sim/                    ← Go co-simulation harness (stdlib only)
   cmd/r_pnm/              R → PNM compiler + co-simulation runner
   cmd/hlsl_pnm/           HLSL → PNM compiler + co-simulation runner
   internal/pnm/           harness library (topology gen, doorbell, DES, RNG)
-  examples/               test configs (gemma4_test, mini_glm_moe)
+  examples/               test configs (gemma4_test_synthetic, mini_glm_moe)
 
 fw/                       C firmware port for MCU targets
 toolchain/                MCU, SoC, fw-linux, fw-sel4 toolchains
@@ -112,8 +112,8 @@ and structured result export:
 go run ./cmd/pnmhost/ scenario sweep load stress -output results/
 go run ./cmd/pnmhost/ workload matvec -l 4 -x 4 -y 4 -frag 32
 go run ./cmd/pnmhost/ program examples/bias_add.pnm
-go run ./cmd/pnmhost/ model examples/gemma4_test -o results/
-go run ./cmd/pnmhost/ inference examples/gemma4_test "Hello" -max-tokens 16
+go run ./cmd/pnmhost/ model examples/gemma4_test_synthetic -o results/
+go run ./cmd/pnmhost/ inference examples/gemma4_test_synthetic "Hello" -max-tokens 16
 ```
 
 See [`docs/usage_manual.md`](docs/usage_manual.md#unified-host-driver)
@@ -172,7 +172,7 @@ logging. Add `--output <dir>` to any command:
 
 ```bash
 go run ./cmd/pnm --output results/                              # scenario CSV/JSON
-go run ./cmd/pnmc run-driver examples/gemma4_test -o results/   # dispatch CSV
+go run ./cmd/pnmc run-driver examples/gemma4_test_synthetic -o results/   # dispatch CSV
 go run ./cmd/pnmhost/ scenario sweep -output results/ -log results/run.log
 ```
 

@@ -107,6 +107,22 @@ module gating_asic #(
     wire [TOP_K*8-1:0]  mg_module_out;
     wire [ADDR_BITS-1:0] mg_hidden_addr;
 
+    // Hidden-data handshake for the gating unit. hidden_raddr tracks the
+    // gating unit's read pointer; hidden_valid is high while gating is active
+    // (hidden_sram is a combinational read, so hidden_data is valid the same
+    // cycle the address is presented). moe_gating ignores hidden_valid outside
+    // G_LOAD_HIDDEN, so this is safe.
+    assign hidden_raddr = mg_hidden_addr;
+    reg hidden_valid;
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n)
+            hidden_valid <= 1'b0;
+        else if (ctrl_start)
+            hidden_valid <= 1'b1;
+        else if (mg_done)
+            hidden_valid <= 1'b0;
+    end
+
     assign busy = mg_fma_busy | ctrl_start;
     assign done = mg_done;
     assign expert_idx   = mg_idx;
@@ -251,6 +267,7 @@ module gating_asic #(
         .done             (mg_done),
         .hidden_addr      (mg_hidden_addr),
         .hidden_data      (hidden_rdata),
+        .hidden_valid     (hidden_valid),
         .weight_load      (1'b0),
         .weight_addr      ({ADDR_BITS{1'b0}}),
         .weight_data      (16'h0000),

@@ -79,6 +79,28 @@ module tb_fp32_fma;
         a = 32'h7F800000; b = 32'h3F800000; c = 32'hFF800000;
         run_op; check(32'h7FC00000, "Inf+(-Inf)");
 
+        // Regression R2 CRITICAL #1: mantissa alignment loses MSB on overflow.
+        // 1.9999999 * 1.9999999 overflows the 48-bit intermediate; the buggy
+        // `<<1` shifted the set MSB out and produced 2.0 (0x40000000) instead.
+        // Assert within 1 ULP of the correctly-rounded product (model FMA may
+        // round down one ULP; a lost MSB would collapse to 2.0, far outside).
+        begin
+            a = 32'h3FFFFFFF; b = 32'h3FFFFFFF; c = 32'h00000000;
+            run_op;
+            if (result !== 32'h407FFFFE && result !== 32'h407FFFFC) begin
+                $display("[TB] MISMATCH (1.9999*1.9999): a=%h b=%h c=%h -> got %h, expected ~407FFFFE", a, b, c, result);
+                errors = errors + 1;
+            end
+        end
+
+        // Regression R17 CRITICAL #13: expose the alignment MSB loss that the
+        // 0x3FFFFFFF^2 vector masks (its product's bit-46 is set, so shifting
+        // and truncating happens to preserve the leading 1). 1.5*1.5 has a 0
+        // in that position, so the overflow branch dropping the MSB collapses
+        // it to 0.5. Expect exactly 2.25 = 0x40100000.
+        a = 32'h3FC00000; b = 32'h3FC00000; c = 32'h00000000;
+        run_op; check(32'h40100000, "1.5*1.5+0");
+
         if (errors == 0)
             $display("*** FP32 FMA TEST PASSED ***");
         else

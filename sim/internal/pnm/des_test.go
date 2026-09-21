@@ -172,7 +172,7 @@ func TestDESCrossCheckRTL(t *testing.T) {
 		d, r := des.Inject[i], rtl.Inject[i]
 		r.Cyc -= off
 		if d != r {
-			t.Logf("inject[%d] des=(%d,%02x,s%d,e%d,v%d) rtl=(%d,%02x,s%d,e%d,v%d)", i, d.Cyc, d.D, d.S, d.E, d.Vc, r.Cyc, r.D, r.S, r.E, r.Vc)
+			t.Errorf("inject[%d] des=(%d,%02x,s%d,e%d,v%d) rtl=(%d,%02x,s%d,e%d,v%d)", i, d.Cyc, d.D, d.S, d.E, d.Vc, r.Cyc, r.D, r.S, r.E, r.Vc)
 			break
 		}
 	}

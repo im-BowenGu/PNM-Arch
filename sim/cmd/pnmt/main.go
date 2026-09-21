@@ -397,7 +397,7 @@ func (r *runner) integrationTests() {
 			return "", 1
 		}
 		return r.run(r.t.goBin, sim, "run", "./cmd/pnmc", "compile-model",
-			"examples/gemma4_test", "-l", "4", "-x", "4", "-y", "4")
+			"examples/gemma4_test_synthetic", "-l", "4", "-x", "4", "-y", "4")
 	})
 
 	r.runTest(cat, "model_compiler_mini_moe", func() (string, int) {
@@ -413,7 +413,7 @@ func (r *runner) integrationTests() {
 			return "", 1
 		}
 		return r.run(r.t.goBin, sim, "run", "./cmd/pnmc", "run-driver",
-			"examples/gemma4_test", "-l", "4", "-x", "4", "-y", "4")
+			"examples/gemma4_test_synthetic", "-l", "4", "-x", "4", "-y", "4")
 	})
 }
 

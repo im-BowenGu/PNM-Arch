@@ -84,10 +84,18 @@ module doorbell #(
             if (s_valid) begin
                 if (!in_msg) begin
                     // ---- WATCH: frame starts on the valid edge ----
-                    in_msg <= 1'b1;
-                    p      <= 17'd1;      // DEST already consumed at p=0
-                    dest_l <= s_data;
-                    crc    <= crc_fresh;  // restart CRC from 0xFFFF, fold DEST
+                    if (s_eop) begin
+                        // Net empty frame (valid+eop on the start byte):
+                        // malformed, refuse instead of wedging in_msg.
+                        node_err   <= 1'b1;
+                        rejections <= rejections + 32'd1;
+                        in_msg     <= 1'b0;
+                    end else begin
+                        in_msg <= 1'b1;
+                        p      <= 17'd1;      // DEST already consumed at p=0
+                        dest_l <= s_data;
+                        crc    <= crc_fresh;  // restart CRC from 0xFFFF, fold DEST
+                    end
                 end else if (p < body_end) begin
                     // ---- header (p<4) and payload bytes: fold into CRC ----
                     if (p == 17'd2) len[7:0]  <= s_data;   // LEN_LO

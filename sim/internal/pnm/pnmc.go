@@ -52,7 +52,7 @@ func CompileProgram(text string, dims Dims) (kernels map[NodeID]KernelDef, kernO
 	kernels = map[NodeID]KernelDef{}
 	biases = map[NodeID]int{}
 	known := map[string]bool{}
-	for _, k := range KERNEL_MIX {
+	for _, k := range KERNELS_ALL {
 		known[k] = true
 	}
 	checkAll := func(ln int) error {
@@ -256,7 +256,7 @@ func RunCompiler(program string, layers, bx, by, groups int, seed int64) int {
 			t.Node.L, t.Node.X, t.Node.Y, len(t.Payload), gs)
 	}
 
-	if !RunOne(prog, nodes, dims, groups, 1) {
+	if _, ok := RunOne(prog, nodes, dims, groups, 1); !ok {
 		return 1
 	}
 	return 0

@@ -384,7 +384,9 @@ module fp64_alu (
     always @(*) begin
         div_result = FP64_ZERO;
         if (div_a_nan || div_b_nan || (div_a_inf && div_b_inf) ||
-            (div_a_zero && div_b_zero) || (div_a_inf && div_b_zero)) begin
+            (div_a_zero && div_b_zero)) begin
+            // NaN only for NaN, Inf/Inf, 0/0 (IEEE 754);
+            // Inf/0 falls through to the +-Inf branch below.
             div_result = FP64_NAN;
         end else if (div_a_den || div_b_den) begin
             // Denormal input flushed to zero: a_den -> a=0 -> +-0;

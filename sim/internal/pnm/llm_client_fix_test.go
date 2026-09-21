@@ -1,9 +1,11 @@
 package pnm
 
 import (
+	"fmt"
 	"math"
 	"os"
 	"path/filepath"
+	"regexp"
 	"testing"
 )
 
@@ -61,9 +63,9 @@ func TestSampleFromLogits_NegativeTempGreedy(t *testing.T) {
 // dropped finished requests from the batch before result collection, so the
 // final traversal ran over an empty batch and every results entry stayed nil.
 func TestGenerateWithBatching_ResultsRetained(t *testing.T) {
-	modelDir := filepath.Join(SimDir(), "examples", "gemma4_test")
+	modelDir := filepath.Join(SimDir(), "examples", "gemma4_test_synthetic")
 	if _, err := os.Stat(filepath.Join(modelDir, "config.json")); err != nil {
-		t.Skip("gemma4_test model not found")
+		t.Skip("gemma4_test_synthetic model not found")
 	}
 	dims := Dims{Layers: 4, Bx: 4, By: 4}
 	client, err := NewLLMClient(LLMConfig{
@@ -185,16 +187,16 @@ func TestSampleFromLogits_MaskDoesNotMutateLock(t *testing.T) {
 // so TotalDispatches/MoEDispatches/KVStoreOps reflected only the generation
 // tokens and a longer prompt reported identical numbers to a shorter one.
 func TestR35PrefillStatsCollected(t *testing.T) {
-	modelDir := filepath.Join(SimDir(), "examples", "gemma4_test")
+	modelDir := filepath.Join(SimDir(), "examples", "gemma4_test_synthetic")
 	if _, err := os.Stat(filepath.Join(modelDir, "config.json")); err != nil {
-		t.Skip("gemma4_test model not found")
+		t.Skip("gemma4_test_synthetic model not found")
 	}
 	run := func(prompt string) *InferenceStats {
 		client, err := NewLLMClient(LLMConfig{
-			ModelDir: modelDir,
-			Dims:     Dims{Layers: 4, Bx: 4, By: 4},
+			ModelDir:  modelDir,
+			Dims:      Dims{Layers: 4, Bx: 4, By: 4},
 			MaxTokens: 1,
-			DataType: CUTypeBF16FMA,
+			DataType:  CUTypeBF16FMA,
 		})
 		if err != nil {
 			t.Fatalf("NewLLMClient: %v", err)
@@ -212,5 +214,87 @@ func TestR35PrefillStatsCollected(t *testing.T) {
 	}
 	if long.PrefillTokens != 3 {
 		t.Errorf("PrefillTokens=%d want 3", long.PrefillTokens)
+	}
+}
+
+// TestStructuredFSM_TokenMaskReachability pins the whole-token reachability
+// fix for TokenMask: a mask built from a mid-pattern state must never admit a
+// token that leaves the FSM in a state from which no vocabulary token can
+// complete the pattern. On the synthetic token_N vocabulary the 4-digit serial
+// pattern [t][o][k][e][n]_[0-9][0-9][0-9][0-9] used to admit token_444 (the
+// walk lands one digit short of accepting with no token able to supply the
+// last digit), soft-terminating structured generation one class early with a
+// non-conforming output.
+func TestStructuredFSM_TokenMaskReachability(t *testing.T) {
+	tokens := make([]string, 10000)
+	for i := range tokens {
+		tokens[i] = fmt.Sprintf("token_%d", i)
+	}
+	vocab := NewVocabulary(tokens, nil)
+	fsm, err := CompileStructuredFSM("[t][o][k][e][n]_[0-9][0-9][0-9][0-9]")
+	if err != nil {
+		t.Fatalf("CompileStructuredFSM: %v", err)
+	}
+	mask := fsm.TokenMask(vocab)
+	if mask == nil {
+		t.Fatal("TokenMask returned nil for an incomplete FSM")
+	}
+	// From the start state every admitted token must either complete the
+	// pattern or land on a completable state. Concretely, 3-digit tokens
+	// like token_444 (consumes t,o,k,e,n,_,4,4,4 -- one digit short of
+	// accepting) must NOT be admitted; a full 4-digit token is a valid
+	// completion.
+	for id, ok := range mask {
+		if !ok {
+			continue
+		}
+		tok := vocab.IDToToken[id]
+		end, oc := fsm.walkFrom(fsm.Current, tok)
+		if oc != walkComplete && !fsm.compStates[end] {
+			t.Errorf("mask admits %q which dead-ends the pattern (end=%d)", tok, end)
+		}
+	}
+	if !mask[1234] {
+		t.Error("token_1234 (a full 4-digit completion) should be admitted from the start state")
+	}
+	if mask[444] {
+		t.Error("token_444 (3 digits, one short of accepting, no token can continue) must not be admitted")
+	}
+}
+
+// TestStructuredFSM_MaskedGenerationConforms drives GenerateStructured on a
+// small client fixture and checks the generated output conforms to the
+// pattern: every generated token matches token_[0-9]{4} (or the mask
+// degenerated, which the test forbids here because a 4-digit-completable
+// vocabulary exists).
+func TestStructuredFSM_MaskedGenerationConforms(t *testing.T) {
+	dir, err := filepath.Abs(filepath.Join(SimDir(), "examples", "mini_glm_moe"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := NewLLMClient(LLMConfig{
+		ModelDir:  dir,
+		Dims:      Dims{Layers: 1, Bx: 2, By: 2},
+		MaxTokens: 8,
+	})
+	if err != nil {
+		t.Fatalf("NewLLMClient: %v", err)
+	}
+	ids, err := client.GenerateStructured("issue a four digit token id", "[t][o][k][e][n]_[0-9][0-9][0-9][0-9]")
+	if err != nil {
+		t.Fatalf("GenerateStructured: %v", err)
+	}
+	if len(ids) == 0 {
+		t.Fatal("GenerateStructured produced no tokens")
+	}
+	re := regexp.MustCompile(`^token_[0-9]{4}$`)
+	for _, id := range ids {
+		tok, ok := client.Vocab.IDToToken[id]
+		if !ok {
+			t.Fatalf("unknown token id %d", id)
+		}
+		if !re.MatchString(tok) {
+			t.Errorf("structured output %q does not match token_[0-9]{4}", tok)
+		}
 	}
 }

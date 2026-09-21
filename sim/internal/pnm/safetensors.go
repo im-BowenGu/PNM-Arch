@@ -1,6 +1,7 @@
 package pnm
 
 import (
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -31,6 +32,7 @@ type ModelConfig struct {
 		NumHiddenLayers     int      `json:"num_hidden_layers"`
 		NumAttentionHeads   int      `json:"num_attention_heads"`
 		NumKeyValueHeads    int     `json:"num_key_value_heads"`
+		NumGlobalKVHeads    int     `json:"num_global_key_value_heads"`
 		VocabSize           int      `json:"vocab_size"`
 		NumExperts          int     `json:"num_experts"`
 		TopKExperts         int     `json:"top_k_experts"`
@@ -150,6 +152,172 @@ func LoadSafetensorsIndex(dir string) (*SafetensorsIndex, error) {
 		return nil, fmt.Errorf("parsing index: %w", err)
 	}
 	return &idx, nil
+}
+
+// safetensorsFileHeader is the parsed header block of one .safetensors shard:
+// the JSON metadata plus the byte offsets of every tensor in that shard.
+type safetensorsFileHeader struct {
+	Metadata map[string]string                      `json:"__metadata__"`
+	Tensors  map[string]safetensorsTensorDescriptor `json:"-"`
+}
+
+// safetensorsTensorDescriptor gives the location and shape of one tensor
+// within its shard (offset/size are in absolute file bytes).
+type safetensorsTensorDescriptor struct {
+	ShardFile string  `json:"-"`
+	Offset    int64   `json:"-"`
+	Size      int64   `json:"-"`
+	DType     string  `json:"dtype"`
+	Shape     []int64 `json:"shape"`
+}
+
+// ParseSafetensorsHeaders scans every shard referenced by the index and
+// returns a tensor-descriptor catalog with per-tensor byte offsets.  This
+// is what lets the co-sim pull REAL weight bytes out of a downloaded
+// checkpoint instead of synthesizing them.
+func ParseSafetensorsHeaders(dir string, idx *SafetensorsIndex) (map[string]*safetensorsTensorDescriptor, error) {
+	// Collect the distinct shard files the index references.
+	shards := map[string]bool{}
+	for _, shard := range idx.WeightMap {
+		shards[shard] = true
+	}
+
+	desc := map[string]*safetensorsTensorDescriptor{}
+	var anyErr error
+	for shard := range shards {
+		path := filepath.Join(dir, shard)
+		f, err := os.Open(path)
+		if err != nil {
+			anyErr = err
+			continue // shard missing; caller decides (synthetic fallback)
+		}
+		func() {
+			defer f.Close()
+			hdr, err := readSafetensorsHeader(f)
+			if err != nil {
+				anyErr = err
+				return
+			}
+			for name, spec := range hdr.Tensors {
+				if want, ok := idx.WeightMap[name]; ok && want == shard {
+					desc[name] = &safetensorsTensorDescriptor{
+										ShardFile: shard,
+										Offset:    spec.Offset,
+										Size:      spec.Size,
+										DType:     spec.DType,
+										Shape:     spec.Shape,
+									}
+				}
+			}
+		}()
+	}
+	return desc, anyErr
+}
+
+// readSafetensorsHeader parses the 8-byte length-prefixed JSON header at the
+// start of a .safetensors shard, returning tensor name -> {offset, size, dtype, shape}.
+func readSafetensorsHeader(f *os.File) (*safetensorsFileHeader, error) {
+	var lenBuf [8]byte
+	if _, err := f.ReadAt(lenBuf[:], 0); err != nil {
+		return nil, fmt.Errorf("reading shard header length: %w", err)
+	}
+	hdrLen := int64(binary.LittleEndian.Uint64(lenBuf[:]))
+	if hdrLen <= 0 || hdrLen > 64<<20 {
+		return nil, fmt.Errorf("implausible safetensors header length %d", hdrLen)
+	}
+	hdrJSON := make([]byte, hdrLen)
+	if _, err := f.ReadAt(hdrJSON, 8); err != nil {
+		return nil, fmt.Errorf("reading shard header: %w", err)
+	}
+	// data_offsets is per-tensor; decode raw so offsets stay exact.
+	var rawT map[string]json.RawMessage
+	if err := json.Unmarshal(hdrJSON, &rawT); err != nil {
+		return nil, fmt.Errorf("parsing shard header JSON: %w", err)
+	}
+	hdr := &safetensorsFileHeader{
+		Tensors: map[string]safetensorsTensorDescriptor{},
+	}
+	for name, rawSpec := range rawT {
+		if name == "__metadata__" {
+			continue
+		}
+		var spec struct {
+			DType       string  `json:"dtype"`
+			Shape       []int64 `json:"shape"`
+			DataOffsets []int64 `json:"data_offsets"`
+		}
+		if err := json.Unmarshal(rawSpec, &spec); err != nil {
+			continue
+		}
+		off := int64(0)
+		if len(spec.DataOffsets) > 0 {
+			off = spec.DataOffsets[0]
+		}
+		sz := int64(0)
+		if len(spec.DataOffsets) > 1 {
+			sz = spec.DataOffsets[1] - spec.DataOffsets[0]
+		}
+		hdr.Tensors[name] = safetensorsTensorDescriptor{
+			Offset: 8 + hdrLen + off,
+			Size:   sz,
+			DType:  spec.DType,
+			Shape:  spec.Shape,
+		}
+	}
+	return hdr, nil
+}
+
+// ReadRealTensorBytes loads one tensor's raw bytes from its shard, following
+// the descriptor catalog produced by ParseSafetensorsHeaders.
+func ReadRealTensorBytes(dir string, desc *safetensorsTensorDescriptor) []byte {
+	if desc == nil || desc.ShardFile == "" {
+		return nil
+	}
+	path := filepath.Join(dir, desc.ShardFile)
+	f, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	buf := make([]byte, desc.Size)
+	if _, err := f.ReadAt(buf, desc.Offset); err != nil {
+		return nil
+	}
+	return buf
+}
+
+// ReadRealTensorRowRange reads only rows [r0, r1) of a [rows, cols] BF16
+// tensor straight from the shard file (avoids materializing huge multi-GB
+// expert matrices when only the top-k are dispatched).
+func ReadRealTensorRowRange(dir string, desc *safetensorsTensorDescriptor, rows, cols, r0, r1 int) []byte {
+	if desc == nil || desc.ShardFile == "" || r1 <= r0 {
+		return nil
+	}
+	path := filepath.Join(dir, desc.ShardFile)
+	f, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	n := (r1 - r0) * cols
+	buf := make([]byte, n*2)
+	start := desc.Offset + int64(r0)*int64(cols)*2
+	if _, err := f.ReadAt(buf, start); err != nil {
+		return nil
+	}
+	return buf
+}
+
+// numElements returns the product of a tensor shape (0 for degenerate).
+func numElements(shape []int64) int64 {
+	n := int64(1)
+	for _, d := range shape {
+		if d <= 0 {
+			return 0
+		}
+		n *= d
+	}
+	return n
 }
 
 // LoadModelConfig reads and parses config.json from a directory.

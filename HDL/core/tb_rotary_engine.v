@@ -61,6 +61,39 @@ module tb_rotary_engine;
         end
     endtask
 
+    // Rotation check for a NON-identity LUT entry: drives qe=1.0, qo=0.5
+    // (k same) and asserts the rotated even/odd outputs equal eexp/oexp.
+    task check_rot;
+        input [7:0] pos;
+        input [15:0] eexp, oexp;
+        input [8*20-1:0] msg;
+        begin
+            @(posedge clk);
+            position = pos;
+            q_even_in = 16'h3F80; q_odd_in = 16'h3F00;   // 1.0, 0.5
+            k_even_in = 16'h3F80; k_odd_in = 16'h3F00;
+            valid_in = 1;
+            @(posedge clk);
+            valid_in = 0;
+            repeat(8) begin
+                @(posedge clk);
+                if (valid_out) begin
+                    if (q_even_out !== eexp || q_odd_out !== oexp ||
+                        k_even_out !== eexp || k_odd_out !== oexp) begin
+                        $display("FAIL [%0s]: q=(%04x,%04x) k=(%04x,%04x) exp (%04x,%04x)",
+                            msg, q_even_out, q_odd_out, k_even_out, k_odd_out, eexp, oexp);
+                        errors = errors + 1;
+                    end else begin
+                        $display("PASS [%0s]: pos=%0d q=(%04x,%04x)", msg, pos, q_even_out, q_odd_out);
+                    end
+                    disable check_rot;
+                end
+            end
+            $display("FAIL [%0s]: valid_out not asserted within 8 cycles", msg);
+            errors = errors + 1;
+        end
+    endtask
+
     initial begin
         $dumpfile("tb_rotary_engine.vcd");
         $dumpvars(0, tb_rotary_engine);
@@ -97,6 +130,16 @@ module tb_rotary_engine;
         $display("--- Test 5: Back-to-back ---");
         send_and_check(8'd0, 16'h0000, 16'h0000, 16'h0000, 16'h0000, "zero");
         send_and_check(8'd1, 16'h3F80, 16'h3F80, 16'h3F80, 16'h3F80, "ones");
+
+        // Test 6: Real non-identity rotation (exercises bf16_mul + bf16_addsub).
+        // Poke position 200's LUT entry to cos=2.0 (0x4000), sin=2.0 (0x4000), then
+        // rotate qe=1.0, qo=0.5: qe'=1.0*2 - 0.5*2 = 1.0 (0x3F80),
+        // qo'=1.0*2 + 0.5*2 = 3.0 (0x4040). The CRITICAL #4 bugs (cos no-op and
+        // XOR-instead-of-add/sub combine) both corrupt this result.
+        $display("--- Test 6: Non-identity rotation ---");
+        uut.cos_lut[200] = 16'h4000;   // 2.0
+        uut.sin_lut[200] = 16'h4000;   // 2.0
+        check_rot(8'd200, 16'h3F80, 16'h4040, "rot(cos=2,sin=2)");
 
         $display("");
         if (errors == 0)

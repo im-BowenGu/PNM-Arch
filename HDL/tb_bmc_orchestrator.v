@@ -131,6 +131,17 @@ module tb_bmc_orchestrator;
     integer errors;
     reg [7:0] captured_uart;
 
+    // UART TX byte decoder (validates actual transmitted bytes, not just toggling)
+    localparam UART_BITW   = 10;     // 100 kHz / 9600 baud -> 10 clocks per bit
+    localparam UART_NBYTES = 1;      // validate the first banner byte (HIGH #25 regression)
+    reg [15:0]         uart_cyc;
+    reg [3:0]          uart_biti;
+    reg [7:0]          uart_data;
+    reg                uart_in_frame;
+    integer            uart_nframes;
+    integer            uart_errors;
+    reg [7:0]          uart_expect[0:UART_NBYTES-1];
+
     initial begin
         // Initialize signals
         rst_n = 1'b0;
@@ -144,6 +155,14 @@ module tb_bmc_orchestrator;
         spine_extract_vc = 2'b00;
         errors = 0;
         captured_uart = 8'h0;
+        uart_cyc = 0; uart_biti = 0; uart_data = 0; uart_in_frame = 0;
+        uart_nframes = 0; uart_errors = 0;
+        // Expected transmitted banner bytes.  Only the first ('H') is validated
+        // deterministically: the simplified UART holds one pending byte (no TX
+        // FIFO), so later bytes written back-to-back without LSR[5] flow control
+        // are legitimately overwritten.  Validating the first byte is exactly the
+        // regression test for the "first byte written to THR lost" bug.
+        uart_expect[0] = 8'h48;
 
         // Load test program into ROM
         // Address 0x00: LUI  x1, 0x10000    (UART base)
@@ -192,8 +211,8 @@ module tb_bmc_orchestrator;
         wait (boot_done === 1'b1);
         $display("[TB] boot_done asserted");
 
-        // Wait for UART transmission
-        #50000;
+        // Wait for UART transmission (banner is 4 bytes; allow several frames)
+        #500000;
 
         // Check PNM dispatch counter
         if (u_dut.route_dispatches != 0)
@@ -201,9 +220,15 @@ module tb_bmc_orchestrator;
         else
             $display("[TB] PNM dispatches = 0 (expected for short test)");
 
-        // Verify UART output by checking tx line
-        // The test wrote 'H' (0x48) to UART
-        $display("[TB] UART TX was toggled (check VCD for waveform)");
+        // Validate transmitted UART bytes were decoded correctly by the receiver
+        if (uart_nframes < 1) begin
+            $display("[TB] UART ERROR: no TX frame received");
+            errors = errors + 1;
+        end
+        if (uart_errors != 0) begin
+            $display("[TB] UART byte mismatch errors = %0d", uart_errors);
+            errors = errors + uart_errors;
+        end
 
         // Summary
         $display("");
@@ -220,6 +245,72 @@ module tb_bmc_orchestrator;
         #2000000;
         $display("[TB] TIMEOUT — test did not complete in time");
         $finish;
+    end
+
+    // UART TX byte decoder: frames start+8N1+stop and validates transmitted bytes.
+    // This detects lost/stale first-byte bugs (e.g. THR write racing the TX start)
+    // that a simple "TX toggled" check cannot see.  Sampling is aligned to the
+    // falling edge of each start bit so back-to-back frames decode correctly.
+    reg uart_tx_d;
+    always @(posedge clk)
+        uart_tx_d <= uart_tx;
+
+    always @(posedge clk) begin
+        if (!uart_in_frame) begin
+            if (uart_tx_d && !uart_tx) begin   // falling edge = start bit
+                uart_in_frame <= 1'b1;
+                uart_cyc <= 0;
+                uart_biti <= 0;
+                uart_data <= 8'h0;
+            end
+        end else begin
+            uart_cyc <= uart_cyc + 1;
+            // Sample at the middle of each bit; bit period = UART_BITW clocks.
+            case (uart_biti)
+                0: if (uart_cyc == (UART_BITW >> 1)) uart_biti <= 1;            // start mid
+                1: if (uart_cyc == UART_BITW + (UART_BITW >> 1)) begin
+                       uart_data[0] <= uart_tx; uart_biti <= 2;
+                   end
+                2: if (uart_cyc == 2*UART_BITW + (UART_BITW >> 1)) begin
+                       uart_data[1] <= uart_tx; uart_biti <= 3;
+                   end
+                3: if (uart_cyc == 3*UART_BITW + (UART_BITW >> 1)) begin
+                       uart_data[2] <= uart_tx; uart_biti <= 4;
+                   end
+                4: if (uart_cyc == 4*UART_BITW + (UART_BITW >> 1)) begin
+                       uart_data[3] <= uart_tx; uart_biti <= 5;
+                   end
+                5: if (uart_cyc == 5*UART_BITW + (UART_BITW >> 1)) begin
+                       uart_data[4] <= uart_tx; uart_biti <= 6;
+                   end
+                6: if (uart_cyc == 6*UART_BITW + (UART_BITW >> 1)) begin
+                       uart_data[5] <= uart_tx; uart_biti <= 7;
+                   end
+                7: if (uart_cyc == 7*UART_BITW + (UART_BITW >> 1)) begin
+                       uart_data[6] <= uart_tx; uart_biti <= 8;
+                   end
+                8: if (uart_cyc == 8*UART_BITW + (UART_BITW >> 1)) begin
+                       uart_data[7] <= uart_tx; uart_biti <= 9;
+                   end
+                9: if (uart_cyc == 9*UART_BITW + (UART_BITW >> 1)) begin
+                       // stop bit should be high
+                       if (uart_tx != 1'b1) begin
+                           $display("[TB] UART stop bit error for byte %02x", uart_data);
+                           uart_errors = uart_errors + 1;
+                       end
+                       uart_nframes = uart_nframes + 1;
+                       if (uart_nframes <= UART_NBYTES &&
+                           uart_data != uart_expect[uart_nframes-1]) begin
+                           $display("[TB] UART byte %0d: expected %02x got %02x",
+                                    uart_nframes, uart_expect[uart_nframes-1], uart_data);
+                           uart_errors = uart_errors + 1;
+                       end
+                       uart_in_frame <= 1'b0;
+                       uart_biti <= 0;
+                       uart_cyc <= 0;
+                   end
+            endcase
+        end
     end
 
 endmodule

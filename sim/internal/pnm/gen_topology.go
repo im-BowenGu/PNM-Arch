@@ -220,6 +220,8 @@ func GenTopology(layerIDs []int, bx, by int, biases map[NodeID]int, kvcache bool
 		for x := 0; x < bx; x++ {
 			a(fmt.Sprintf("    wire [7:0] t_%d_%d_data; wire t_%d_%d_valid, t_%d_%d_sop, t_%d_%d_eop, t_%d_%d_ready; wire [1:0] t_%d_%d_vc;", l, x, l, x, l, x, l, x, l, x, l, x))
 			a(fmt.Sprintf("    wire [7:0] h_%d_%d_data; wire h_%d_%d_valid, h_%d_%d_sop, h_%d_%d_eop, h_%d_%d_ready; wire [1:0] h_%d_%d_vc;", l, x, l, x, l, x, l, x, l, x, l, x))
+			// Y-lane residual tail VC sink (must stay empty)
+			a(fmt.Sprintf("    wire [1:0] yres_%d_%d_vc;", l, x))
 			if kvcache {
 				a(fmt.Sprintf("    wire [7:0] kvc_%d_%d_data; wire kvc_%d_%d_valid, kvc_%d_%d_sop, kvc_%d_%d_eop, kvc_%d_%d_ready; wire [1:0] kvc_%d_%d_vc;", l, x, l, x, l, x, l, x, l, x, l, x))
 			}
@@ -307,8 +309,10 @@ func GenTopology(layerIDs []int, bx, by int, biases map[NodeID]int, kvcache bool
 			for y := 0; y < by; y++ {
 				mid := (x << 4) | y
 				yout := fmt.Sprintf("y_%d_%d_%d", l, x, y+1)
+				yout_vc := fmt.Sprintf("y_%d_%d_%d_vc", l, x, y+1)
 				if y == by-1 {
 					yout = fmt.Sprintf("yres_%d_%d", l, x)
+					yout_vc = fmt.Sprintf("yres_%d_%d_vc", l, x)
 				}
 				a(fmt.Sprintf("    // -- node (%d,%d,%d) eject: MODULE_ID 0x%02x --------", l, x, y, mid))
 				a(fmt.Sprintf("    node_eject #(.LOCAL_MODULE(8'h%02x)) u_%d_%d_%d (", mid, l, x, y))
@@ -318,7 +322,7 @@ func GenTopology(layerIDs []int, bx, by int, biases map[NodeID]int, kvcache bool
 				a(fmt.Sprintf("        .yin_vc(y_%d_%d_%d_vc),", l, x, y))
 				a(fmt.Sprintf("        .yout_data(%s_data), .yout_valid(%s_valid), .yout_sop(%s_sop),", yout, yout, yout))
 				a(fmt.Sprintf("        .yout_eop(%s_eop), .yout_ready(%s_ready),", yout, yout))
-				a(fmt.Sprintf("        .yout_vc(y_%d_%d_%d_vc),", l, x, y+1))
+				a(fmt.Sprintf("        .yout_vc(%s),", yout_vc))
 				a(fmt.Sprintf("        .node_data(node_e_%d_%d_%d_data), .node_valid(node_e_%d_%d_%d_valid), .node_sop(node_e_%d_%d_%d_sop),", l, x, y, l, x, y, l, x, y))
 				a(fmt.Sprintf("        .node_eop(node_e_%d_%d_%d_eop), .node_ready(node_e_%d_%d_%d_ready),", l, x, y, l, x, y))
 				a(fmt.Sprintf("        .node_vc(node_vc_%d_%d_%d)", l, x, y))

@@ -1,6 +1,7 @@
 package pnm
 
 import (
+	"math"
 	"testing"
 )
 
@@ -220,13 +221,110 @@ func TestNewVirtualUnit_AllKernels(t *testing.T) {
 	}
 }
 
-func TestNewVirtualUnit_UnknownKernel(t *testing.T) {
-	defer func() {
-		if r := recover(); r == nil {
-			t.Error("expected panic for unknown kernel")
+func TestNewVirtualUnit_AllKernelsFP64(t *testing.T) {
+	for _, name := range KERNELS_ALL {
+		u := NewVirtualUnit(NodeID{}, name, nil)
+		if u.Kernel == nil {
+			t.Errorf("kernel %q returned nil func", name)
 		}
-	}()
-	NewVirtualUnit(NodeID{}, "nonexistent", nil)
+	}
+}
+
+// ============================================================================
+// FP64 kernel tests (f64_sub / f64_div / f64_min / f64_max / f64_neg / f64_cmp)
+// ============================================================================
+
+func TestKF64Sub(t *testing.T) {
+	pkt := &Pkt{Payload: append(fp64ToBytes(5.5), fp64ToBytes(2.25)...)}
+	res := kF64Sub(pkt, nil).([]byte)
+	if got := bytesToFP64(res); got != 3.25 {
+		t.Errorf("kF64Sub(5.5, 2.25) = %v, want 3.25", got)
+	}
+}
+
+func TestKF64Div(t *testing.T) {
+	pkt := &Pkt{Payload: append(fp64ToBytes(7.5), fp64ToBytes(2.5)...)}
+	res := kF64Div(pkt, nil).([]byte)
+	if got := bytesToFP64(res); got != 3.0 {
+		t.Errorf("kF64Div(7.5, 2.5) = %v, want 3.0", got)
+	}
+}
+
+func TestKF64MinMax(t *testing.T) {
+	pkt := &Pkt{Payload: append(fp64ToBytes(-4.0), fp64ToBytes(2.0)...)}
+	if got := bytesToFP64(kF64Min(pkt, nil).([]byte)); got != -4.0 {
+		t.Errorf("kF64Min(-4, 2) = %v, want -4", got)
+	}
+	if got := bytesToFP64(kF64Max(pkt, nil).([]byte)); got != 2.0 {
+		t.Errorf("kF64Max(-4, 2) = %v, want 2", got)
+	}
+}
+
+func TestKF64Neg(t *testing.T) {
+	pkt := &Pkt{Payload: fp64ToBytes(1.25)}
+	if got := bytesToFP64(kF64Neg(pkt, nil).([]byte)); got != -1.25 {
+		t.Errorf("kF64Neg(1.25) = %v, want -1.25", got)
+	}
+}
+
+func TestKF64Cmp(t *testing.T) {
+	mk := func(a, b float64, op string) *Pkt {
+		return &Pkt{Payload: append(append(fp64ToBytes(a), fp64ToBytes(b)...), []byte(op)...)}
+	}
+	cases := []struct {
+		a, b float64
+		op   string
+		want float64
+	}{
+		{2.0, 3.0, "==", 0},
+		{2.0, 2.0, "==", 1},
+		{2.0, 2.0, "!=", 0},
+		{2.0, 3.0, "!=", 1},
+		{2.0, 3.0, "<", 1},
+		{2.0, 3.0, ">", 0},
+		{2.0, 3.0, "<=", 1},
+		{2.0, 3.0, ">=", 0},
+		{2.0, 2.0, ">=", 1},
+		{2.0, 3.0, "/=", 1},
+	}
+	for _, c := range cases {
+		res := bytesToFP64(kF64Cmp(mk(c.a, c.b, c.op), nil).([]byte))
+		if res != c.want {
+			t.Errorf("kF64Cmp(%v %s %v) = %v, want %v", c.a, c.op, c.b, res, c.want)
+		}
+	}
+	// NaN: every ordered comparison is false (IEEE 754 unordered)
+	nan := fp64ToBytes(math.NaN())
+	nn := &Pkt{Payload: append(append(nan, fp64ToBytes(1.0)...), []byte("<")...)}
+	if res := bytesToFP64(kF64Cmp(nn, nil).([]byte)); res != 0 {
+		t.Errorf("kF64Cmp(NaN < 1) = %v, want 0 (unordered)", res)
+	}
+}
+
+func TestKF64ShortPayloads(t *testing.T) {
+	if res := kF64Sub(&Pkt{Payload: []byte{1}}, nil).([]byte); bytesToFP64(res) != 0 {
+		t.Error("short sub payload should yield 0.0")
+	}
+	if res := kF64Div(&Pkt{Payload: nil}, nil).([]byte); bytesToFP64(res) != 0 {
+		t.Error("nil div payload should yield 0.0")
+	}
+	if res := kF64Neg(&Pkt{Payload: []byte{1, 2, 3}}, nil).([]byte); bytesToFP64(res) != 0 {
+		t.Error("short neg payload should yield 0.0")
+	}
+	if res := kF64Cmp(&Pkt{Payload: []byte{1}}, nil).([]byte); bytesToFP64(res) != 0 {
+		t.Error("short cmp payload should yield 0.0")
+	}
+}
+
+func TestNewVirtualUnit_UnknownKernel(t *testing.T) {
+	// Unknown kernel should fall back to echo (passthrough), not panic
+	unit := NewVirtualUnit(NodeID{}, "nonexistent", nil)
+	if unit.Kernel == nil {
+		t.Error("expected echo fallback for unknown kernel, got nil kernel")
+	}
+	if unit.KernelName != "nonexistent" {
+		t.Errorf("expected KernelName 'nonexistent', got %q", unit.KernelName)
+	}
 }
 
 // ============================================================================

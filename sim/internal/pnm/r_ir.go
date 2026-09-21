@@ -130,7 +130,6 @@ func (p *FP64Program) Emit() string {
 
 var (
 	rAssignRe  = regexp.MustCompile(`^\s*(\w+)\s*<-\s*(.+)\s*$`)
-	rExprRe    = regexp.MustCompile(`^\s*(.+?)\s*([+\-*/])\s*(.+)\s*$`)
 	rFuncRe    = regexp.MustCompile(`^\s*(\w+)\s*\((.+)\)\s*$`)
 	rNumRe     = regexp.MustCompile(`^\s*(-?\d+\.?\d*(?:[eE][+-]?\d+)?)\s*$`)
 	rVarRe     = regexp.MustCompile(`^\s*(\w+)\s*$`)
@@ -143,7 +142,13 @@ func CompileR(src string) (*FP64Program, error) {
 	lines := strings.Split(src, "\n")
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
+		// R comments: a '#' starts a comment running to end of line.  The
+		// expression subset never embeds '#' inside a string literal, so
+		// stripping at the first '#' is safe.
+		if idx := strings.IndexByte(line, '#'); idx >= 0 {
+			line = strings.TrimSpace(line[:idx])
+		}
+		if line == "" {
 			continue
 		}
 		if err := compileRLine(prog, line); err != nil {
@@ -166,20 +171,66 @@ func compileRLine(p *FP64Program, line string) error {
 
 func compileRAssign(p *FP64Program, varName, expr string) error {
 	dest := p.getOrCreateReg(varName)
+	return compileRExprTo(p, dest, expr)
+}
+
+// stripOuterParens removes a balanced pair of outer parentheses, if the whole
+// string is enclosed in exactly one pair.  "(b + c)" -> "b + c"; it leaves
+// "((b + c)) + d" untouched (the outer parens do not enclose the full string).
+func stripOuterParens(s string) string {
+	s = strings.TrimSpace(s)
+	if len(s) < 2 || s[0] != '(' || s[len(s)-1] != ')' {
+		return s
+	}
+	depth := 0
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 && i != len(s)-1 {
+				return s // closes before the end -> not a full enclosure
+			}
+		}
+	}
+	// depth reached 0 exactly at the final ')': fully enclosed.
+	return strings.TrimSpace(s[1 : len(s)-1])
+}
+
+// compileRExprTo compiles an R expression into the given destination register.
+// It is also used recursively by resolveRAtom so that a compound operand
+// (e.g. "a - b" in "x <- a - b - c") is fully lowered instead of being
+// treated as a bare variable name.
+func compileRExprTo(p *FP64Program, dest, expr string) error {
+	// Strip an enclosing pair of parentheses, e.g. "(b + c)".
+	expr = stripOuterParens(expr)
 
 	// Comparison: a == b, a < b, etc.
 	if m := rCompareRe.FindStringSubmatch(expr); m != nil {
-		lhs := resolveRAtom(p, strings.TrimSpace(m[1]))
-		rhs := resolveRAtom(p, strings.TrimSpace(m[3]))
+		lhs, err := resolveRAtom(p, strings.TrimSpace(m[1]))
+		if err != nil {
+			return err
+		}
+		rhs, err := resolveRAtom(p, strings.TrimSpace(m[3]))
+		if err != nil {
+			return err
+		}
 		p.Regs = append(p.Regs, FP64IR{Op: FP64Cmp, Dest: dest, Src: []string{lhs, rhs}, Cond: m[2]})
 		return nil
 	}
 
-	// Binary arithmetic: a op b
-	if m := rExprRe.FindStringSubmatch(expr); m != nil {
-		lhs := resolveRAtom(p, strings.TrimSpace(m[1]))
-		rhs := resolveRAtom(p, strings.TrimSpace(m[3]))
-		op := rArithOp(m[2])
+	// Binary arithmetic: a op b, with parentheses and precedence respected.
+	if opCh, lhsS, rhsS, ok := splitArith(expr); ok {
+		lhs, err := resolveRAtom(p, lhsS)
+		if err != nil {
+			return err
+		}
+		rhs, err := resolveRAtom(p, rhsS)
+		if err != nil {
+			return err
+		}
+		op := rArithOp(string(opCh))
 		if op == FP64Neg {
 			// subtraction: negate RHS, then add
 			negRHS := p.allocReg()
@@ -213,15 +264,37 @@ func compileRAssign(p *FP64Program, varName, expr string) error {
 	return fmt.Errorf("unsupported R expression: %s", expr)
 }
 
-func resolveRAtom(p *FP64Program, s string) string {
+func resolveRAtom(p *FP64Program, s string) (string, error) {
+	s = stripOuterParens(s)
 	s = strings.TrimSpace(s)
+	if s == "" {
+		return p.getOrCreateReg("_"), nil
+	}
 	if rNumRe.MatchString(s) {
 		r := p.allocReg()
 		val, _ := strconv.ParseFloat(s, 64)
 		p.Regs = append(p.Regs, FP64IR{Op: FP64Const, Dest: r, Imm: val})
-		return r
+		return r, nil
 	}
-	return p.getOrCreateReg(s)
+	if rVarRe.MatchString(s) {
+		return p.getOrCreateReg(s), nil
+	}
+	// Unary minus on a bare non-numeric operand (e.g. "-b" or "-a") is not
+	// supported by the R frontend.  Rather than silently creating a bogus
+	// "-b" variable register that is never written (which produces broken IR
+	// and a dataflow error at runtime), report a clean compile error.
+	// A leading negative on a numeric/compound operand (e.g. "-3.5 * 0.5")
+	// is still valid and handled by the recursion below.
+	if strings.HasPrefix(s, "-") && rVarRe.MatchString(strings.TrimPrefix(s, "-")) {
+		return "", fmt.Errorf("unsupported R expression: unary minus on a variable (%s)", s)
+	}
+	// Composite operand (e.g. "a - b"): compile recursively into a fresh temp
+	// register.  If it cannot be lowered, fall back to a register reference.
+	r := p.allocReg()
+	if err := compileRExprTo(p, r, s); err != nil {
+		return p.getOrCreateReg(s), nil
+	}
+	return r, nil
 }
 
 func rArithOp(op string) FP64Op {
@@ -250,13 +323,19 @@ func compileRCall(p *FP64Program, dest, funcName, args string) error {
 		return nil // vector literal, skip
 	case "sqrt":
 		if len(argList) == 1 {
-			src := resolveRAtom(p, argList[0])
+			src, err := resolveRAtom(p, argList[0])
+			if err != nil {
+				return err
+			}
 			emitFP64Sqrt(p, dest, src)
 			return nil
 		}
 	case "abs":
 		if len(argList) == 1 {
-			src := resolveRAtom(p, argList[0])
+			src, err := resolveRAtom(p, argList[0])
+			if err != nil {
+				return err
+			}
 			emitFP64Abs(p, dest, src)
 			return nil
 		}
@@ -346,7 +425,10 @@ func compileRAgg(p *FP64Program, dest, op string, args []string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("empty argument list for %s", op)
 	}
-	src := resolveRAtom(p, args[0])
+	src, err := resolveRAtom(p, args[0])
+	if err != nil {
+		return err
+	}
 	switch op {
 	case "sum", "prod":
 		acc := p.allocReg()
@@ -360,7 +442,10 @@ func compileRAgg(p *FP64Program, dest, op string, args []string) error {
 			binOp = FP64Mul
 		}
 		for _, a := range args {
-			v := resolveRAtom(p, a)
+			v, err := resolveRAtom(p, a)
+			if err != nil {
+				return err
+			}
 			p.Regs = append(p.Regs, FP64IR{Op: binOp, Dest: acc, Src: []string{acc, v}})
 		}
 		p.Regs = append(p.Regs, FP64IR{Op: FP64Mov, Dest: dest, Src: []string{acc}})
@@ -372,7 +457,10 @@ func compileRAgg(p *FP64Program, dest, op string, args []string) error {
 		acc := p.allocReg()
 		p.Regs = append(p.Regs, FP64IR{Op: FP64Mov, Dest: acc, Src: []string{src}})
 		for i := 1; i < len(args); i++ {
-			v := resolveRAtom(p, args[i])
+			v, err := resolveRAtom(p, args[i])
+			if err != nil {
+				return err
+			}
 			p.Regs = append(p.Regs, FP64IR{Op: aggOp, Dest: acc, Src: []string{acc, v}})
 		}
 		p.Regs = append(p.Regs, FP64IR{Op: FP64Mov, Dest: dest, Src: []string{acc}})
@@ -381,7 +469,10 @@ func compileRAgg(p *FP64Program, dest, op string, args []string) error {
 		sumReg := p.allocReg()
 		p.Regs = append(p.Regs, FP64IR{Op: FP64Const, Dest: sumReg, Imm: 0.0})
 		for _, a := range args {
-			v := resolveRAtom(p, a)
+			v, err := resolveRAtom(p, a)
+			if err != nil {
+				return err
+			}
 			p.Regs = append(p.Regs, FP64IR{Op: FP64Add, Dest: sumReg, Src: []string{sumReg, v}})
 		}
 		nReg := p.allocReg()

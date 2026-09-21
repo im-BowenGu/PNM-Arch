@@ -508,8 +508,8 @@ go run ./cmd/pnm --cpuprofile /tmp/pnm.cpu --memprofile /tmp/pnm.mem
 
 ```bash
 go run ./cmd/pnmc examples/bias_add.pnm -l 8 -x 8 -y 8   # compile + run a program
-go run ./cmd/pnmc compile-model examples/gemma4_test -l 4 -x 4 -y 4   # model compiler
-go run ./cmd/pnmc run-driver examples/gemma4_test -l 4 -x 4 -y 4      # driver + firmware
+go run ./cmd/pnmc compile-model examples/gemma4_test_synthetic -l 4 -x 4 -y 4   # model compiler
+go run ./cmd/pnmc run-driver examples/gemma4_test_synthetic -l 4 -x 4 -y 4      # driver + firmware
 go run ./cmd/pnmc workload jacobi5 -l 1 -x 4 -y 4 -run                # workload simulation
 go run ./cmd/pnmc workload matvec -l 4 -x 4 -y 4 -frag 16 -run        # matvec (16-element vectors)
 go run ./cmd/pnmc workload reduction -l 4 -x 4 -y 4 -frag 32          # emit only

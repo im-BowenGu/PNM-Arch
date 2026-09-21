@@ -201,24 +201,26 @@ func (cl *CircuitLink) acceptLoop() {
 
 // handleConn reads FlitMessages from a client connection.
 func (cl *CircuitLink) handleConn(conn net.Conn) {
-	buf := make([]byte, 4096)
+	buf := make([]byte, 0, 4096)
+	tmp := make([]byte, 4096)
 	for {
-		n, err := conn.Read(buf)
+		n, err := conn.Read(tmp)
 		if err != nil {
 			if err != io.EOF {
 				// log error
 			}
 			return
 		}
+		buf = append(buf, tmp[:n]...)
 		// Parse messages from the buffer
 		offset := 0
-		for offset < n {
-			if n-offset < flitHdrLen {
+		for offset < len(buf) {
+			if len(buf)-offset < flitHdrLen {
 				break
 			}
 			plen := int(binary.BigEndian.Uint16(buf[offset+1 : offset+3]))
 			msgLen := flitHdrLen + plen
-			if n-offset < msgLen {
+			if len(buf)-offset < msgLen {
 				break
 			}
 			msg, err := DecodeFlitMessage(buf[offset : offset+msgLen])
@@ -230,8 +232,19 @@ func (cl *CircuitLink) handleConn(conn net.Conn) {
 			cl.conns[msg.SourceID] = conn
 			cl.mu.Unlock()
 
-			cl.msgCh <- msg
+			// Route the message, but never block forever: a stalled consumer
+			// must not pin this goroutine (or its connection) after Close().
+			select {
+			case cl.msgCh <- msg:
+			case <-cl.done:
+				return
+			}
 			offset += msgLen
+		}
+		// Keep unconsumed bytes for next read
+		if offset > 0 {
+			copy(buf, buf[offset:])
+			buf = buf[:len(buf)-offset]
 		}
 	}
 }
@@ -313,11 +326,18 @@ func SendFlit(conn net.Conn, srcID, seq byte, data byte) error {
 }
 
 // RecvFlit reads a single FlitMessage from a client connection.
+// It reads exactly header+payload bytes, so partial socket reads are
+// reassembled and any additional bytes stay buffered for the next call.
 func RecvFlit(conn net.Conn) (*FlitMessage, error) {
-	buf := make([]byte, 4096)
-	n, err := conn.Read(buf)
-	if err != nil {
+	hdr := make([]byte, flitHdrLen)
+	if _, err := io.ReadFull(conn, hdr); err != nil {
 		return nil, err
 	}
-	return DecodeFlitMessage(buf[:n])
+	plen := int(binary.BigEndian.Uint16(hdr[1:3]))
+	full := make([]byte, flitHdrLen+plen)
+	copy(full, hdr)
+	if _, err := io.ReadFull(conn, full[flitHdrLen:]); err != nil {
+		return nil, err
+	}
+	return DecodeFlitMessage(full)
 }

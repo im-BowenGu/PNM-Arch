@@ -36,6 +36,8 @@ module fp32_mac_array #(
         end
     end
 
+    reg [ARRAY_SIZE*32-1:0] act_hold;
+
     wire [31:0] fma_result  [0:ARRAY_SIZE-1][0:ARRAY_SIZE-1];
     wire        fma_valid_out [0:ARRAY_SIZE-1][0:ARRAY_SIZE-1];
 
@@ -46,6 +48,7 @@ module fp32_mac_array #(
 
     reg [7:0] row_delay_cnt [0:ARRAY_SIZE-1];
     reg       row_armed [0:ARRAY_SIZE-1];
+    wire accept = act_valid && !out_active;
 
     integer r, c, s;
     always @(posedge clk or negedge rst_n) begin
@@ -63,7 +66,8 @@ module fp32_mac_array #(
                 row_armed[r] <= 0;
             end
         end else begin
-            if (act_valid) begin
+            if (accept) begin
+                act_hold <= act_in;
                 for (r = 0; r < ARRAY_SIZE; r = r + 1) begin
                     row_delay_cnt[r] <= 0;
                     row_armed[r] <= (r == 0) ? 1'b1 : 1'b0;
@@ -80,17 +84,17 @@ module fp32_mac_array #(
 
             for (r = 0; r < ARRAY_SIZE; r = r + 1) begin
                 for (c = 0; c < ARRAY_SIZE; c = c + 1) begin
-                    if (c == 0) begin
-                        act_sr[r*ARRAY_SIZE][0]   <= act_in[r*32 +: 32];
-                        act_v_sr[r*ARRAY_SIZE][0] <= row_armed[r];
-                        if (r == 0) begin
-                            psum_sr[0][0]   <= 32'h00000000;
-                            psum_v_sr[0][0] <= row_armed[0];
+                        if (c == 0) begin
+                            act_sr[r*ARRAY_SIZE][0]   <= (r == 0) ? (accept ? act_in[r*32 +: 32] : act_hold[r*32 +: 32]) : act_hold[r*32 +: 32];
+                            act_v_sr[r*ARRAY_SIZE][0] <= row_armed[r];
+                            if (r == 0) begin
+                                psum_sr[0][0]   <= 32'h00000000;
+                                psum_v_sr[0][0] <= row_armed[0];
+                            end else begin
+                                psum_sr[r*ARRAY_SIZE][0]   <= fma_result[r-1][0];
+                                psum_v_sr[r*ARRAY_SIZE][0] <= fma_valid_out[r-1][0];
+                            end
                         end else begin
-                            psum_sr[r*ARRAY_SIZE][0]   <= fma_result[r-1][0];
-                            psum_v_sr[r*ARRAY_SIZE][0] <= fma_valid_out[r-1][0];
-                        end
-                    end else begin
                         act_sr[r*ARRAY_SIZE+c][0]   <= act_sr[r*ARRAY_SIZE+c-1][PIPE_DEPTH-1];
                         act_v_sr[r*ARRAY_SIZE+c][0] <= act_v_sr[r*ARRAY_SIZE+c-1][PIPE_DEPTH-1];
                         if (r == 0) begin
@@ -158,7 +162,7 @@ module fp32_mac_array #(
             out_valid_reg <= 0;
             result_out <= 0;
         end else begin
-            if (act_valid) begin
+            if (accept) begin
                 out_active <= 1;
                 out_pipe_cnt <= 0;
                 out_sop_q <= act_sop;

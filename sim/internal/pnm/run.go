@@ -336,6 +336,11 @@ type PacketEntry struct {
 	Echo    []byte // golden result-egress flit for return-flag requests
 	Vc      byte   // origin class on the wire (sideband)
 	Sidx    *int
+	// Weights overrides the node's resident weight vector for this packet
+	// (per-expert weights selected by the dispatch record).  nil keeps the
+	// node default.  Both the golden and the verify-time kernel consult it,
+	// so the expert output is a pure function of (record, delivered payload).
+	Weights []int
 }
 
 // OrderEntry is one record in the injection order: destination layer (or
@@ -404,6 +409,20 @@ func (p *Program) InjectRoutedVC(n NodeID, ctrl int, payload []byte, corrupt boo
 	m.Packets = append(m.Packets, entry)
 	p.Order = append(p.Order, OrderEntry{IsPT: false, Key: n.L, WF: wf, Ref: entry})
 	p.NInjected++
+}
+
+// InjectRoutedWeights injects a class-2 compute flit whose resident-kernel
+// weight vector is overridden per packet (per-expert MoE outputs: the same
+// token payload dot-multiplies a deterministically expert-selected weight
+// vector).  nil weights keep the node default.
+func (p *Program) InjectRoutedWeights(n NodeID, ctrl int, payload []byte, weights []int, corrupt bool) {
+	p.InjectRoutedVC(n, ctrl, payload, corrupt, VC_SPINE_DESCENT)
+	entry := p.Manifest[n].Packets[len(p.Manifest[n].Packets)-1]
+	entry.Weights = append([]int(nil), weights...)
+	if !corrupt {
+		m := p.Manifest[n]
+		entry.Golden = Golden(m.Kernel, payload, entry.Weights, p.GState[n], m.Bias)
+	}
 }
 
 // InjectEcho injects a compute flit with the return flag set: the node's
@@ -827,13 +846,16 @@ func InjectTable(stream []Entry4) []InjectRec {
 	return tbl
 }
 
-// Stats aggregates verification counters across slices.
+// Stats aggregates verification counters across slices.  NodeResults maps
+// each node to the resident-kernel results it produced for the delivered
+// packets (in delivery order); populated per-slice and merged by add().
 type Stats struct {
 	Activations int
 	Rejections  int
 	Latencies   []int
 	Pkts        int
 	DmaBytes    int
+	NodeResults map[NodeID][]interface{}
 }
 
 func (s *Stats) add(o *Stats) {
@@ -842,6 +864,26 @@ func (s *Stats) add(o *Stats) {
 	s.Latencies = append(s.Latencies, o.Latencies...)
 	s.Pkts += o.Pkts
 	s.DmaBytes += o.DmaBytes
+	for n, rs := range o.NodeResults {
+		if s.NodeResults == nil {
+			s.NodeResults = map[NodeID][]interface{}{}
+		}
+		s.NodeResults[n] = append(s.NodeResults[n], rs...)
+	}
+}
+
+// nodeResultsToStrings re-keys verified per-node kernel results by the node's
+// String() form so the ScenarioResult can carry them (encoding/json does not
+// support map[NodeID]...).
+func nodeResultsToStrings(m map[NodeID][]interface{}) map[string]interface{} {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make(map[string]interface{}, len(m))
+	for n, rs := range m {
+		out[n.String()] = append([]interface{}{}, rs...)
+	}
+	return out
 }
 
 // Verify checks hardware delivery against the manifest; runs the doorbells.
@@ -945,6 +987,15 @@ func Verify(delivered *Delivery, prog *Program, nodes []NodeID, lBase int, expec
 			// (pe_tile_stub corrupt_out) is the refusal of record, so the
 			// software unit records it even though the stub re-emitted a
 			// CRC-consistent (transformed) stream for accounting
+			if w := want[i]; w.Weights != nil {
+				// per-expert MoE output: the resident kernel consults the
+				// packet's expert-selected weight vector, matching the golden
+				// computed at inject time
+				u.State.Weights = w.Weights
+			} else {
+				// dense record: back to the node's resident default vector
+				u.State.Weights = m.Weights
+			}
 			u.Consume(g.Bytes, corruptPktIdx[i])
 		}
 		stats.Activations += u.Activations
@@ -991,6 +1042,12 @@ func Verify(delivered *Delivery, prog *Program, nodes []NodeID, lBase int, expec
 			errors = append(errors, fmt.Sprintf("%s: kernel '%s' results mismatch (%d vs %d)",
 				n, m.Kernel, len(u.Results), len(goldenSeq)))
 		}
+		// Surface the verified per-node kernel results (the "expert output"
+		// the node produced from the delivered token payload).
+		if stats.NodeResults == nil {
+			stats.NodeResults = map[NodeID][]interface{}{}
+		}
+		stats.NodeResults[n] = append([]interface{}{}, u.Results...)
 
 		// per-packet latency against the closed form (Paper.MD 2.5/3.4)
 		l, x := n.L, n.X
@@ -1403,7 +1460,7 @@ func RunOne(prog *Program, nodes []NodeID, dims Dims, groups, replays int) (*Sce
 
 	// -- build result ----------------------------------------------------
 	result := &ScenarioResult{
-		Name:          "",
+		Name:          prog.Name,
 		Nodes:         len(nodes),
 		Layers:        dims.Layers,
 		WireBytes:     len(prog.Stream),
@@ -1415,6 +1472,7 @@ func RunOne(prog *Program, nodes []NodeID, dims Dims, groups, replays int) (*Sce
 		WorstSpanCyc:  maxSpan,
 		BytesPerCycle: float64(len(prog.Stream)) / float64(maxSpan),
 		Latencies:     stats.Latencies,
+		NodeResults:   nodeResultsToStrings(stats.NodeResults),
 	}
 	if len(stats.Latencies) > 0 {
 		lo, hi, sum := stats.Latencies[0], stats.Latencies[0], 0
@@ -1598,4 +1656,30 @@ func RunMain(layers, bx, by int, scenarios []string, seed int64, flits *int, hot
 	}
 	fmt.Printf("\n%d SCENARIO(S) FAILED\n", totalFail)
 	return 1
+}
+
+// Summary returns a compact human-readable line for a single scenario result.
+func (r *ScenarioResult) Summary() string {
+	pass := "PASS"
+	if !r.Pass {
+		pass = "FAIL"
+	}
+	mean := r.LatencyMean
+	if len(r.Latencies) > 0 {
+		mean = int(float64(sumInts(r.Latencies)) / float64(len(r.Latencies)))
+	}
+	return fmt.Sprintf("Scenario %s [%s]: %d nodes, %d layers, %d wire bytes, "+
+		"%d activations, %d rejections, %d packets, %d DMA bytes, "+
+		"span=%d cyc, %.2f B/cyc, latency=%d..%d (mean %d) cyc",
+		r.Name, pass, r.Nodes, r.Layers, r.WireBytes,
+		r.Activations, r.Rejections, r.Packets, r.DmaBytes,
+		r.WorstSpanCyc, r.BytesPerCycle, r.LatencyMin, r.LatencyMax, mean)
+}
+
+func sumInts(vals []int) int {
+	s := 0
+	for _, v := range vals {
+		s += v
+	}
+	return s
 }

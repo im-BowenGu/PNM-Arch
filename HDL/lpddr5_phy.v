@@ -194,7 +194,7 @@ module lpddr5_phy #(
                                 end else begin
                                 // Row already open, go to CAS
                                 state  <= ST_CAS;
-                                cas_cnt <= {1'b0, CAS_LATENCY[3:0]};
+                                cas_cnt <= {1'b0, CAS_LATENCY[4:0]};
                         end
                     end
                 end
@@ -219,7 +219,7 @@ module lpddr5_phy #(
                         bank_row[active_bank]      <= active_row;
                         ras_countdown[active_bank]  <= T_RAS[3:0];
                         state  <= ST_CAS;
-                        cas_cnt <= {1'b0, CAS_LATENCY[3:0]};
+                        cas_cnt <= {1'b0, CAS_LATENCY[4:0]};
                     end
                 end
 

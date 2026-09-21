@@ -103,21 +103,53 @@ module tb_dyn_act_quant;
         end
 
         // ---- Test 2: Dequantize ----
+        // Regression (magnitude-preserving dequant): each nonzero INT8 magnitude
+        // must reconstruct to |int8| * scale, NOT a constant full-scale value.
+        // With scale[14:0] = 0x40 = 64: int8 1->0x0040, 2->0x0080, 3->0x00C0.
+        // The old bug always returned {sign, scale} regardless of magnitude, so
+        // int8=2,3 would wrongly produce 0x0040.
         $display("--- Test 2: Dequantize ---");
         mode = 1;
+        d_valid_in = 0;
+        d_scale_in = 16'h0040;
         @(posedge clk);
+        #1;
 
-        d_int8_in = 8'h01; d_scale_in = 16'h3F80; d_valid_in = 1;
-        @(posedge clk);
-        d_int8_in = 8'hFF; @(posedge clk);  // -1
-        d_int8_in = 8'h02; @(posedge clk);
-        d_int8_in = 8'hFE; d_valid_in = 0; @(posedge clk);  // -2
+        d_int8_in = 8'h01; d_valid_in = 1;
+        @(posedge clk); #1;
+        if (d_data_out !== 16'h0040) begin
+            $display("FAIL dequant int8=1: out=%04h exp 0040", d_data_out);
+            errors = errors + 1;
+        end else $display("  Dequant int8=1 -> 0040");
 
-        for (i = 0; i < 4; i = i + 1) begin
-            @(posedge clk);
-            if (d_valid_out)
-                $display("  Dequantized: %04h", d_data_out);
-        end
+        d_int8_in = 8'h02;
+        @(posedge clk); #1;
+        if (d_data_out !== 16'h0080) begin
+            $display("FAIL dequant int8=2: out=%04h exp 0080", d_data_out);
+            errors = errors + 1;
+        end else $display("  Dequant int8=2 -> 0080");
+
+        d_int8_in = 8'h03;
+        @(posedge clk); #1;
+        if (d_data_out !== 16'h00C0) begin
+            $display("FAIL dequant int8=3: out=%04h exp 00C0", d_data_out);
+            errors = errors + 1;
+        end else $display("  Dequant int8=3 -> 00C0");
+
+        d_int8_in = 8'hFF;   // -1, magnitude 1
+        @(posedge clk); #1;
+        if (d_data_out !== 16'h8040) begin
+            $display("FAIL dequant int8=-1: out=%04h exp 8040", d_data_out);
+            errors = errors + 1;
+        end else $display("  Dequant int8=-1 (0xFF) -> 8040");
+
+        d_int8_in = 8'hFE;   // -2, magnitude 2
+        @(posedge clk); #1;
+        if (d_data_out !== 16'h8080) begin
+            $display("FAIL dequant int8=-2: out=%04h exp 8080", d_data_out);
+            errors = errors + 1;
+        end else $display("  Dequant int8=-2 (0xFE) -> 8080");
+        d_valid_in = 0;
 
         $display("PASS: dequantize path exercised");
 

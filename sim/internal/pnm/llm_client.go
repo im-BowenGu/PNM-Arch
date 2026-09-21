@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 )
@@ -108,19 +109,36 @@ type InferenceStats struct {
 	QuantWeightBytes int
 }
 
-// Vocabulary maps token IDs to strings and vice versa.
+// Vocabulary maps token IDs to strings and vice versa.  When a real
+// BPE tokenizer (tokenizer.json) is present in the model directory the
+// backend is the loaded BPEVocab and Encode/Decode are the true Gemma
+// tokenizer operations; otherwise a synthetic id<->string map is used.
 type Vocabulary struct {
 	TokenToID map[string]int
 	IDToToken map[int]string
 	Size      int
+	bpe       *BPEVocab // real tokenizer backend (nil = synthetic)
 }
 
-// NewVocabulary creates a vocabulary from a token list.
-func NewVocabulary(tokens []string) *Vocabulary {
+// NewVocabulary creates a vocabulary from a token list.  If bpe is
+// non-nil its tables back the mapping (real Gemma BPE); tokens is then
+// advisory and only used for Size.
+func NewVocabulary(tokens []string, bpe *BPEVocab) *Vocabulary {
 	v := &Vocabulary{
 		TokenToID: make(map[string]int),
 		IDToToken: make(map[int]string),
 		Size:      len(tokens),
+		bpe:       bpe,
+	}
+	if bpe != nil {
+		v.Size = bpe.VocabSize()
+		for i, tok := range bpe.IDToToken {
+			v.IDToToken[i] = tok
+		}
+		for tok, id := range bpe.TokenToID {
+			v.TokenToID[tok] = id
+		}
+		return v
 	}
 	for i, tok := range tokens {
 		v.TokenToID[tok] = i
@@ -129,8 +147,21 @@ func NewVocabulary(tokens []string) *Vocabulary {
 	return v
 }
 
-// Encode converts text to token IDs (simplified whitespace tokenization).
+// VocabSize returns the number of tokens in the underlying vocabulary.
+func (b *BPEVocab) VocabSize() int {
+	return len(b.IDToToken)
+}
+
+// Encode converts text to token IDs.  With a real BPE backend this is
+// the faithful Gemma tokenization (byte-fallback + merges); otherwise a
+// simplified whitespace tokenization is used.
 func (v *Vocabulary) Encode(text string) []int {
+	if v.bpe != nil {
+		ids, err := v.bpe.Encode(text)
+		if err == nil {
+			return ids
+		}
+	}
 	words := strings.Fields(text)
 	ids := make([]int, len(words))
 	for i, w := range words {
@@ -143,8 +174,13 @@ func (v *Vocabulary) Encode(text string) []int {
 	return ids
 }
 
-// Decode converts token IDs back to text.
+// Decode converts token IDs back to text.  With a real BPE backend this
+// produces the actual decoded characters (byte-fallback aware); otherwise
+// the synthetic id->string map is used.
 func (v *Vocabulary) Decode(ids []int) string {
+	if v.bpe != nil {
+		return v.bpe.Decode(ids)
+	}
 	var sb strings.Builder
 	for i, id := range ids {
 		if i > 0 {
@@ -199,12 +235,18 @@ func NewLLMClient(cfg LLMConfig) (*LLMClient, error) {
 		return nil, fmt.Errorf("llm client: driver init: %w", err)
 	}
 
-	// Build a simple vocabulary from the model config
+	// Build the vocabulary: the real Gemma BPE tokenizer when the model
+	// directory carries tokenizer.json, else the synthetic id->string map.
 	tc := &drv.Config.TextConfig
+	var bpe *BPEVocab
+	if tb, err := LoadBPEVocab(filepath.Join(cfg.ModelDir, "tokenizer.json")); err == nil {
+		bpe = tb
+	}
 	tokens := make([]string, tc.VocabSize)
 	for i := 0; i < tc.VocabSize && i < len(tokens); i++ {
 		tokens[i] = fmt.Sprintf("token_%d", i)
 	}
+	_ = bpe
 
 	// Boot firmware
 	fw := drv.FW
@@ -236,7 +278,7 @@ func NewLLMClient(cfg LLMConfig) (*LLMClient, error) {
 		Config: cfg,
 		Driver: drv,
 		FW:     fw,
-		Vocab:  NewVocabulary(tokens),
+		Vocab:  NewVocabulary(tokens, bpe),
 		Batch:  NewContinuousBatch(cfg.MaxBatchSize),
 	}, nil
 }
@@ -416,6 +458,7 @@ func (c *LLMClient) GenerateWithBatching(prompts []string) ([][]int, error) {
 					if err != nil {
 						return nil, err
 					}
+					c.Stats.TotalDispatches += len(records)
 					for _, r := range records {
 						c.collectStats(r)
 					}
@@ -435,6 +478,7 @@ func (c *LLMClient) GenerateWithBatching(prompts []string) ([][]int, error) {
 				if err != nil {
 					return nil, err
 				}
+				c.Stats.TotalDispatches += len(records)
 				for _, r := range records {
 					c.collectStats(r)
 				}
@@ -484,9 +528,11 @@ func (c *LLMClient) GenerateWithSpeculative(prompt string) ([]int, error) {
 	// Prefill
 	for _, id := range promptIDs {
 		tokenBytes := encodeTokenID(id, c.Config.DataType)
-		if _, err := c.FW.PlanInference(tokenBytes); err != nil {
+		records, err := c.FW.PlanInference(tokenBytes)
+		if err != nil {
 			return nil, fmt.Errorf("llm client: prefill: %w", err)
 		}
+		c.Stats.TotalDispatches += len(records)
 	}
 
 	// Speculative generation
@@ -501,6 +547,7 @@ func (c *LLMClient) GenerateWithSpeculative(prompt string) ([]int, error) {
 
 		c.Stats.SpeculativeDrafts += len(drafted)
 		for _, batch := range records {
+			c.Stats.TotalDispatches += len(batch)
 			for _, r := range batch {
 				c.collectStats(r)
 			}
@@ -560,11 +607,11 @@ func (c *LLMClient) collectStats(r DispatchRecord) {
 type QuantMode int
 
 const (
-	QuantNone QuantMode = iota // no quantization, full BF16/FP16 weights
-	QuantInt8                  // INT8 weight-only quantization (2x compression)
-	QuantInt4                  // INT4 weight-only quantization (4x compression)
-	QuantFP4                   // FP4 (E2M1) weight-only quantization (4x compression)
-	QuantMXFP4                 // MXFP4 (E2M1 + block scale) weight-only quantization
+	QuantNone  QuantMode = iota // no quantization, full BF16/FP16 weights
+	QuantInt8                   // INT8 weight-only quantization (2x compression)
+	QuantInt4                   // INT4 weight-only quantization (4x compression)
+	QuantFP4                    // FP4 (E2M1) weight-only quantization (4x compression)
+	QuantMXFP4                  // MXFP4 (E2M1 + block scale) weight-only quantization
 )
 
 // String returns the human-readable name of the quantization mode.
@@ -612,6 +659,11 @@ type StructuredFSM struct {
 	States   []fsmState // states[i] = set of valid char-class transitions from state i
 	Current  int        // current state
 	Complete bool       // true if pattern is fully matched
+
+	// compStates[s] is true when the accepting state is still reachable
+	// from s using whole vocabulary tokens (computed lazily by
+	// ensureCompletable, cached for the FSM's lifetime).
+	compStates []bool
 }
 
 // fsmState represents valid transitions from one FSM state.
@@ -1255,8 +1307,13 @@ func (c *LLMClient) GenerateStructured(prompt string, pattern string) ([]int, er
 	// Prefill
 	for _, id := range promptIDs {
 		tokenBytes := encodeTokenID(id, c.Config.DataType)
-		if _, err := c.FW.PlanInference(tokenBytes); err != nil {
+		records, err := c.FW.PlanInference(tokenBytes)
+		if err != nil {
 			return nil, fmt.Errorf("llm client: prefill: %w", err)
+		}
+		c.Stats.TotalDispatches += len(records)
+		for _, r := range records {
+			c.collectStats(r)
 		}
 	}
 
@@ -1274,6 +1331,7 @@ func (c *LLMClient) GenerateStructured(prompt string, pattern string) ([]int, er
 		if err != nil {
 			return nil, fmt.Errorf("llm client: structured step %d: %w", len(generated), err)
 		}
+		c.Stats.TotalDispatches += len(records)
 		for _, r := range records {
 			c.collectStats(r)
 		}
@@ -1448,17 +1506,42 @@ func CompileStructuredFSM(pattern string) (*StructuredFSM, error) {
 
 // TokenMask returns a boolean mask over the vocabulary indicating which tokens
 // are valid from the current FSM state.
+//
+// Eligibility is reachability-based, not per-character: a token qualifies
+// only if (a) consuming its entire decoded text completes the pattern, or
+// (b) it lands in a state from which the remaining pattern can still be
+// completed by some vocabulary token (the completable fixpoint below).
+// Per-character admission lets a token dead-end mid-pattern (e.g. a token
+// that consumes all-but-one required digit when no vocabulary token can
+// supply the final character), soft-terminating constrained generation.
 func (fsm *StructuredFSM) TokenMask(vocab *Vocabulary) []bool {
 	if fsm.Complete || len(fsm.States) == 0 {
 		return nil
 	}
+	fsm.ensureCompletable(vocab)
 	mask := make([]bool, vocab.Size)
+	any := false
 	for id := 0; id < vocab.Size; id++ {
 		tok, ok := vocab.IDToToken[id]
 		if !ok {
 			continue
 		}
-		// Check if any character in the token can be produced from current state
+		end, oc := fsm.walkFrom(fsm.Current, tok)
+		if oc == walkComplete || (oc == walkFull && fsm.compStates[end]) {
+			mask[id] = true
+			any = true
+		}
+	}
+	if any {
+		return mask
+	}
+	// No vocabulary token fits the remaining pattern contiguously at all:
+	// degrade to the single-character mask instead of deadlocking the sampler.
+	for id := 0; id < vocab.Size; id++ {
+		tok, ok := vocab.IDToToken[id]
+		if !ok {
+			continue
+		}
 		for _, ch := range tok {
 			if fsm.canAdvance(ch) {
 				mask[id] = true
@@ -1467,6 +1550,81 @@ func (fsm *StructuredFSM) TokenMask(vocab *Vocabulary) []bool {
 		}
 	}
 	return mask
+}
+
+// walkOutcome classifies a strict scratch-position walk over a token.
+type walkOutcome int
+
+const (
+	walkFull     walkOutcome = iota // every char consumed, FSM not complete
+	walkComplete                    // every char consumed, FSM complete
+	walkBlocked                     // a char has no transition, or the walk ran off the state list
+)
+
+// walkFrom walks tok from the given start state on a scratch position without
+// mutating the live FSM.  Strict: any non-matching character rejects the
+// token outright; the soft-enforcement fallback of Advance does not apply.
+func (fsm *StructuredFSM) walkFrom(start int, tok string) (int, walkOutcome) {
+	cur := start
+	for _, ch := range tok {
+		if cur >= len(fsm.States) {
+			return -1, walkBlocked
+		}
+		next := -1
+		for _, t := range fsm.States[cur].Transitions {
+			if t.CharClass == '.' || t.CharClass == ch {
+				next = t.Next
+				break
+			}
+		}
+		if next < 0 {
+			return -1, walkBlocked
+		}
+		cur = next
+	}
+	if cur >= len(fsm.States)-1 {
+		return cur, walkComplete
+	}
+	return cur, walkFull
+}
+
+// ensureCompletable computes (once per FSM) which states can still reach the
+// accepting state using whole vocabulary tokens: comp[s] is true when some
+// token either completes the pattern from s or lands on an already-completable
+// state.  Token boundaries rarely align with pattern progress, so this
+// whole-token fixpoint — not single-character lookahead — is what makes the
+// mask deadlock-free.
+func (fsm *StructuredFSM) ensureCompletable(vocab *Vocabulary) {
+	if fsm.compStates != nil {
+		return
+	}
+	n := len(fsm.States)
+	comp := make([]bool, n)
+	if n > 0 {
+		comp[n-1] = true // accepting state
+	}
+	changed := true
+	for changed {
+		changed = false
+		for s := 0; s < n-1; s++ {
+			if comp[s] {
+				continue
+			}
+			for id := 0; id < vocab.Size; id++ {
+				tok, ok := vocab.IDToToken[id]
+				if !ok {
+					continue
+				}
+				end, oc := fsm.walkFrom(s, tok)
+				if oc == walkComplete || (oc == walkFull && comp[end]) {
+					comp[s] = true
+					changed = true
+					break
+				}
+			}
+		}
+	}
+	fsm.compStates = comp
 }
 
 // canAdvance checks if the FSM can consume this character from the current state.

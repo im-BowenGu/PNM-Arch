@@ -64,10 +64,10 @@ module power_node #(
             e_core_pj    <= 64'd0;
             e_io_pj      <= 64'd0;
             e_dram_pj    <= 64'd0;
-            drop_uv = 32'd0;
-            droop_mv = 32'd0;
-            rail_lim = 32'd0;
-            rail_nom = 32'd0;
+            drop_uv <= 32'd0;
+            droop_mv <= 32'd0;
+            rail_lim <= 32'd0;
+            rail_nom <= 32'd0;
             i_core_ma    <= 32'd0;
             i_io_ma      <= 32'd0;
             i_dram_ma    <= 32'd0;

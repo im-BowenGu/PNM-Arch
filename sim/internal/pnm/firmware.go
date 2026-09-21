@@ -44,20 +44,20 @@ import (
 type FirmwareState int
 
 const (
-	FWStateReset     FirmwareState = iota // power-on reset
-	FWStatePOSTDiscovery                  // Phase 1: topology discovery
-	FWStateRoutingTable                   // Phase 2: load routing tables
-	FWStateWeightUpload                   // Phase 3: upload weights to nodes
-	FWStateMoELoad                        // Phase 4: load gating weights
-	FWStateReady                          // Phase 5: inference dispatch
+	FWStateReset         FirmwareState = iota // power-on reset
+	FWStatePOSTDiscovery                      // Phase 1: topology discovery
+	FWStateRoutingTable                       // Phase 2: load routing tables
+	FWStateWeightUpload                       // Phase 3: upload weights to nodes
+	FWStateMoELoad                            // Phase 4: load gating weights
+	FWStateReady                              // Phase 5: inference dispatch
 )
 
 // NodeInventory is one discovered node's metadata.
 type NodeInventory struct {
 	Node      NodeID
 	ModuleID  byte
-	Bandwidth int  // link bandwidth (GB/s)
-	Status    int  // 0=down, 1=ready
+	Bandwidth int // link bandwidth (GB/s)
+	Status    int // 0=down, 1=ready
 }
 
 // ============================================================================
@@ -66,9 +66,9 @@ type NodeInventory struct {
 
 // FlashAttnConfig configures the flash attention tile sizes.
 type FlashAttnConfig struct {
-	TileSizeQ int // Q tile size (number of rows)
-	TileSizeKV int // KV tile size (number of columns)
-	Enabled   bool // enable flash attention dispatch
+	TileSizeQ  int  // Q tile size (number of rows)
+	TileSizeKV int  // KV tile size (number of columns)
+	Enabled    bool // enable flash attention dispatch
 }
 
 // DefaultFlashAttnConfig returns flash attention config for PNM nodes.
@@ -86,8 +86,8 @@ func DefaultFlashAttnConfig() FlashAttnConfig {
 
 // ChunkedPrefillConfig configures chunked prefill parameters.
 type ChunkedPrefillConfig struct {
-	ChunkSize   int  // tokens per prefill chunk
-	Enabled     bool // enable chunked prefill
+	ChunkSize int  // tokens per prefill chunk
+	Enabled   bool // enable chunked prefill
 }
 
 // DefaultChunkedPrefillConfig returns default chunked prefill config.
@@ -104,21 +104,21 @@ func DefaultChunkedPrefillConfig() ChunkedPrefillConfig {
 
 // RequestState represents one inference request in the continuous batch.
 type RequestState struct {
-	RequestID   int
-	PromptIDs   []int
-	Generated   []int
-	PrefillPos  int  // next prefill position
-	DecodeStep  int  // current decode step
-	MaxTokens   int
-	Finished    bool
-	EOS         int  // end-of-sequence token ID
+	RequestID  int
+	PromptIDs  []int
+	Generated  []int
+	PrefillPos int // next prefill position
+	DecodeStep int // current decode step
+	MaxTokens  int
+	Finished   bool
+	EOS        int // end-of-sequence token ID
 }
 
 // ContinuousBatch manages multiple concurrent inference requests.
 type ContinuousBatch struct {
-	Requests    []*RequestState
-	MaxBatch    int
-	NextReqID   int
+	Requests  []*RequestState
+	MaxBatch  int
+	NextReqID int
 }
 
 // NewContinuousBatch creates a continuous batch manager.
@@ -180,15 +180,15 @@ func (cb *ContinuousBatch) HasActive() bool {
 
 // SpeculativeConfig configures speculative decoding parameters.
 type SpeculativeConfig struct {
-	DraftTokens  int  // number of tokens to draft per step
-	Enabled      bool // enable speculative decoding
-	VerifyAll    bool // verify all drafted tokens (vs. early exit)
+	DraftTokens int  // number of tokens to draft per step
+	Enabled     bool // enable speculative decoding
+	VerifyAll   bool // verify all drafted tokens (vs. early exit)
 }
 
 // DefaultSpeculativeConfig returns default speculative decoding config.
 func DefaultSpeculativeConfig() SpeculativeConfig {
 	return SpeculativeConfig{
-		DraftTokens: 4,   // draft 4 tokens ahead
+		DraftTokens: 4,     // draft 4 tokens ahead
 		Enabled:     false, // disabled by default (paper avoids speculation)
 		VerifyAll:   true,
 	}
@@ -216,26 +216,26 @@ type Firmware struct {
 	ErrorCount    int
 
 	// Advanced feature configs
-	FlashAttn       FlashAttnConfig
-	ChunkedPrefill  ChunkedPrefillConfig
-	Batch           *ContinuousBatch
-	Speculative     SpeculativeConfig
+	FlashAttn      FlashAttnConfig
+	ChunkedPrefill ChunkedPrefillConfig
+	Batch          *ContinuousBatch
+	Speculative    SpeculativeConfig
 	// Sequence positions per model layer (for KV cache addressing)
-	SeqPositions    map[int]int // model_layer -> next sequence position
+	SeqPositions map[int]int // model_layer -> next sequence position
 }
 
 // NewFirmware creates a Firmware bound to a Driver.
 func NewFirmware(d *Driver) *Firmware {
 	hiddenSize := d.Config.TextConfig.HiddenSize
 	fw := &Firmware{
-		Driver:          d,
-		State:           FWStateReset,
-		KV:              NewKVCache(d.Dims, hiddenSize, nil),
-		FlashAttn:       DefaultFlashAttnConfig(),
-		ChunkedPrefill:  DefaultChunkedPrefillConfig(),
-		Batch:           NewContinuousBatch(8),
-		Speculative:     DefaultSpeculativeConfig(),
-		SeqPositions:    make(map[int]int),
+		Driver:         d,
+		State:          FWStateReset,
+		KV:             NewKVCache(d.Dims, hiddenSize, nil),
+		FlashAttn:      DefaultFlashAttnConfig(),
+		ChunkedPrefill: DefaultChunkedPrefillConfig(),
+		Batch:          NewContinuousBatch(8),
+		Speculative:    DefaultSpeculativeConfig(),
+		SeqPositions:   make(map[int]int),
 	}
 	// Configure sliding window attention from model config.  Called even
 	// without per-model layer_types (Mistral/Gemma-1 style configs): the KV
@@ -331,27 +331,27 @@ func (fw *Firmware) bootMoELoad() ([]WeightUploadCommand, error) {
 
 // DispatchRecord is one step in the inference dispatch sequence.
 type DispatchRecord struct {
-	Layer      int              // model layer index
-	Phase      string           // "dense", "moe", "kv_offload", "flash_attn"
-	TargetNode NodeID           // destination node
-	ExpertIdx  int              // -1 for dense, >= 0 for MoE
-	FlitBytes  int              // flit wire length
-	KVAction   string           // "store", "load", "evict", or "" (none)
-	CUType     ComputeUnitType  // compute unit to use on target node
-	TensorRole string           // tensor role for dispatch routing
+	Layer      int             // model layer index
+	Phase      string          // "dense", "moe", "kv_offload", "flash_attn"
+	TargetNode NodeID          // destination node
+	ExpertIdx  int             // -1 for dense, >= 0 for MoE
+	FlitBytes  int             // flit wire length
+	KVAction   string          // "store", "load", "evict", or "" (none)
+	CUType     ComputeUnitType // compute unit to use on target node
+	TensorRole string          // tensor role for dispatch routing
 	// Flash attention metadata
-	FlashTileQ  int  // Q tile index
-	FlashTileKV int  // KV tile index
+	FlashTileQ    int // Q tile index
+	FlashTileKV   int // KV tile index
 	FlashNumTiles int // total KV tiles
 	// Chunked prefill metadata
-	ChunkIndex  int  // prefill chunk index
-	ChunkTotal  int  // total prefill chunks
+	ChunkIndex int // prefill chunk index
+	ChunkTotal int // total prefill chunks
 	// GQA metadata
-	RepeatKV    bool // true if KV heads need repetition for GQA
-	GroupSize   int  // GQA group size
+	RepeatKV  bool // true if KV heads need repetition for GQA
+	GroupSize int  // GQA group size
 	// Sliding window metadata
-	WindowStart int  // sliding window start position (-1 = full attention)
-	WindowEnd   int  // sliding window end position
+	WindowStart int // sliding window start position (-1 = full attention)
+	WindowEnd   int // sliding window end position
 }
 
 // PlanInference computes the full dispatch sequence for one token through
@@ -405,21 +405,21 @@ func (fw *Firmware) PlanInference(token []byte) ([]DispatchRecord, error) {
 			for kvTile := 0; kvTile < numKVTiles; kvTile++ {
 				flit := Flit(pl+1, (attnX<<4)|attnY, CTRL_COMPUTE_SPINE, token, false)
 				records = append(records, DispatchRecord{
-					Layer:       ml,
-					Phase:       "flash_attn",
-					TargetNode:  attnNode,
-					ExpertIdx:   -1,
-					FlitBytes:   len(flit),
-					KVAction:    "store",
-					CUType:      CUTypeBF16Array,
-					TensorRole:  "attn_q",
-					FlashTileQ:  0,
-					FlashTileKV: kvTile,
+					Layer:         ml,
+					Phase:         "flash_attn",
+					TargetNode:    attnNode,
+					ExpertIdx:     -1,
+					FlitBytes:     len(flit),
+					KVAction:      "store",
+					CUType:        CUTypeBF16Array,
+					TensorRole:    "attn_q",
+					FlashTileQ:    0,
+					FlashTileKV:   kvTile,
 					FlashNumTiles: numKVTiles,
-					RepeatKV:    needRepeatKV,
-					GroupSize:   kl.GroupSize,
-					WindowStart: windowStart,
-					WindowEnd:   windowEnd,
+					RepeatKV:      needRepeatKV,
+					GroupSize:     kl.GroupSize,
+					WindowStart:   windowStart,
+					WindowEnd:     windowEnd,
 				})
 			}
 			// KV cache load for the tiled attention
@@ -544,6 +544,29 @@ func selectTopExperts(token []byte, ml int, experts []int, topK int) []int {
 	if topK > len(experts) {
 		topK = len(experts)
 	}
+	scores := scoreExpertPopulation(token, ml, experts)
+	out := make([]int, topK)
+	for i := 0; i < topK; i++ {
+		out[i] = scores[i].expert
+	}
+	return out
+}
+
+// expertScore is one gating-network decision: a candidate expert's global
+// index and its deterministic gating score for a (token, layer).
+type expertScore struct {
+	score  uint64
+	expert int
+}
+
+// scoreExpertPopulation computes the gating score of every candidate expert
+// in a model layer's population for one token.  The seed is FNV-1a over the
+// token bytes and the model layer; each expert is then scored by its GLOBAL
+// index through a splitmix-style mix, so routing is token- and layer-
+// dependent and the whole population (not just experts 0..TopK-1) is
+// reachable.  This is the software twin of the moe_gating unit's score path
+// (HDL/core/moe_gating.v) and the C firmware's select_topk (fw/pnm_fw.c).
+func scoreExpertPopulation(token []byte, ml int, experts []int) []expertScore {
 	// Deterministic per-token per-layer seed (FNV-1a over token plus layer).
 	h := uint64(14695981039346656037)
 	for _, b := range token {
@@ -554,18 +577,14 @@ func selectTopExperts(token []byte, ml int, experts []int, topK int) []int {
 	h = (h * 1099511628211) >> 0
 
 	// Score every expert in the population, keyed by global index, with a
-	// stable (score, expert) tiebreak.
-	type scored struct {
-		score  uint64
-		expert int
-	}
-	scores := make([]scored, len(experts))
+	// stable (score, expert) descending tiebreak.
+	scores := make([]expertScore, len(experts))
 	for i, ex := range experts {
 		sh := h ^ uint64(ex)*0x2545F4914F6CDD1D
 		sh ^= sh >> 33
 		sh *= 0xFF51AFD7ED558CCD
 		sh ^= sh >> 33
-		scores[i] = scored{score: sh, expert: ex}
+		scores[i] = expertScore{score: sh, expert: ex}
 	}
 	sort.Slice(scores, func(i, j int) bool {
 		if scores[i].score != scores[j].score {
@@ -573,11 +592,53 @@ func selectTopExperts(token []byte, ml int, experts []int, topK int) []int {
 		}
 		return scores[i].expert < scores[j].expert
 	})
-	out := make([]int, topK)
-	for i := 0; i < topK; i++ {
-		out[i] = scores[i].expert
+	return scores
+}
+
+// GatedExpert is one top-k gating decision for a token at a model layer:
+// the winning global expert index, its gating score, and the physical node
+// that holds that expert's weights.
+type GatedExpert struct {
+	Expert int    // global expert index
+	Score  uint64 // deterministic gating score (higher wins)
+	Node   NodeID // node holding this expert's weights
+}
+
+// GateToken runs the MoE gating network for one token at one model layer:
+// it scores the layer's FULL expert population and returns the top-k
+// decisions (expert, score, node) in score order.  This is what a prompt
+// token actually produces: the orchestrator's gating network output that
+// decides which expert nodes receive the token.
+func (fw *Firmware) GateToken(token []byte, ml int) ([]GatedExpert, error) {
+	if fw.State != FWStateReady {
+		return nil, fmt.Errorf("firmware: not ready (state=%d)", fw.State)
 	}
-	return out
+	tc := &fw.Driver.Config.TextConfig
+	if ml < 0 || ml >= tc.NumHiddenLayers {
+		return nil, fmt.Errorf("firmware: model layer %d out of range (0..%d)", ml, tc.NumHiddenLayers-1)
+	}
+	var population []int
+	for mk := range fw.Driver.MoeMap {
+		if mk.ModelLayer == ml {
+			population = append(population, mk.ExpertIdx)
+		}
+	}
+	sort.Ints(population)
+	scores := scoreExpertPopulation(token, ml, population)
+	topK := tc.TopKExperts
+	if topK > len(scores) {
+		topK = len(scores)
+	}
+	out := make([]GatedExpert, 0, topK)
+	for i := 0; i < topK; i++ {
+		key := MoeKey{ModelLayer: ml, ExpertIdx: scores[i].expert}
+		node, ok := fw.Driver.MoeMap[key]
+		if !ok {
+			continue
+		}
+		out = append(out, GatedExpert{Expert: scores[i].expert, Score: scores[i].score, Node: node})
+	}
+	return out, nil
 }
 
 // layerIsSliding reports whether the given model layer uses sliding window

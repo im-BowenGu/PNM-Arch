@@ -90,11 +90,26 @@ module fp16_mac_array #(
     end
 
     // =========================================================================
-    // Pipeline logic: handle activation routing and partial sum accumulation
+    // Activation hold: latch accepted activation so the pipeline is immune to
+    // the input port changing mid-drain (a re-fire must not corrupt stage 0).
     // =========================================================================
+    reg [ARRAY_SIZE*16-1:0] act_hold;
+
+    // =========================================================================
+    // Pipeline logic: activation routing + partial sum accumulation.
+    // Rows are armed with a stagger (row r arms r*PIPE_DEPTH cycles after
+    // accept). Each armed row captures its held activation (act_hold), so a
+    // mid-drain change of the live act_in port cannot corrupt the drain.
+    // accept is gated on !out_active so a re-fire during a drain is ignored.
+    // =========================================================================
+    reg [7:0] row_delay_cnt [0:ARRAY_SIZE-1];
+    reg       row_armed [0:ARRAY_SIZE-1];
+    wire accept = act_valid && !out_active;
+
     integer r, c, s;
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
+            act_hold <= {(ARRAY_SIZE*16){1'b0}};
             for (r = 0; r < ARRAY_SIZE*ARRAY_SIZE; r = r + 1) begin
                 for (s = 0; s < PIPE_DEPTH; s = s + 1) begin
                     act_sr[r][s]   <= 16'h0000;
@@ -103,18 +118,38 @@ module fp16_mac_array #(
                     psum_v_sr[r][s] <= 1'b0;
                 end
             end
+            for (r = 0; r < ARRAY_SIZE; r = r + 1) begin
+                row_delay_cnt[r] <= 0;
+                row_armed[r] <= 0;
+            end
         end else begin
+            if (accept) begin
+                act_hold <= act_in;
+                for (r = 0; r < ARRAY_SIZE; r = r + 1) begin
+                    row_delay_cnt[r] <= 0;
+                    row_armed[r] <= (r == 0) ? 1'b1 : 1'b0;
+                end
+            end else begin
+                for (r = 0; r < ARRAY_SIZE; r = r + 1) begin
+                    if (!row_armed[r] && row_delay_cnt[r] < r * PIPE_DEPTH) begin
+                        row_delay_cnt[r] <= row_delay_cnt[r] + 1;
+                        if (row_delay_cnt[r] + 1 == r * PIPE_DEPTH)
+                            row_armed[r] <= 1'b1;
+                    end
+                end
+            end
+
             for (r = 0; r < ARRAY_SIZE; r = r + 1) begin
                 for (c = 0; c < ARRAY_SIZE; c = c + 1) begin
                     // -- Stage 0: capture input --
                     if (c == 0) begin
-                        // Column 0: get activation from external input
-                        act_sr[r*ARRAY_SIZE][0]   <= act_in[r*16 +: 16];
-                        act_v_sr[r*ARRAY_SIZE][0] <= act_valid;
+                        // Column 0: get activation from held input
+                        act_sr[r*ARRAY_SIZE][0]   <= (r == 0) ? (accept ? act_in[r*16 +: 16] : act_hold[r*16 +: 16]) : act_hold[r*16 +: 16];
+                        act_v_sr[r*ARRAY_SIZE][0] <= row_armed[r];
                         // Partial sum input: zero for row 0, from row above for row > 0
                         if (r == 0) begin
                             psum_sr[0][0]  <= 16'h0000;
-                            psum_v_sr[0][0] <= act_valid;
+                            psum_v_sr[0][0] <= row_armed[0];
                         end else begin
                             psum_sr[r*ARRAY_SIZE][0]  <= fma_result[r-1][0];
                             psum_v_sr[r*ARRAY_SIZE][0] <= fma_valid_out[r-1][0];
@@ -159,7 +194,8 @@ module fp16_mac_array #(
                     .a         (act_sr[row * ARRAY_SIZE + col][PIPE_DEPTH-1]),
                     .b         (weights[row][col]),
                     .c         (psum_sr[row * ARRAY_SIZE + col][PIPE_DEPTH-1]),
-                    .valid_in  (act_v_sr[row * ARRAY_SIZE + col][PIPE_DEPTH-1]),
+                    .valid_in  (row == 0 ? act_v_sr[col][PIPE_DEPTH-1] :
+                                          psum_v_sr[row * ARRAY_SIZE + col][PIPE_DEPTH-1]),
                     .result    (fma_result[row][col]),
                     .valid_out (fma_valid_out[row][col])
                 );
@@ -190,7 +226,7 @@ module fp16_mac_array #(
             for (ri = 0; ri < ARRAY_SIZE; ri = ri + 1)
                 result_out[ri*16 +: 16] <= 16'h0000;
         end else begin
-            if (act_valid) begin
+            if (accept) begin
                 out_active <= 1;
                 out_pipe_cnt <= 0;
                 out_sop_q <= act_sop;
@@ -200,17 +236,17 @@ module fp16_mac_array #(
             if (out_active) begin
                 out_pipe_cnt <= out_pipe_cnt + 1;
 
-                // Collect results from bottom row after pipeline fill
-                if (out_pipe_cnt >= ARRAY_SIZE * PIPE_DEPTH - 1) begin
+                // Collect results from bottom row when the bottom-right FMA
+                // validates (all columns done). Triggering on the bottom-left
+                // FMA's pulse misses it by (ARRAY_SIZE-1) columns.
+                if (fma_valid_out[ARRAY_SIZE-1][ARRAY_SIZE-1]) begin
                     for (ri = 0; ri < ARRAY_SIZE; ri = ri + 1)
                         result_out[ri*16 +: 16] <= fma_result[ARRAY_SIZE-1][ri];
-                    result_valid <= fma_valid_out[ARRAY_SIZE-1][0];
+                    result_valid <= 1;
                     result_sop <= out_sop_q;
                     result_eop <= out_eop_q;
-                end
-
-                if (out_pipe_cnt == ARRAY_SIZE * PIPE_DEPTH + PIPE_DEPTH)
                     out_active <= 0;
+                end
             end else begin
                 result_valid <= 0;
             end

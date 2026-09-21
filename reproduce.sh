@@ -40,11 +40,11 @@ cd "$SIM"
 echo "--- pnmc: bias_add.pnm (8x8x8) ---"
 run "pnmc bias_add.pnm 8x8x8" $GO run ./cmd/pnmc examples/bias_add.pnm -l 8 -x 8 -y 8
 
-echo "--- pnmc: compile-model gemma4_test (4x4x4) ---"
-run "compile-model gemma4_test" $GO run ./cmd/pnmc compile-model examples/gemma4_test -l 4 -x 4 -y 4
+echo "--- pnmc: compile-model gemma4_test_synthetic (4x4x4) ---"
+run "compile-model gemma4_test_synthetic" $GO run ./cmd/pnmc compile-model examples/gemma4_test_synthetic -l 4 -x 4 -y 4
 
-echo "--- pnmc: run-driver gemma4_test (4x4x4) ---"
-run "run-driver gemma4_test" $GO run ./cmd/pnmc run-driver examples/gemma4_test -l 4 -x 4 -y 4
+echo "--- pnmc: run-driver gemma4_test_synthetic (4x4x4) ---"
+run "run-driver gemma4_test_synthetic" $GO run ./cmd/pnmc run-driver examples/gemma4_test_synthetic -l 4 -x 4 -y 4
 
 echo "--- pnmc: compile-model mini_glm_moe (4x4x4) ---"
 run "compile-model mini_glm_moe" $GO run ./cmd/pnmc compile-model examples/mini_glm_moe -l 4 -x 4 -y 4

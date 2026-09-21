@@ -12,14 +12,14 @@ import (
 // reserved KV bytes to 184 MB/node instead of the 8 MB the silicon frame
 // can actually hold.
 func TestR35KVCacheFrameConsistency(t *testing.T) {
-	modelDir := filepath.Join(SimDir(), "examples", "gemma4_test")
+	modelDir := filepath.Join(SimDir(), "examples", "gemma4_test_synthetic")
 	cfg, err := LoadModelConfig(modelDir)
 	if err != nil {
-		t.Skipf("gemma4_test model config unavailable: %v", err)
+		t.Skipf("gemma4_test_synthetic model config unavailable: %v", err)
 	}
 	idx, err := LoadSafetensorsIndex(modelDir)
 	if err != nil {
-		t.Skipf("gemma4_test safetensors index unavailable: %v", err)
+		t.Skipf("gemma4_test_synthetic safetensors index unavailable: %v", err)
 	}
 	ir, err := CompileModelIR(cfg, idx)
 	if err != nil {

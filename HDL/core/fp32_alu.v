@@ -117,8 +117,9 @@ module fp32_alu (
                         if ((a[30:23] == 8'd255 && a[22:0] != 0) ||
                             (b[30:23] == 8'd255 && b[22:0] != 0) ||
                             (a[30:23] == 8'd255 && b[30:23] == 8'd255) ||
-                            (a_is_zero && b_is_zero) ||
-                            (a[30:23] == 8'd255 && b_is_zero)) begin
+                            (a_is_zero && b_is_zero)) begin
+                            // NaN only for NaN, Inf/Inf, 0/0 (IEEE 754);
+                            // Inf/0 falls through to the +-Inf branch below.
                             d_result_r <= FP32_NAN; d_valid_r <= 1;
                         end else if (a_is_den) begin
                             // Denormal input flushed: a_den -> a=0 -> +-0

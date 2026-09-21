@@ -243,12 +243,32 @@ module bf16_fma (
     wire [23:0] final_man = rounded_carry ? 24'h800000 : rounded_man;  // 1<<23
     wire [9:0]  final_exp = rounded_carry ? (norm_exp + 10'd1) : norm_exp;
 
-    // Pack result
-    wire result_underflow = (norm_exp < 0) || (norm_exp == 0 && !rounded_carry);
-    wire result_overflow  = (final_exp >= 255);
+    // Pack result. Normal results use final_man/final_exp (RNE at the normal
+    // boundary, bit 15). Results whose normalized biased exponent lands below
+    // 1 are subnormal: right-shift the normalized mantissa into the exponent-0
+    // range with a fresh RNE at the subnormal boundary (shift = 17 - norm_exp)
+    // instead of flushing to zero. A carry out of the 7-bit mantissa field
+    // produces the smallest normal (exponent 1, mantissa 0).
+    wire is_subnormal    = (norm_exp < 0) || (norm_exp == 0 && !rounded_carry);
+    wire result_overflow = (final_exp >= 255);
+
+    wire signed [9:0] sub_shift_s = 10'sd17 - norm_exp;   // >= 17 when is_subnormal
+    wire        sub_clamped = (sub_shift_s > 10'sd24);     // whole mantissa out -> zero
+    wire [4:0]  sub_shift   = sub_clamped ? 5'd24 : sub_shift_s[4:0];
+    wire [6:0]  sub_man     = sub_clamped ? 7'd0 : (norm_man >> sub_shift);
+    wire        sub_guard   = sub_clamped ? 1'b0 : norm_man[sub_shift - 5'd1];
+    wire        sub_round   = sub_clamped ? 1'b0 : norm_man[sub_shift - 5'd2];
+    wire [23:0] sub_sticky_mask = ((24'd1 << sub_shift) - 24'd1) >> 2;
+    wire        sub_sticky  = sub_clamped ? 1'b0 : |(norm_man & sub_sticky_mask);
+
+    wire sub_round_up = sub_guard & (sub_round | sub_sticky | sub_man[0]);
+    wire [7:0] sub_man_r = {1'b0, sub_man} + (sub_round_up ? 8'd1 : 8'd0);
+    wire [15:0] subnormal_result =
+        sub_man_r[7] ? {norm_sign, 8'd1, 7'd0} : {norm_sign, 8'd0, sub_man_r[6:0]};
+
     wire [15:0] packed_result;
-    assign packed_result = result_underflow ? (norm_sign ? 16'h8000 : BF16_ZERO) :
-                           result_overflow  ? {norm_sign, 8'd255, 7'd0} :
+    assign packed_result = is_subnormal   ? subnormal_result :
+                           result_overflow ? {norm_sign, 8'd255, 7'd0} :
                            {norm_sign, final_exp[7:0], final_man[22:16]};
 
     // Special cases
