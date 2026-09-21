@@ -60,6 +60,7 @@ module lpddr6_camm #(
     reg        cmd_hit_r;
     reg [ADDR_WIDTH-1:0] cmd_addr_r;
     reg [DATA_WIDTH-1:0] cmd_wdata_r;
+    reg [DATA_WIDTH/8-1:0] cmd_be_r;
     reg [7:0]  cmd_wait;
 
     wire [$clog2(MEM_DEPTH)-1:0] cmd_word_idx =
@@ -149,6 +150,7 @@ module lpddr6_camm #(
                 if (bus_valid && bus_ready) begin
                     cmd_addr_r  <= bus_addr;
                     cmd_wdata_r <= bus_wdata;
+                    cmd_be_r    <= (bus_we) ? bus_be : {DATA_WIDTH/8{1'b1}};
                     cmd_we_r    <= bus_we;
                     cmd_hit_r   <= ((bus_addr >> 2) < MEM_DEPTH);
                     cmd_pending <= 1'b1;
@@ -159,10 +161,16 @@ module lpddr6_camm #(
         end
     end
 
-    // Write commit (separate block so memory write happens at completion)
+    // Write commit (separate block so memory write happens at completion).
+    // Byte-enables from the accepted command mask the committed lanes; a
+    // partial-word write leaves the remaining bytes untouched.
+    integer be_i;
     always @(posedge clk) begin
         if (cmd_pending && cmd_we_r && cmd_wait == 0 && cmd_hit_r) begin
-            mem[cmd_word_idx] <= cmd_wdata_r;
+            for (be_i = 0; be_i < DATA_WIDTH/8; be_i = be_i + 1) begin
+                if (cmd_be_r[be_i])
+                    mem[cmd_word_idx][be_i*8 +: 8] <= cmd_wdata_r[be_i*8 +: 8];
+            end
         end
     end
 

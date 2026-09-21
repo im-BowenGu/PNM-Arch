@@ -70,10 +70,12 @@ module tb_int4_mac_array;
         $display("--- Feeding activations ---");
         @(posedge clk);
         act_in = {8'd4, 8'd3, 8'd2, 8'd1};
-        act_valid = 1;
         act_sop = 1;
         act_eop = 1;
+        #1;
+        act_valid = 1;
         @(posedge clk);
+        #1;
         act_valid = 0;
         act_sop = 0;
         act_eop = 0;
@@ -96,6 +98,57 @@ module tb_int4_mac_array;
                     errors = errors + 1;
                 end else begin
                     $display("PASS: identity matrix result correct");
+                end
+                // sop/eop must be queued at feed and presented with the result,
+                // not sampled from the (already-deasserted) live inputs.
+                if (result_sop !== 1'b1) begin
+                    $display("FAIL: result_sop not 1 on result cycle");
+                    errors = errors + 1;
+                end
+                if (result_eop !== 1'b1) begin
+                    $display("FAIL: result_eop not 1 on result cycle");
+                    errors = errors + 1;
+                end
+                // result_valid must deassert after the result (one-shot, not a
+                // sticky level), else multi-activation accumulation is corrupted.
+                @(posedge clk);
+                if (result_valid) begin
+                    $display("FAIL: result_valid stuck high after result");
+                    errors = errors + 1;
+                end else begin
+                    $display("PASS: result_valid deasserted after result");
+                end
+            end
+        end
+
+        // Feed a second activation vector to catch sticky-valid corruption that
+        // a single-vector test cannot expose.
+        $display("--- Feeding second activation vector ---");
+        @(posedge clk); @(posedge clk);
+        act_in = {8'd8, 8'd7, 8'd6, 8'd5};
+        act_sop = 1;
+        act_eop = 1;
+        #1;
+        act_valid = 1;
+        @(posedge clk);
+        #1;
+        act_valid = 0;
+        act_sop = 0;
+        act_eop = 0;
+
+        $display("--- Waiting for second result ---");
+        for (i = 0; i < 20; i = i + 1) begin
+            @(posedge clk);
+            if (result_valid) begin
+                if (result_out[31:0] !== 32'd5 ||
+                    result_out[63:32] !== 32'd6 ||
+                    result_out[95:64] !== 32'd7 ||
+                    result_out[127:96] !== 32'd8) begin
+                    $display("FAIL: second identity result mismatch: [%0d %0d %0d %0d]",
+                        result_out[31:0], result_out[63:32], result_out[95:64], result_out[127:96]);
+                    errors = errors + 1;
+                end else begin
+                    $display("PASS: second identity result correct");
                 end
             end
         end

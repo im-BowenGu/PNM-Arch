@@ -276,8 +276,13 @@ func (c *LLMClient) Generate(prompt string) ([]int, error) {
 		// Standard prefill
 		for _, id := range promptIDs {
 			tokenBytes := encodeTokenID(id, c.Config.DataType)
-			if _, err := c.FW.PlanInference(tokenBytes); err != nil {
+			records, err := c.FW.PlanInference(tokenBytes)
+			if err != nil {
 				return nil, fmt.Errorf("llm client: prefill: %w", err)
+			}
+			c.Stats.TotalDispatches += len(records)
+			for _, r := range records {
+				c.collectStats(r)
 			}
 			c.Stats.TotalLayers++
 		}
@@ -1037,8 +1042,13 @@ func (c *LLMClient) GenerateWithLogprobs(prompt string) ([]int, []LogprobResult,
 	// Prefill
 	for _, id := range promptIDs {
 		tokenBytes := encodeTokenID(id, c.Config.DataType)
-		if _, err := c.FW.PlanInference(tokenBytes); err != nil {
+		records, err := c.FW.PlanInference(tokenBytes)
+		if err != nil {
 			return nil, nil, fmt.Errorf("llm client: prefill: %w", err)
+		}
+		c.Stats.TotalDispatches += len(records)
+		for _, r := range records {
+			c.collectStats(r)
 		}
 	}
 

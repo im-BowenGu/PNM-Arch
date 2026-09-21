@@ -13,7 +13,7 @@ Paper/
   Paper.MD              # Manuscript source (Markdown with LaTeX-escape conventions)
   build.py              # Build pipeline -> submission/paper.docx (+ .pdf, .tex)
   AGENTS.md             # Agent guidance for working in this repository
-  shell.nix             # Nix shell with the full toolchain
+  flake.nix             # Nix flake with the full toolchain (`nix develop`)
   README.md             # Project overview
   HDL/                  # Verilog-2005 fabric model + compute units
   sim/                  # Co-simulation harness (Go, stdlib only)
@@ -52,6 +52,11 @@ The fabric is a byte-wide, Verilog-2005 model of the deterministic single-spine 
 | `fp16_mac_array.v` | Systolic array | FP16 | variable | FP16 attention |
 | `fp32_alu.v` | ALU | FP32 | 3 (MIN/MAX/CMP), 4 (FMA), 28 (DIV) cycles | Layernorm (divider) |
 | `int8_mac.v` | MAC | INT8 | 2 cycles | Quantized inference |
+| `int4_mac.v` | MAC | INT4 | 2 cycles | INT4 quantized (packed nibbles) |
+| `int4_mac_array.v` | Systolic array | INT4/INT8 | variable | INT4 quantized inference (4x density) |
+| `fp4_mac.v` | MAC | FP4 (E2M1) | 2 cycles | FP4 quantized (packed nibbles) |
+| `fp4_mac_array.v` | Systolic array | FP4 | variable | FP4 quantized inference (4x density vs BF16) |
+| `mxfp4_mac_array.v` | Systolic array | MXFP4 | variable | MXFP4 block-scaled (OCP microscaling) inference |
 | `moe_gating.v` | MoE Gating | BF16 | variable | Top-k expert selection |
 
 ### Doorbell and CRC
@@ -413,7 +418,7 @@ Five-stage AOT pipeline that transpiles HuggingFace models onto PNM chassis:
 4. **Route** - Compute 11-bit routing bitmaps and MoE expert map
 5. **Emit** - Write .pnm program file and chassis schema
 
-Key structs: `ModelCompiler`, `NodeAssignment`, `ComputeUnitType` (9 types), `TensorRef`
+Key structs: `ModelCompiler`, `NodeAssignment`, `ComputeUnitType` (15 types), `TensorRef`
 
 #### Safetensors Parser (`safetensors.go`)
 
@@ -623,7 +628,7 @@ python3 build.py --review   # submission/paper_review.pdf (11pt single-column)
 cd HDL
 iverilog -g2005 -o tb_fabric.out hfr.v flit_gate.v vc_merge.v lxy_repeater.v xy_turn.v node_eject.v tb_fabric.v && vvp tb_fabric.out
 iverilog -g2005 -o tb_load.out   hfr.v flit_gate.v vc_merge.v lxy_repeater.v xy_turn.v node_eject.v tb_load.v   && vvp tb_load.out
-iverilog -g2005 -o tb_doorbell.out core/tb_doorbell.v core/pe_tile_stub.v core/doorbell.v core/crc16.v core/bf16_fma.v core/weight_dequant.v core/int8_mac.v && vvp tb_doorbell.out
+iverilog -g2005 -o tb_doorbell.out core/tb_doorbell.v core/pe_tile_stub.v core/doorbell.v core/crc16.v core/bf16_fma.v core/weight_dequant.v core/int8_mac.v core/fp4_mac.v && vvp tb_doorbell.out
 # ... (see AGENTS.md for complete list)
 ```
 

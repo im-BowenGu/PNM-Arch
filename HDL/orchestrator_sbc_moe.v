@@ -1,7 +1,7 @@
 `include "pnm_defs.vh"
 
 // =============================================================================
-// orchestrator_sbc_moe — SBC Router Chip with BF16 MAC Array and MoE Gating SRAM
+// orchestrator_sbc_moe — SBC Router Chip with MoE Gating SRAM
 //
 // Mid-tier orchestrator chip for MoE transformer inference and dense LLM dispatch.
 // Integrates local gating evaluation so expert routing decisions never leave
@@ -11,8 +11,8 @@
 //   - RV32IMA multi-cycle core (production: RV32IMAFC)
 //   - 64KB boot ROM (firmware + dispatch schedule)
 //   - 64KB dedicated MoE gating weight SRAM (32K BF16 entries)
-//   - bf16_mac_array (16x16 systolic) for local projection compute
-//   - moe_gating unit (top-K selection + coordinate map)
+//   - moe_gating unit (top-K selection + coordinate map); bf16_mac_array
+//     dimension provisioned via ARRAY_SIZE param, no separate mac-array instance
 //   - LPDDR5 system DRAM controller stub (512MB address space)
 //     -- Linux/Redox NOMMU + CPython userland runs here --
 //   - PCIe Gen5 endpoint register stub

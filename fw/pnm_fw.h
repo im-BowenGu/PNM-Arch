@@ -42,7 +42,7 @@
 #define PNM_MAX_EXPERTS     256     /* max experts per model layer     */
 #define PNM_MAX_TOPK        16      /* max top-k experts per token     */
 #define PNM_MAX_MODEL_LAYERS 128    /* max transformer layers          */
-#define PNM_KV_CACHE_DEPTH  4096    /* KV cache entries per bank       */
+#define PNM_KV_CACHE_DEPTH  1024    /* KV entries per bank (RTL BANK_DEPTH / Go BankDepth) */
 #define PNM_KV_CACHE_BANKS  4       /* directional banks per layer     */
 #define PNM_KV_ENTRY_BYTES  512     /* RTL kv_cache_bank ENTRY_BYTES frame */
 #define PNM_ROUTING_TABLE_SIZE 256  /* max routing table entries       */
@@ -213,6 +213,18 @@ typedef struct {
     int flash_attn_enabled;   /* 1 = tiled flash attention (default)     */
     int flash_tile_size_kv;   /* KV tile size for flash attention        */
     int seq_pos[PNM_MAX_MODEL_LAYERS]; /* per-model-layer sequence position (mirrors Go SeqPositions[ml]) */
+
+    /* Per-model-layer sliding window (mirrors Go layerIsSliding): 0 = full
+     * attention (window_start = -1), > 0 = sliding-window size for that model
+     * layer.  Populated from the model's per-layer attention type; layers not
+     * configured default to full attention. */
+    int sliding_window[PNM_MAX_MODEL_LAYERS];
+
+    /* GQA configuration (mirrors Go KVCache.ConfigureGQA / DispatchRecord):
+     * 0 = unknown/disabled, in which case repeat_kv is 0 on all records. */
+    int num_attention_heads;
+    int num_kv_heads;
+    int head_dim;
 } firmware_t;
 
 /* ── Dispatch Record ───────────────────────────────────────────────── */
@@ -231,6 +243,9 @@ typedef struct {
     int       flash_num_tiles; /* total KV tiles */
     int       window_start;    /* sliding window start (-1 = full attn) */
     int       window_end;      /* sliding window end */
+    /* GQA metadata (mirrors Go DispatchRecord RepeatKV/GroupSize) */
+    int       repeat_kv;       /* 1 when KV heads must be repeated (GQA) */
+    int       group_size;      /* num_attention_heads / num_kv_heads */
 } dispatch_record_t;
 
 /* ── API ───────────────────────────────────────────────────────────── */

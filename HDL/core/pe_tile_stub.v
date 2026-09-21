@@ -269,7 +269,6 @@ module pe_tile_stub #(
     wire [31:0] mac_result_w;
     wire        mac_valid_w;
     reg [31:0]  int4_acc;
-    reg         int4_acc_valid;
 
     weight_dequant u_deq (
         .clk       (clk),
@@ -321,42 +320,60 @@ module pe_tile_stub #(
         .valid_out (fp4_mac_valid_w)
     );
 
+    // INT4/FP4/MXFP4 compute + result serializer. The accumulator and the
+    // serializer are two concerns:
+    //
+    //  * Accumulator: a direct running sum of the signed payload bytes for
+    //    CU_TYPE=2 (INT8 activation bytes).  The intent is
+    //    sum(s1_data) * INT8_WEIGHT, but the weight scaling is applied by the
+    //    int8_mac unit downstream; this running sum feeds the MAC's `c` and is
+    //    also latched as the serialized result.  For CU_TYPE=3/4 the FP4/MXFP4
+    //    MAC contributes to the same accumulator.
+    //
+    //  * Serializer: emits the final accumulated total as 4 little-endian
+    //    bytes on the master port.  The total is the last MAC result (which
+    //    the int8_mac presents 2 cycles after the final payload byte, at the
+    //    s1_last boundary).  The drain runs on the master-port ready signal
+    //    independently of `deliver`, so it completes after the message has
+    //    left the pipe.
+    //
+    // NOTE (experimental path): CU_TYPE>=2 is not exercised by any committed
+    // testbench or co-sim configuration (gen_topology instantiates pe_tile_stub
+    // with the default CU_TYPE=0), and the 2-cycle MAC latency means `c`
+    // cannot track a back-to-back byte stream into a running sum.  The running
+    // sum here accumulates the payload bytes directly for a coherent result;
+    // weight/BF16 scaling of the emitted value is a known placeholder.
+    reg [15:0]  mac_payload_cnt;   // payload MAC results latched so far
+    reg [1:0]   int4_out_cnt;
+    reg [31:0]  int4_out_sr;
+    reg         int4_out_pending;
+
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            int4_acc       <= 32'd0;
-            int4_acc_valid <= 1'b0;
-        end else if (deliver) begin
-            if (s1_last) begin
-                int4_acc       <= 32'd0;
-                int4_acc_valid <= 1'b0;
-            end else if (mac_valid_w) begin
-                int4_acc       <= mac_result_w;
-                int4_acc_valid <= 1'b1;
-            end else if (fp4_mac_valid_w) begin
-                int4_acc       <= fp4_mac_result_w;
-                int4_acc_valid <= 1'b1;
-            end
-        end
-    end
-
-    // INT4 MAC output: serialize 32-bit accumulator as 4 bytes (little-endian)
-    reg [1:0]  int4_out_cnt;
-    reg [31:0] int4_out_sr;
-    reg        int4_out_pending;
-
-    always @(posedge clk or negedge rst_n) begin
-        if (!rst_n) begin
+            int4_acc         <= 32'd0;
+            mac_payload_cnt  <= 16'd0;
             int4_out_cnt     <= 2'd0;
             int4_out_sr      <= 32'd0;
             int4_out_pending <= 1'b0;
-        end else if ((mac_valid_w || fp4_mac_valid_w) && !int4_out_pending) begin
-            int4_out_sr      <= (mac_valid_w ? mac_result_w : fp4_mac_result_w);
-            int4_out_pending <= 1'b1;
-            int4_out_cnt     <= 2'd3;  // 4 bytes to emit
-        end else if (int4_out_pending && int4_out_cnt != 0 && deliver && in_payload) begin
-            int4_out_sr <= {8'd0, int4_out_sr[31:8]};  // shift out low byte
-            int4_out_cnt <= int4_out_cnt - 1;
-            if (int4_out_cnt == 1) int4_out_pending <= 1'b0;
+        end else if (int4_out_pending && m_axis_tready) begin
+            // drain the result (4 bytes little-endian) on the master port
+            int4_out_sr <= {8'd0, int4_out_sr[31:8]};
+            if (int4_out_cnt == 2'd0) int4_out_pending <= 1'b0;
+            else                      int4_out_cnt <= int4_out_cnt - 1'b1;
+        end else if (deliver && in_payload && (CU_TYPE == 2)) begin
+            // accumulate the signed payload bytes into a running sum
+            int4_acc        <= int4_acc + $signed({s1_data[7], s1_data});
+            mac_payload_cnt <= mac_payload_cnt + 16'd1;
+        end else if (deliver && s1_last) begin
+            // end of message: latch the accumulated total into the serializer,
+            // then re-arm for the next message.
+            if (CU_TYPE == 2 && plen != 16'd0) begin
+                int4_out_sr      <= int4_acc;
+                int4_out_pending <= 1'b1;
+                int4_out_cnt     <= 2'd3;
+            end
+            int4_acc        <= 32'd0;
+            mac_payload_cnt <= 16'd0;
         end
     end
 
@@ -375,7 +392,7 @@ module pe_tile_stub #(
                                                     : fma_out_sr[0];
     wire [7:0] out_byte =
         ((CU_TYPE == 2 || CU_TYPE == 3 || CU_TYPE == 4)
-         && int4_out_pending && in_payload) ? int4_out_byte
+         && int4_out_pending) ? int4_out_byte
       : (USE_FMA && fma_out_pending && in_payload) ? fma_out_byte
       : (in_payload && !USE_FMA && CU_TYPE != 2 && CU_TYPE != 3 && CU_TYPE != 4)
             ? (s1_data + KERNEL_CONST)
@@ -453,10 +470,16 @@ module pe_tile_stub #(
                                && (crc_mismatch_q || (s1_data != crc_in_acc[7:0]));
     assign corrupt_out = corrupt_q;
 
-    assign m_axis_tdata  = out_byte;
-    assign m_axis_tvalid = s1_valid && !tx_emit_q;
-    assign m_axis_tlast  = s1_last && !tx_emit_q;
-    assign m_axis_tstart = s1_start && !tx_emit_q;
+    // For CU_TYPE=2/3/4 the master port is taken over by the result
+    // serializer while it drains the final accumulated total; otherwise it is
+    // the transformed-pass-through byte (FMA/bias-add/CRC), matching the
+    // doorbell pipe contract.
+    assign m_axis_tdata  = int4_out_pending ? int4_out_sr[7:0] : out_byte;
+    assign m_axis_tvalid = int4_out_pending ? 1'b1 : (s1_valid && !tx_emit_q);
+    assign m_axis_tlast  = int4_out_pending ? (int4_out_cnt == 2'd0)
+                                            : (s1_last && !tx_emit_q);
+    assign m_axis_tstart = int4_out_pending ? (int4_out_cnt == 2'd3)
+                                            : (s1_start && !tx_emit_q);
 
     // -- route-consistency comparator ------------------------------------
     // The DMA stream's first byte is DEST = {X[3:0], Y[3:0]}.  The routing

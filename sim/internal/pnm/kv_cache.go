@@ -753,18 +753,34 @@ func (kc *KVCache) RepeatKV(layer int, kvEntry []byte) []byte {
 	return kc.Layers[layer].RepeatKV(kvEntry)
 }
 
-// ConfigureSlidingWindow sets per-layer sliding window attention from model config.
+// ConfigureSlidingWindow sets per-layer sliding window attention from model
+// config.  KV layers are indexed by PHYSICAL layer, and a physical layer holds
+// several model layers (ceiling grouping, mirroring Firmware.physLayerOf), so
+// model-layer types are mapped onto their physical layer and a physical layer
+// is marked sliding if any mapped model layer uses sliding attention.  With no
+// per-model layer types (Mistral/Gemma-1 style), every physical layer slides.
 func (kc *KVCache) ConfigureSlidingWindow(slidingWindow int, layerTypes []string) {
 	if slidingWindow <= 0 {
 		return
 	}
 	kc.Config.SlidingWindow = slidingWindow
+	if len(kc.Layers) == 0 {
+		return
+	}
+	if len(layerTypes) == 0 {
+		for i := range kc.Layers {
+			kc.Layers[i].SetSlidingWindow(slidingWindow)
+		}
+		return
+	}
+	perPhysical := (len(layerTypes) + len(kc.Layers) - 1) / len(kc.Layers)
 	for ml, ltype := range layerTypes {
-		if ml >= len(kc.Layers) {
-			break
+		pl := ml / perPhysical
+		if pl >= len(kc.Layers) {
+			pl = len(kc.Layers) - 1
 		}
 		if ltype == "sliding_attention" {
-			kc.Layers[ml].SetSlidingWindow(slidingWindow)
+			kc.Layers[pl].SetSlidingWindow(slidingWindow)
 		}
 	}
 }

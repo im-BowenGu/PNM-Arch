@@ -69,18 +69,27 @@ module fp4_mac_array #(
     // =========================================================================
     reg [7:0] act_hold [0:ARRAY_SIZE-1];
     reg       act_valid_q;
+    reg       fed;
     integer ha;
+    // Arming: one feed in flight at a time; a refeed while the previous vector
+    // is still propagating is ignored (host must wait for busy), matching the
+    // fp16/bf16/fp32 arrays' !out_active accept gating.
+    wire accept = act_valid && !fed;
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             act_valid_q <= 1'b0;
+            fed <= 1'b0;
             for (ha = 0; ha < ARRAY_SIZE; ha = ha + 1)
                 act_hold[ha] <= 8'd0;
         end else begin
-            act_valid_q <= act_valid;
-            if (act_valid) begin
+            act_valid_q <= accept;
+            if (accept) begin
+                fed <= 1'b1;
                 for (ha = 0; ha < ARRAY_SIZE; ha = ha + 1)
                     act_hold[ha] <= act_in[ha*8 +: 8];
             end
+            if (psum_v_sr[ARRAY_SIZE-1][ARRAY_SIZE-1][PIPE_DEPTH-1])
+                fed <= 1'b0;
         end
     end
 
@@ -180,7 +189,7 @@ module fp4_mac_array #(
             out_sop_q    <= 1'b0;
             out_eop_q    <= 1'b0;
         end else begin
-            if (act_valid) begin
+            if (accept) begin
                 out_sop_q <= act_sop;
                 out_eop_q <= act_eop;
             end
@@ -199,6 +208,6 @@ module fp4_mac_array #(
         end
     end
 
-    assign busy = act_valid;
+    assign busy = fed;
 
 endmodule
