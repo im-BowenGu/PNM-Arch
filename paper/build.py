@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Build a single DOCX from Paper.MD using standard LaTeX."""
 from __future__ import annotations
-import re, subprocess, sys
+import re, shutil, subprocess, sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -152,8 +152,26 @@ def latex_source(text: str, review: bool) -> str:
 """
 
 
+def sync_hdl() -> None:
+    """Refresh the paper/HDL verification mirror from the live HDL/ tree.
+
+    The paper cites testbenches in paper/HDL/ (§4.6).  Tracking a manual
+    copy lets it drift (it already diverged in doorbell.v and pe_tile_stub.v);
+    regenerating the mirror at build time guarantees the paper proof runs
+    the exact RTL the co-simulation harness verifies.
+    """
+    src = ROOT.parent / "HDL"
+    dst = ROOT / "HDL"
+    if not src.is_dir():
+        return  # paper build from a checkout without HDL: leave mirror alone
+    if dst.exists():
+        shutil.rmtree(dst)
+    shutil.copytree(src, dst, ignore=shutil.ignore_patterns("*.out", "*.vcd"))
+
+
 def main():
     review = "--review" in sys.argv
+    sync_hdl()  # paper/HDL is generated, not tracked
     md = ROOT / "Paper.MD"
     text = md.read_text(encoding="utf-8")
 

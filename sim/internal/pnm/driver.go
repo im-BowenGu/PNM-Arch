@@ -313,20 +313,6 @@ func (d *Driver) generateWeightPayload(t TensorRef) []byte {
 }
 
 // ============================================================================
-// Flit construction (PCIe → spine wormhole flits)
-// ============================================================================
-
-// BuildWeightFlit constructs one wormhole flit for a weight upload command.
-// Wire layout: LAYER_ID | MODULE_ID | CTRL | LEN_LO | LEN_HI | payload | CRC_HI | CRC_LO
-func BuildWeightFlit(cmd WeightUploadCommand) []StreamByte {
-	layerID := cmd.TargetLayer + 1 // 1-based on the wire
-	modID := int(cmd.TargetModule)
-	ctrl := CTRL_COMPUTE_SPINE
-	return Flit(layerID, modID, ctrl, cmd.Payload, false)
-}
-
-// ============================================================================
-// ============================================================================
 // Schemas and serialization
 // ============================================================================
 

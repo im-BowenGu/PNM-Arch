@@ -86,7 +86,7 @@ module orchestrator_chip #(
     // =========================================================================
     // Internal constants
     // =========================================================================
-    localparam CTRL_WEIGHT_UPLOAD = 8'hA0;  // vc_class=2 | OP_WEIGHT (distinct from OP_COMPUTE)
+    localparam CTRL_WEIGHT_UPLOAD = 8'h82;  // vc_class=2 | OP_COMPUTE | rsvd[1] weight marker (0x80/0x81 are compute/echo; 0xA0/0xB0 are KV ops)
     localparam CTRL_COMPUTE       = 8'h80;  // vc_class=2 | OP_COMPUTE
     localparam CTRL_FORWARD       = 8'h90;  // vc_class=2 | OP_FORWARD
     localparam REQ_MODULE         = 8'hEE;  // AOT-fixed requester (spine root)

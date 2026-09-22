@@ -54,7 +54,7 @@ func SimDir() string {
 var FABRIC = []string{"flit_gate.v", "hfr.v", "lxy_repeater.v", "xy_turn.v",
 	"node_eject.v", "vc_merge.v", "core/crc16.v", "core/bf16_fma.v", "core/pe_tile_stub.v",
 	"core/weight_dequant.v", "core/int8_mac.v", "core/int4_mac.v", "core/int4_mac_array.v",
-	"core/fp4_mac.v", "core/fp4_mac_array.v", "core/mxfp4_mac_array.v", "kv_cache_bank.v"}
+	"core/fp4_mac.v", "core/fp4_mac_array.v", "core/mxfp4_mac_array.v", "kv_cache_bank.v", "kv_offload.v"}
 
 // PE_PIPE_DELAY: the generated node MAC stub (pe_tile_stub.v,
 // MULT_LATENCY=2) adds two pipe cycles between the eject and the node DMA
@@ -73,7 +73,15 @@ const (
 	CTRL_COMPUTE_SPINE = 0x80 // vc_class=2 (descent) | OP_COMPUTE
 	CTRL_FORWARD_SPINE = 0x90 // vc_class=2 (descent) | OP_FORWARD (pass-through)
 	CTRL_ECHO_SPINE    = 0x81 // vc_class=2 (descent) | OP_COMPUTE | return flag
+	CTRL_KV_STORE      = 0xA0 // vc_class=2 (descent) | OP_KV_STORE (§2.6)
+	CTRL_KV_LOAD       = 0xB0 // vc_class=2 (descent) | OP_KV_LOAD  (§2.6)
 )
+
+// KV_ENTRY_BYTES is the kv_cache_bank ENTRY_BYTES frame the co-sim topology
+// instantiates (HDL/kv_cache_bank.v, gen_topology.go): one KV cache entry is
+// a fixed 512-byte SRAM frame, and a KV_LOAD indexes the bank's live FIFO
+// window with a 16-bit relative position.
+const KV_ENTRY_BYTES = 512
 
 // VC classes (HDL/pnm_defs.vh) carried on the per-link 2-bit sideband.
 const (
@@ -365,6 +373,9 @@ type Program struct {
 	Order     []OrderEntry
 	DESExact  bool // cross-check the gate-level cycles against the DES model
 	MixedVC   bool // skip the blanket vc==2 inject assertion (vcsweep)
+	KVCache   bool // instantiate kv_cache_bank per column (ScenarioKV)
+	KV        *KVPlan
+	KVDepth   int // kv_cache_bank BANK_DEPTH (0 = default 1024; kvflow uses 4)
 }
 
 // NewProgram mirrors Program.__init__.
@@ -706,6 +717,356 @@ func randBytesInt(rng *PyRand, n int) []int {
 		b[i] = rng.RandRange(0, 256)
 	}
 	return b
+}
+
+
+// =============================================================================
+// KV cache co-simulation scenario (Paper §2.6)
+//
+// The KV cache bank (HDL/kv_cache_bank.v) is instantiated per board column
+// when prog.KVCache is set.  KV commands are ordinary wormhole flits whose
+// CTRL byte carries the opcode:
+//
+//   STORE  LAYER | MODULE | 0xA0 | LEN(512) | <512-byte entry> | CRC
+//   LOAD   LAYER | MODULE | 0xB0 | LEN(2)   | idx(LE u16)     | CRC
+//
+// The bank snoops the head (MODULE | CTRL), absorbs command flits, and
+// validates their end-to-end CRC before committing or serving: a corrupt
+// store is drained and discarded (the FIFO is unchanged) and a corrupt load
+// is drained with no response.  A served load injects a fully-formed
+// compute flit back toward the requesting node:
+//
+//   MODULE(echoed) | 0x80 | LEN(512) | <entry> | CRC
+//
+// which the node doorbell accepts and the MAC stub bias-transforms, so the
+// delivered bytes equal StubOutput(response, nodeBias).  The load index is
+// RELATIVE to the bank's live FIFO window [read_ptr, read_ptr+occupancy):
+// loads are non-destructive reads; read_ptr only advances on eviction
+// (kv_offload, not exercised by this scenario).
+// =============================================================================
+
+// KVPlan is the software twin of the KV cache banks: per target node, the
+// committed-store count and the load requests issued, in wire order.
+type KVPlan struct {
+	Banks map[NodeID]*KVBankPlan
+}
+
+type KVBankPlan struct {
+	EntryCount int      // committed stores (corrupt stores excluded)
+	Loads      []KVLoad // requests in injection order
+}
+
+type KVLoad struct {
+	Idx     int // relative index into the live window
+	Corrupt bool
+}
+
+// kvResponse builds the bank's load response for one committed entry.
+func kvResponse(mod int, entry []byte) []byte {
+	body := []byte{byte(mod), 0x80, byte(len(entry) & 0xFF), byte((len(entry) >> 8) & 0xFF)}
+	body = append(body, entry...)
+	hi, lo := crcBytes(body)
+	return append(body, hi, lo)
+}
+
+// ScenarioKV: KV cache store/load round trips through the fabric.  Target
+// nodes across two layers exercise distinct bank columns; each bank receives
+// two committed stores, one corrupt store (drained, FIFO unchanged), per-entry
+// loads (non-destructive reads), and one corrupt load (no response).
+func ScenarioKV(layers, bx, by int, seed int64) *Program {
+	nodes := AllNodes(layers, bx, by)
+	rng := NewPyRand(uint64(seed))
+	p := NewProgram("kv", nodes, "n/a")
+	p.KVCache = true
+	p.KV = &KVPlan{Banks: map[NodeID]*KVBankPlan{}}
+
+	var targets []NodeID
+	if layers > 0 {
+		for x := 0; x < bx && x < 4; x++ {
+			targets = append(targets, NodeID{L: 0, X: x, Y: (x + 1) % by})
+		}
+	}
+	if layers > 1 {
+		targets = append(targets, NodeID{L: 1, X: bx / 2, Y: 0})
+	}
+
+	for _, n := range targets {
+		p.ProgramNode(n, "echo", nil, (n.X%4)+1)
+		p.BP[n] = 1
+		p.KV.Banks[n] = &KVBankPlan{}
+	}
+
+	for _, n := range targets {
+		bank := p.KV.Banks[n]
+		// two committed entries per bank, deterministic bytes
+		for e := 0; e < 2; e++ {
+			p.InjectRouted(n, CTRL_KV_STORE, randBytes(rng, KV_ENTRY_BYTES), false)
+			bank.EntryCount++
+		}
+		// one corrupt store: absorbed, CRC-failed, FIFO unchanged
+		p.InjectRouted(n, CTRL_KV_STORE, randBytes(rng, KV_ENTRY_BYTES), true)
+		// per-entry loads, then one corrupt load (no response)
+		p.InjectRouted(n, CTRL_KV_LOAD, []byte{0x00, 0x00}, false)
+		p.InjectRouted(n, CTRL_KV_LOAD, []byte{0x01, 0x00}, false)
+		p.InjectRouted(n, CTRL_KV_LOAD, []byte{0x07, 0x00}, true)
+		bank.Loads = []KVLoad{{Idx: 0}, {Idx: 1}, {Idx: 7, Corrupt: true}}
+	}
+	return p
+}
+
+// ScenarioKVFlow: cache fill / auto-eviction / reload on the fabric.  A
+// small bank (BANK_DEPTH=4, set via prog.KVDepth) fills to capacity, the
+// kv_offload controller evicts the oldest entry each time the bank reaches
+// capacity, and the loads at relative indices 0..2 must return the live
+// window's e2, e3, e4 (circular FIFO after two auto-evictions).
+func ScenarioKVFlow(layers, bx, by int, seed int64) *Program {
+	// The bank the scenario exercises lives in layer 0, column 0; the
+	// manifest still covers the whole chassis (the slice generators index
+	// every node).  kv_offload has 4 bank slots, one per column.
+	nodes := AllNodes(layers, bx, by)
+	rng := NewPyRand(uint64(seed))
+	p := NewProgram("kvflow", nodes, "n/a")
+	p.KVCache = true
+	p.KVDepth = 4
+	p.KV = &KVPlan{Banks: map[NodeID]*KVBankPlan{}}
+
+	target := NodeID{L: 0, X: 0, Y: 1}
+	p.ProgramNode(target, "echo", nil, 2)
+	p.BP[target] = 1
+	p.KV.Banks[target] = &KVBankPlan{}
+
+	bank := p.KV.Banks[target]
+	for e := 0; e < 5; e++ { // e0..e4; auto-evictions keep the window live
+		p.InjectRouted(target, CTRL_KV_STORE, randBytes(rng, KV_ENTRY_BYTES), false)
+		bank.EntryCount++
+	}
+	p.InjectRouted(target, CTRL_KV_LOAD, []byte{0x00, 0x00}, false)
+	p.InjectRouted(target, CTRL_KV_LOAD, []byte{0x01, 0x00}, false)
+	p.InjectRouted(target, CTRL_KV_LOAD, []byte{0x02, 0x00}, false)
+	bank.Loads = []KVLoad{{Idx: 0}, {Idx: 1}, {Idx: 2}}
+	return p
+}
+
+// kvExpected runs the software twin: the FIFO of committed entries comes
+// from the store flits' payloads (manifest DMA, injection order), and each
+// non-corrupt in-window load yields StubOutput(kvResponse(entry), bias).
+// Only banks in the slice's layer list are considered.
+func kvExpected(prog *Program, lids []int) (map[NodeID][]byte, int) {
+	exp := map[NodeID][]byte{}
+	served := 0
+	depth := prog.KVDepth
+	if depth == 0 {
+		depth = 1024
+	}
+	for n, bank := range prog.KV.Banks {
+		if !containsInt(lids, n.L) {
+			continue
+		}
+		bias := prog.Manifest[n].Bias
+		mod := (n.X << 4) | n.Y
+
+		// committed commands for this node, in injection order
+		var stores [][]byte
+		var loads []KVLoad
+		for _, pkt := range prog.Manifest[n].Packets {
+			if pkt.Corrupt {
+				continue
+			}
+			if len(pkt.DMA) == 4+KV_ENTRY_BYTES+2 {
+				stores = append(stores, append([]byte(nil), pkt.DMA[4:4+KV_ENTRY_BYTES]...))
+			} else if len(pkt.DMA) == 4+2+2 {
+				loads = append(loads, KVLoad{Idx: int(pkt.DMA[4]) | (int(pkt.DMA[5]) << 8)})
+			}
+		}
+
+		// circular replay with hardware semantics: the controller evicts the
+		// oldest entry when the bank is at capacity, serialized between
+		// commands by the NoB hijack.
+		ring := make([][]byte, depth)
+		wp, rp, occ := 0, 0, 0
+		evict := func() {
+			rp = (rp + 1) % depth
+			occ--
+		}
+		for _, st := range stores {
+			if occ == depth {
+				evict()
+			}
+			ring[wp] = st
+			wp = (wp + 1) % depth
+			occ++
+		}
+		var out []byte
+		for _, l := range bank.Loads {
+			if occ == depth {
+				evict()
+			}
+			if l.Corrupt || l.Idx >= occ {
+				continue
+			}
+			out = append(out, StubOutput(kvResponse(mod, ring[(rp+l.Idx)%depth]), bias)...)
+			served++
+		}
+		exp[n] = out
+	}
+	return exp, served
+}
+
+func first16(b []byte) string {
+	if len(b) > 16 {
+		b = b[:16]
+	}
+	return fmt.Sprintf("%x", b)
+}
+
+func first8p(b []byte) string {
+	if len(b) > 12 {
+		b = b[4:12]
+	}
+	return fmt.Sprintf("%x", b)
+}
+
+func byteAt(b []byte, i int) byte {
+	if i < 0 || i >= len(b) {
+		return 0xFF
+	}
+	return b[i]
+}
+
+// entryBytesOf flattens the delivered node stream to raw bytes.
+func entryBytesOf(stream []Entry4) []byte {
+	out := make([]byte, 0, len(stream))
+	for _, e := range stream {
+		out = append(out, byte(e.D))
+	}
+	return out
+}
+
+// VerifyKV validates the KV scenario delivery: byte conservation across
+// absorbed commands, generated responses, and node delivery; FIFO-ordered
+// response content (bias-transformed by the node MAC); class-3 delivery;
+// zero doorbell refusals (every response CRC-validates).
+func VerifyKV(delivered *Delivery, prog *Program, lids []int) ([]string, *Stats) {
+	var errors []string
+	stats := &Stats{}
+
+	// flit counts for this slice's layers, from the wire stream (injection
+	// order): classify each routed flit by its CTRL byte and corrupt flag.
+	stores, loads, cs, cl := 0, 0, 0, 0
+	for _, oe := range prog.Order {
+		if oe.IsPT || !containsInt(lids, oe.Key) {
+			continue
+		}
+		ctrl := oe.WF[2].Data // LAYER | MODULE | CTRL | ...
+		switch ctrl {
+		case CTRL_KV_STORE:
+			if oe.Ref.Corrupt {
+				cs++
+			} else {
+				stores++
+			}
+		case CTRL_KV_LOAD:
+			if oe.Ref.Corrupt {
+				cl++
+			} else {
+				loads++
+			}
+		}
+	}
+	lc := loads
+
+	// --- byte conservation ------------------------------------------------
+	injected := len(delivered.Inject)
+	wantInjected := (stores+cs)*(1+4+KV_ENTRY_BYTES+2) + (lc+cl)*(1+4+2+2)
+	if injected != wantInjected {
+		errors = append(errors, fmt.Sprintf("kv: inject: %d bytes on wire, scenario built %d", injected, wantInjected))
+	}
+	totalDelivered := 0
+	for _, v := range delivered.Nodes {
+		totalDelivered += len(v)
+	}
+	for _, v := range delivered.XRes {
+		totalDelivered += len(v)
+	}
+	for _, v := range delivered.YRes {
+		totalDelivered += len(v)
+	}
+	totalDelivered += len(delivered.Tail) + len(delivered.TailUp)
+	per := 4 + KV_ENTRY_BYTES + 2
+	if totalDelivered != lc*per {
+		errors = append(errors, fmt.Sprintf("kv: delivered %d bytes, expected %d response bytes (%d served loads)",
+			totalDelivered, lc*per, lc))
+	}
+	absorbed := (stores+cs)*(4+KV_ENTRY_BYTES+2) + (lc+cl)*(4+2+2)
+	stripped := stores + cs + lc + cl
+	generated := lc * per
+	if injected+generated != totalDelivered+stripped+absorbed {
+		errors = append(errors, fmt.Sprintf("kv: byte conservation: %d injected + %d generated != %d delivered + %d stripped + %d absorbed",
+			injected, generated, totalDelivered, stripped, absorbed))
+	}
+
+	// --- per-node byte-exact responses (bias-transformed) -----------------
+	exp, served := kvExpected(prog, lids)
+	if served != lc {
+		errors = append(errors, fmt.Sprintf("kv: twin served %d loads, expected %d", served, lc))
+	}
+	gotExp := 0
+	for n, want := range exp {
+		got := entryBytesOf(delivered.Nodes[n])
+		if !bytes.Equal(got, want) {
+			mismatch := 0
+			for i := 0; i < len(got) && i < len(want); i++ {
+				if got[i] != want[i] {
+					mismatch++
+				}
+			}
+			first := -1
+			for i := 0; i < len(got) && i < len(want); i++ {
+				if got[i] != want[i] {
+					first = i
+					break
+				}
+			}
+			errors = append(errors, fmt.Sprintf("kv: %s: response byte mismatch (%d/%d differ, first at %d: got %02x want %02x | got[4:12]=%x want[4:12]=%x", n, mismatch, len(got), first, byteAt(got, first), byteAt(want, first), first8p(got), first8p(want)))
+		}
+		// class-3 delivery
+		for _, e := range delivered.Nodes[n] {
+			if e.Vc != VC_ONBOARD_DELIVER {
+				errors = append(errors, fmt.Sprintf("kv: %s: byte landed on vc %d, expected class 3", n, e.Vc))
+				break
+			}
+		}
+		nResp := len(got) / per
+		stats.Activations += nResp
+		stats.Pkts += nResp
+		stats.DmaBytes += len(got)
+		gotExp += len(want)
+	}
+	if gotExp != lc*per {
+		errors = append(errors, fmt.Sprintf("kv: expected %d response bytes, twin produced %d", lc*per, gotExp))
+	}
+	// zero doorbell refusals: every response CRC-validates at the node
+	for _, v := range delivered.Corrupt {
+		for range v {
+			errors = append(errors, "kv: unexpected doorbell refusal (C verdict) on a KV response")
+			stats.Rejections++
+		}
+	}
+	// no residual/tail traffic: responses end at the node, nothing echoes
+	if len(delivered.Tail) > 0 || len(delivered.TailUp) > 0 {
+		errors = append(errors, fmt.Sprintf("kv: unexpected tail traffic (%d tail, %d tailup bytes)", len(delivered.Tail), len(delivered.TailUp)))
+	}
+	for k, v := range delivered.XRes {
+		if len(v) > 0 {
+			errors = append(errors, fmt.Sprintf("kv: unexpected X residual bytes on layer %d", k))
+		}
+	}
+	for k, v := range delivered.YRes {
+		if len(v) > 0 {
+			errors = append(errors, fmt.Sprintf("kv: unexpected Y residual bytes on layer %d x %d", k.L, k.X))
+		}
+	}
+	return errors, stats
 }
 
 // -- delivery.log parsing ----------------------------------------------------
@@ -1337,7 +1698,7 @@ func RunOne(prog *Program, nodes []NodeID, dims Dims, groups, replays int) (*Sce
 		for _, n := range gnodes {
 			biases[n] = prog.Manifest[n].Bias
 		}
-		if err := os.WriteFile(filepath.Join(simDir, nm.Top), []byte(GenTopology(lids, bx, by, biases, false)), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(simDir, nm.Top), []byte(GenTopology(lids, bx, by, biases, prog.KVCache, prog.KVDepth)), 0o644); err != nil {
 			panic("GenTopology: " + err.Error())
 		}
 		if err := os.WriteFile(filepath.Join(simDir, nm.TB), []byte(GenTB(lids, bx, by, prog.BP, nbytes, nm.Stim, nm.Log)), 0o644); err != nil {
@@ -1421,7 +1782,16 @@ func RunOne(prog *Program, nodes []NodeID, dims Dims, groups, replays int) (*Sce
 		lids := j.Lids
 		gnodes := AllNodesIn(lids, bx, by)
 		delivered := ParseDelivery(filepath.Join(simDir, j.Nm.Log))
-		errors, st := Verify(delivered, prog, gnodes, lids[0], j.GI == len(jobs)-1, lids[0] == 0)
+		var errors []string
+		var st *Stats
+		if prog.KVCache {
+			// KV scenario: the manifest is not filled for KV flits (they are
+			// absorbed by the banks, not ejected), so the dedicated twin
+			// verifier handles byte conservation and response content.
+			errors, st = VerifyKV(delivered, prog, lids)
+		} else {
+			errors, st = Verify(delivered, prog, gnodes, lids[0], j.GI == len(jobs)-1, lids[0] == 0)
+		}
 		for _, e := range errors {
 			allErrors = append(allErrors, fmt.Sprintf("[g%d] %s", j.GI, e))
 		}
@@ -1591,6 +1961,10 @@ func RunMain(layers, bx, by int, scenarios []string, seed int64, flits *int, hot
 				f = *flits
 			}
 			prog = ScenarioStress(layers, bx, by, seed, f)
+		case "kv":
+			prog = ScenarioKV(layers, bx, by, seed)
+		case "kvflow":
+			prog = ScenarioKVFlow(layers, bx, by, seed)
 		default:
 			fmt.Printf("unknown scenario: %s\n", name)
 			return 2

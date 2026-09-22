@@ -62,3 +62,6 @@ __pycache__/
 # Compiled C/Rust test and visualization binaries (sources are tracked)
 fw/test_moe_gating
 viz/pnm_viz
+
+# paper/HDL — regenerated from HDL/ by build.py (paper proof mirror)
+paper/HDL/

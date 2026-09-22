@@ -436,12 +436,12 @@ module tb_orchestrator_chip;
         repeat (20) @(posedge clk);
 
         // Verify the emitted weight flit on the spine watch:
-        //   LAYER=01 MODULE=00 CTRL=A0 LEN=0008, payload 0xAA..0xB1, CRC
+        //   LAYER=01 MODULE=00 CTRL=82 LEN=0008, payload 0xAA..0xB1, CRC
         if (spine_n !== 15) begin
             $display("[TB] ERROR: expected 15 weight-flit bytes on spine, got %0d", spine_n);
             errors_local = errors_local + 1;
         end
-        check_spine_flit(0, 15, 8'h01, 8'h00, 8'hA0, 16'd8);
+        check_spine_flit(0, 15, 8'h01, 8'h00, 8'h82, 16'd8);
         for (j = 0; j < 8; j = j + 1)
             if (spine_bytes[5 + j] !== 8'hAA + j[7:0]) begin
                 $display("[TB] ERROR: weight payload byte %0d = %02h, expect %02h",
