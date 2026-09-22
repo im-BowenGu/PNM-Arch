@@ -54,14 +54,10 @@ cd paper/HDL
 iverilog -g2005 -o tb_load.out \
   hfr.v flit_gate.v vc_merge.v lxy_repeater.v xy_turn.v node_eject.v tb_load.v && vvp tb_load.out
 
-# NOTE: this doorbell testbench needs the compute-unit primitives
-# (bf16_fma.v, weight_dequant.v, int8_mac.v), which are NOT part of the
-# paper/HDL verification subset. Run it from the repo root HDL/ instead:
-#   cd HDL && iverilog -g2005 -o tb_doorbell.out core/tb_doorbell.v core/pe_tile_stub.v core/doorbell.v core/crc16.v core/bf16_fma.v core/weight_dequant.v core/int8_mac.v core/fp4_mac.v && vvp tb_doorbell.out
 # doorbell discipline: six activations, two refusals, two corrupt_out pulses
-cd .. && cd HDL && iverilog -g2005 -o tb_doorbell.out core/tb_doorbell.v core/pe_tile_stub.v core/doorbell.v core/crc16.v core/bf16_fma.v core/weight_dequant.v core/int8_mac.v core/fp4_mac.v && vvp tb_doorbell.out
-# (return to paper/HDL for the remaining fabric subset tests)
-cd ../paper/HDL
+# (paper/HDL is regenerated in full from HDL/ by paper/build.py, so every
+# compute-unit primitive is bundled here and the command runs in place)
+iverilog -g2005 -o tb_doorbell.out core/tb_doorbell.v core/pe_tile_stub.v core/doorbell.v core/crc16.v core/bf16_fma.v core/weight_dequant.v core/int8_mac.v core/fp4_mac.v && vvp tb_doorbell.out
 
 # full fabric smoke test
 iverilog -g2005 -o tb_fabric.out \

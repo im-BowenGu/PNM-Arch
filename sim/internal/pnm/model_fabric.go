@@ -116,9 +116,9 @@ func BuildModelProgram(drv *Driver, fw *Firmware, cfg ModelFabricConfig) (*Model
 	res := &ModelFabricResult{Prog: prog}
 
 	// Phase 3 optionally: push the model's weight blobs through the fabric.
-	// Each command becomes the exact flit BuildWeightFlit produces; the
-	// payload is the bounded deterministic sample (SizeBytes keeps the
-	// authoritative byte accounting).
+	// Each command is a full wormhole flit via the standard spelling
+	// (Flit(layer+1, module, 0x80, payload)); the payload is the bounded
+	// deterministic sample (SizeBytes keeps the authoritative accounting).
 	if cfg.UploadWeights {
 		cmds, err := drv.BuildWeightCommands()
 		if err != nil {

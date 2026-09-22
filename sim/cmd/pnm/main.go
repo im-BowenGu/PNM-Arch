@@ -3,6 +3,8 @@
 //	go run ./cmd/pnm                       # 3x4x4 = 48 nodes, all scenarios
 //	go run ./cmd/pnm -l 8 -x 8 -y 8        # the 512-node reference chassis
 //	go run ./cmd/pnm --scenarios sweep stress --seed 1
+//	go run ./cmd/pnm --scenarios kv --seed 1        # KV cache co-sim (kvcache=true)
+//	go run ./cmd/pnm --scenarios kvflow --seed 1     # KV fill/evict/reload flow (kvcache=true)
 //	go run ./cmd/pnm --groups 8            # 8 parallel vvp slices
 //
 // Pipeline (Paper.MD section 2.1-2.2 routing, section 2.9 doorbell):

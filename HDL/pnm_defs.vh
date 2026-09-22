@@ -33,6 +33,12 @@
 // CTRL.op
 `define OP_COMPUTE 2'b00
 `define OP_FORWARD 2'b01
+// KV cache commands (§2.6): routed to the KV cache bank on the board's NoB.
+// CTRL = {vc_class=2, OP_KV_*, rsvd=0} -> 0xA0 (store) / 0xB0 (load).  The
+// bank snoops the CTRL byte (first body byte after MODULE_ID) to intercept;
+// it validates the command's end-to-end CRC before committing/serving.
+`define OP_KV_STORE 2'b10
+`define OP_KV_LOAD  2'b11
 
 // CTRL.vc_class — the four virtual-channel classes of paper §4.3.  The CTRL
 // field carries the class a flit was assembled with (its origin class: 2 for

@@ -33,13 +33,24 @@ import (
 // with groups > 1 to simulate layer groups in parallel vvp processes.
 // biases: {(layer, x, y): bias_add constant} for each node's MAC stub.
 // kvcache: when true, instantiate kv_cache_bank between NoB and xy_turn per layer.
-func GenTopology(layerIDs []int, bx, by int, biases map[NodeID]int, kvcache bool) string {
+// GenTopology emits the fabric for one slice of layers.  kvcache inserts a
+// kv_cache_bank per column plus a kv_offload eviction controller (discard
+// mode) per layer; kvDepth is the bank's entry capacity (BANK_DEPTH), used
+// by the KV-flow scenario (0 = the default 1024).
+func GenTopology(layerIDs []int, bx, by int, biases map[NodeID]int, kvcache bool, kvDepth int) string {
 	if biases == nil {
 		biases = map[NodeID]int{}
 	}
 	var out strings.Builder
 	a := func(s string) { out.WriteString(s + "\n") }
 	nodes := len(layerIDs) * bx * by
+	if kvDepth == 0 {
+		kvDepth = 1024
+	}
+	kvABits := 10
+	for (1 << kvABits) < kvDepth {
+		kvABits++
+	}
 
 	// -- port list ------------------------------------------------------
 	var ports []string
@@ -224,6 +235,12 @@ func GenTopology(layerIDs []int, bx, by int, biases map[NodeID]int, kvcache bool
 			a(fmt.Sprintf("    wire [1:0] yres_%d_%d_vc;", l, x))
 			if kvcache {
 				a(fmt.Sprintf("    wire [7:0] kvc_%d_%d_data; wire kvc_%d_%d_valid, kvc_%d_%d_sop, kvc_%d_%d_eop, kvc_%d_%d_ready; wire [1:0] kvc_%d_%d_vc;", l, x, l, x, l, x, l, x, l, x, l, x))
+				if x < 4 {
+					// offload-served column: eviction + reclaim nets
+					a(fmt.Sprintf("    wire kv_full_%d_%d, kv_empty_%d_%d; wire [%d:0] kv_occ_%d_%d; wire [%d-1:0] kv_rp_%d_%d;", l, x, l, x, kvABits, l, x, kvABits, l, x))
+					a(fmt.Sprintf("    wire evict_req_%d_%d, evict_done_%d_%d, evict_valid_%d_%d, evict_ready_%d_%d; wire [7:0] evict_data_%d_%d; wire [%d-1:0] evict_addr_%d_%d;", l, x, l, x, l, x, l, x, l, x, kvABits, l, x))
+					a(fmt.Sprintf("    wire reclaim_req_%d_%d, reclaim_valid_%d_%d, reclaim_sop_%d_%d, reclaim_eop_%d_%d, reclaim_ready_%d_%d; wire [7:0] reclaim_data_%d_%d;", l, x, l, x, l, x, l, x, l, x, l, x))
+				}
 			}
 			for y := 0; y < by; y++ {
 				a(fmt.Sprintf("    wire [7:0] y_%d_%d_%d_data; wire y_%d_%d_%d_valid, y_%d_%d_%d_sop, y_%d_%d_%d_eop, y_%d_%d_%d_ready; wire [1:0] y_%d_%d_%d_vc;", l, x, y, l, x, y, l, x, y, l, x, y, l, x, y, l, x, y))
@@ -244,6 +261,33 @@ func GenTopology(layerIDs []int, bx, by int, biases map[NodeID]int, kvcache bool
 				a(fmt.Sprintf("    wire [7:0] xm_%d_%d_data; wire xm_%d_%d_valid, xm_%d_%d_sop, xm_%d_%d_eop, xm_%d_%d_ready; wire [1:0] xm_%d_%d_vc;", l, x, l, x, l, x, l, x, l, x, l, x))
 			}
 		}
+		if kvcache {
+			// KV offload controller (discard mode): evicts the oldest entry
+			// from any full bank, exactly once per full event, and streams it
+			// to the evict port (EVICTION_TARGET=0 → no spine write).  The
+			// bank's reclaim sideband stays idle (spine_in_valid tied low).
+			a(fmt.Sprintf("    // -- board %d: KV offload controller (paper §2.6) ----", l))
+			a(fmt.Sprintf("    kv_offload #(.NUM_LAYERS(1), .BANK_DEPTH(%d), .ADDR_BITS(%d), .ENTRY_BYTES(512), .EVICTION_TARGET(0)) u_kvo_%d (", kvDepth, kvABits, l))
+			a("        .clk(clk), .rst_n(rst_n),")
+			for s_i := 0; s_i < 4; s_i++ {
+				if s_i < bx {
+					a(fmt.Sprintf("        .kv_full_%d(kv_full_%d_%d), .kv_empty_%d(kv_empty_%d_%d), .kv_occupancy_%d(kv_occ_%d_%d), .kv_read_ptr_%d(kv_rp_%d_%d),", s_i, l, s_i, s_i, l, s_i, s_i, l, s_i, s_i, l, s_i))
+					a(fmt.Sprintf("        .evict_req_%d(evict_req_%d_%d), .evict_addr_%d(evict_addr_%d_%d),", s_i, l, s_i, s_i, l, s_i))
+					a(fmt.Sprintf("        .evict_done_%d(evict_done_%d_%d), .evict_data_%d(evict_data_%d_%d), .evict_valid_%d(evict_valid_%d_%d), .evict_ready_%d(evict_ready_%d_%d),", s_i, l, s_i, s_i, l, s_i, s_i, l, s_i, s_i, l, s_i))
+					a(fmt.Sprintf("        .reclaim_req_%d(reclaim_req_%d_%d), .reclaim_data_%d(reclaim_data_%d_%d),", s_i, l, s_i, s_i, l, s_i))
+					a(fmt.Sprintf("        .reclaim_valid_%d(reclaim_valid_%d_%d), .reclaim_sop_%d(reclaim_sop_%d_%d), .reclaim_eop_%d(reclaim_eop_%d_%d), .reclaim_ready_%d(reclaim_ready_%d_%d),", s_i, l, s_i, s_i, l, s_i, s_i, l, s_i, s_i, l, s_i))
+				} else {
+					a(fmt.Sprintf("        .kv_full_%d(1'b0), .kv_empty_%d(1'b1), .kv_occupancy_%d(0), .kv_read_ptr_%d(0),", s_i, s_i, s_i, s_i))
+					a(fmt.Sprintf("        .evict_req_%d(), .evict_addr_%d(), .evict_done_%d(1'b0), .evict_data_%d(8'h00), .evict_valid_%d(1'b0), .evict_ready_%d(),", s_i, s_i, s_i, s_i, s_i, s_i))
+					a(fmt.Sprintf("        .reclaim_req_%d(), .reclaim_data_%d(8'h00), .reclaim_valid_%d(1'b0), .reclaim_sop_%d(1'b0), .reclaim_eop_%d(1'b0), .reclaim_ready_%d(1'b0),", s_i, s_i, s_i, s_i, s_i, s_i))
+				}
+			}
+			a("        .spine_out_data(), .spine_out_valid(), .spine_out_sop(), .spine_out_eop(),")
+			a("        .spine_out_ready(1'b1), .spine_out_vc(),")
+			a("        .spine_in_data(8'h00), .spine_in_valid(1'b0), .spine_in_sop(1'b0), .spine_in_eop(1'b0), .spine_in_ready(),")
+			a("        .evictions(), .reloads(), .errors()")
+			a("    );")
+		}
 		a("")
 
 		for x := 0; x < bx; x++ {
@@ -254,7 +298,7 @@ func GenTopology(layerIDs []int, bx, by int, biases map[NodeID]int, kvcache bool
 			if kvcache {
 				// KV cache bank: sits between NoB/HFR output and xy_turn input
 				a(fmt.Sprintf("    // -- column %d: KV cache bank (paper §2.6, §3.3) ----", x))
-				a(fmt.Sprintf("    kv_cache_bank #(.BANK_DEPTH(1024), .ENTRY_BYTES(512)) u_kvc_%d_%d (", l, x))
+				a(fmt.Sprintf("    kv_cache_bank #(.BANK_DEPTH(%d), .ADDR_BITS(%d), .ENTRY_BYTES(512), .LOCAL_X(4'h%x)) u_kvc_%d_%d (", kvDepth, kvABits, x, l, x))
 				a("        .clk(clk), .rst_n(rst_n),")
 				a(fmt.Sprintf("        .nob_in_data(%s_data), .nob_in_valid(%s_valid), .nob_in_sop(%s_sop),", xin, xin, xin))
 				a(fmt.Sprintf("        .nob_in_eop(%s_eop), .nob_in_ready(%s_ready),", xin, xin))
@@ -264,8 +308,19 @@ func GenTopology(layerIDs []int, bx, by int, biases map[NodeID]int, kvcache bool
 				a(fmt.Sprintf("        .nob_out_vc(kvc_%d_%d_vc),", l, x))
 				a("        .kv_store_data(8'h00), .kv_store_valid(1'b0), .kv_store_sop(1'b0), .kv_store_eop(1'b0),")
 				a("        .kv_load_ready(1'b0),")
-				a("        .evict_req(1'b0), .evict_addr(10'd0), .evict_ready(1'b0),")
-				a("        .reclaim_req(1'b0), .reclaim_data(8'h00), .reclaim_valid(1'b0), .reclaim_sop(1'b0), .reclaim_eop(1'b0)")
+				if x < 4 {
+					// served by the layer's kv_offload controller
+					a(fmt.Sprintf("        .kv_full(kv_full_%d_%d), .kv_empty(kv_empty_%d_%d),", l, x, l, x))
+					a(fmt.Sprintf("        .kv_occupancy(kv_occ_%d_%d), .kv_read_ptr(kv_rp_%d_%d),", l, x, l, x))
+					a(fmt.Sprintf("        .evict_req(evict_req_%d_%d), .evict_addr(evict_addr_%d_%d), .evict_done(evict_done_%d_%d),", l, x, l, x, l, x))
+					a(fmt.Sprintf("        .evict_data(evict_data_%d_%d), .evict_valid(evict_valid_%d_%d), .evict_ready(evict_ready_%d_%d),", l, x, l, x, l, x))
+					a(fmt.Sprintf("        .reclaim_req(reclaim_req_%d_%d), .reclaim_data(reclaim_data_%d_%d), .reclaim_valid(reclaim_valid_%d_%d),", l, x, l, x, l, x))
+					a(fmt.Sprintf("        .reclaim_sop(reclaim_sop_%d_%d), .reclaim_eop(reclaim_eop_%d_%d), .reclaim_ready(reclaim_ready_%d_%d)", l, x, l, x, l, x))
+				} else {
+					a("        .kv_full(), .kv_empty(), .kv_occupancy(), .kv_read_ptr(),")
+					a(fmt.Sprintf("        .evict_req(1'b0), .evict_addr({%d{1'b0}}), .evict_done(), .evict_data(), .evict_valid(), .evict_ready(1'b0),", kvABits))
+					a("        .reclaim_req(1'b0), .reclaim_data(8'h00), .reclaim_valid(1'b0), .reclaim_sop(1'b0), .reclaim_eop(1'b0), .reclaim_ready()")
+				}
 				a("    );")
 				xin = fmt.Sprintf("kvc_%d_%d", l, x)
 			}
