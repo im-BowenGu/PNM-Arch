@@ -65,3 +65,4 @@ viz/pnm_viz
 
 # paper/HDL — regenerated from HDL/ by build.py (paper proof mirror)
 paper/HDL/
+sim/pnmt

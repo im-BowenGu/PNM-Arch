@@ -413,7 +413,7 @@ Activity-driven DES of the egress merge tree:
 Five-stage AOT pipeline that transpiles HuggingFace models onto PNM chassis:
 
 1. **Ingest** - Parse safetensors index + config.json, infer tensor shapes from ~20 naming patterns
-2. **Partition** - Layer-to-physical mapping, expert round-robin, dense assignment, embedding sharding, KV cache reservation (80% of 128GB, max 16K entries)
+2. **Partition** - Layer-to-physical mapping, expert round-robin, dense assignment, embedding sharding, KV cache reservation (80% of the post-weight budget, max 16K entries)
 3. **Map** - Assign operations to kernel names and compute unit types by tensor role
 4. **Route** - Compute 11-bit routing bitmaps and MoE expert map
 5. **Emit** - Write .pnm program file and chassis schema
@@ -432,8 +432,6 @@ Parses HuggingFace model format:
 
 Orchestrates model loading and inference:
 - `BuildWeightCommands()` - Deterministic weight upload sequence sorted L-X-Y
-- `BuildWeightFlit(cmd)` - Construct wormhole flits from commands
-- `PlanInference(token)` - Dispatch sequence for one token through all layers
 - `computeRouteBitmaps()` - Generate 11-bit routing bitmaps per node
 - `computeMoeMap()` - Build expert-to-coordinate mapping
 
@@ -447,7 +445,7 @@ Models the central orchestrator chip:
 #### LLM Client (`llm_client.go`)
 
 End-to-end autoregressive inference:
-- Tokenization (whitespace + hash fallback)
+- Tokenization (real BPE via `tokenizer.json` when present, else synthetic)
 - Prefill + autoregressive generation
 - Temperature/nucleus (top-p) sampling with numerical stability
 - Per-inference statistics (tokens, dispatches, KV ops, CU utilization)
@@ -628,7 +626,7 @@ python3 build.py --review   # submission/paper_review.pdf (11pt single-column)
 cd HDL
 iverilog -g2005 -o tb_fabric.out hfr.v flit_gate.v vc_merge.v lxy_repeater.v xy_turn.v node_eject.v tb_fabric.v && vvp tb_fabric.out
 iverilog -g2005 -o tb_load.out   hfr.v flit_gate.v vc_merge.v lxy_repeater.v xy_turn.v node_eject.v tb_load.v   && vvp tb_load.out
-iverilog -g2005 -o tb_doorbell.out core/tb_doorbell.v core/pe_tile_stub.v core/doorbell.v core/crc16.v core/bf16_fma.v core/weight_dequant.v core/int8_mac.v core/fp4_mac.v && vvp tb_doorbell.out
+iverilog -g2005 -o tb_doorbell.out core/tb_doorbell.v core/pe_tile_stub.v core/doorbell.v core/crc16.v core/bf16_fma.v core/fma_core.v core/weight_dequant.v core/int8_mac.v core/fp4_mac.v && vvp tb_doorbell.out
 # ... (see AGENTS.md for complete list)
 ```
 

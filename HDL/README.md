@@ -173,7 +173,7 @@ vvp tb_load.out
 
 # doorbell DMA (pe_tile_stub → doorbell, CRC-16 end-to-end)
 iverilog -g2005 -o tb_doorbell.out \
-  core/tb_doorbell.v core/pe_tile_stub.v core/doorbell.v core/crc16.v core/bf16_fma.v core/weight_dequant.v core/int8_mac.v core/fp4_mac.v
+  core/tb_doorbell.v core/pe_tile_stub.v core/doorbell.v core/crc16.v core/bf16_fma.v core/fma_core.v core/weight_dequant.v core/int8_mac.v core/fp4_mac.v
 vvp tb_doorbell.out
 
 # banked DDR SODIMM controller (row hit/miss/conflict latencies, refresh)

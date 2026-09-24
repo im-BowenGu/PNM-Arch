@@ -29,20 +29,34 @@ func TestCRC16_ByteFlipProperty(t *testing.T) {
 	}
 }
 
-// TestCRC16_AppendProperty verifies CRC(a||b) depends on both a and b.
+// TestCRC16_AppendProperty verifies the streaming property the doorbell twin
+// relies on: continuing the running register state after a with b equals the
+// one-shot CRC over a||b.  (A naive "CRC(a||b) != CRC(a)" claim is false for
+// CRC-16/CCITT-FALSE: the per-byte state transition is a linear bijection, so
+// for every a there are inputs b that drive the register back to the state
+// after a, which random property tests eventually hit.)
 func TestCRC16_AppendProperty(t *testing.T) {
+	update := func(reg uint32, data []byte) uint32 {
+		for _, b := range data {
+			reg ^= uint32(b) << 8
+			for i := 0; i < 8; i++ {
+				if reg&0x8000 != 0 {
+					reg = (reg<<1 ^ 0x1021) & 0xFFFF
+				} else {
+					reg = reg << 1 & 0xFFFF
+				}
+			}
+		}
+		return reg
+	}
 	f := func(a, b []byte) bool {
-		if len(a) == 0 || len(b) == 0 || len(a)+len(b) > 256 {
+		if len(a)+len(b) > 256 {
 			return true
 		}
 		ab := append(append([]byte{}, a...), b...)
-		crcAB := crc16(ab)
-		crcA := crc16(a)
-		crcB := crc16(b)
-		// CRC(a||b) != CRC(a) and CRC(a||b) != CRC(b) (with overwhelming probability)
-		return crcAB != crcA && crcAB != crcB
+		return update(crc16(a), b) == crc16(ab)
 	}
-	if err := quick.Check(f, &quick.Config{MaxCount: 1000}); err != nil {
+	if err := quick.Check(f, &quick.Config{MaxCount: 2000}); err != nil {
 		t.Error(err)
 	}
 }

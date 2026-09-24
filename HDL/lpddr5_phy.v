@@ -24,7 +24,7 @@ module lpddr5_phy #(
     parameter DATA_WIDTH     = 32,
     parameter MEM_DEPTH      = 4096,
     parameter CAS_LATENCY    = 16,
-    parameter REFRESH_CYCLES = 3900,
+    parameter REFRESH_CYCLES = 390,   // ~3.9 us at the 100 MHz reference clock (header above; was 3900 = 39 us)
     parameter REFRESH_BURST  = 8,
     parameter NUM_BANKS      = 4,
     parameter T_RCD          = 4,
