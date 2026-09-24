@@ -217,13 +217,13 @@ Four boards, all LibrePCB (open-source EDA), 4-layer stackup:
 
 | Board | What it is | Generator |
 |-------|-----------|-----------|
-| `interconnect_board` | Spine fabric: SEARAY 12G pass-through, LXY repeaters, HFR pipe stages | `gen_topology.py` (parameterized) |
+| `interconnect_board` | Spine fabric: SEARAY 12G pass-through taps (one byte-wide lane each), LXY repeaters, HFR pipe stages | `gen_schematic.py` (fixed variant; `gen_topology.py` explores parameterized layouts) |
 | `processor` | Management: Pi Bridge / MCU Header / Custom SoC (BGA-400) | manual placement |
 | `gating_asic` | MoE gating + DRAM (LPCAMM2 socket or soldered LPDDR5) | manual placement |
 | `pnm_node` | Compute node: MAC ASIC (LGA-830) + LPCAMM2 socket | manual placement |
 
 ```bash
-python3 pcb/interconnect_board/gen_topology.py --variant x2_lxy --layers 8 --board-x 4 --board-y 4
+python3 pcb/interconnect_board/gen_schematic.py
 ```
 
 Open any `.lpp` in LibrePCB to place footprints, route, run DRC, and
@@ -262,7 +262,7 @@ Everything outside `paper/` is the production design:
 | Directory | What it contains | License |
 |-----------|-----------------|---------|
 | `HDL/` | Full Verilog-2005 fabric: routing gates, compute units (BF16/FP16/FP32/FP64 FMA, FP32 ALU, INT8/INT4/FP4/MXFP4 MAC + systolic arrays, weight dequant), RISC-V SoCs, memory controllers, PHYs, testbenches | CERN-OHL-S v2 |
-| `pcb/` | PCB assembly: interconnect board (SEARAY 12G spine, >2 TB/s), processor board (Pi Bridge / MCU / Custom SoC), gating ASIC (MoE + DRAM) | CERN-OHL-S v2 |
+| `pcb/` | PCB assembly: interconnect board (SEARAY 12G spine taps; ≈2 TB/s aggregate across 128 parallel lanes per the paper's spine sizing rule), processor board (Pi Bridge / MCU / Custom SoC), gating ASIC (MoE + DRAM) | CERN-OHL-S v2 |
 | `sim/` | Go co-simulation, model compiler (HuggingFace → PNM), inference client, firmware (Go), source-language compilers (R/Haskell/HLSL) | AGPL-3.0 |
 | `fw/` | C firmware port for MCU targets (ARM Cortex-M/R, RISC-V) | AGPL-3.0 |
 | `toolchain/` | MCU/SoC/Linux/seL4 cross-compilation toolchains | AGPL-3.0 |

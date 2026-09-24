@@ -19,7 +19,7 @@ module lpddr5x_phy #(
     parameter DATA_WIDTH     = 32,
     parameter MEM_DEPTH      = 4096,
     parameter CAS_LATENCY    = 14,
-    parameter REFRESH_CYCLES = 3500,
+    parameter REFRESH_CYCLES = 350,   // ~3.5 us at the 100 MHz reference clock (fine-granularity refresh)
     parameter REFRESH_BURST  = 8,
     parameter NUM_BANKS      = 4,
     parameter T_RCD          = 3,

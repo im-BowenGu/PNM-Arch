@@ -1,4 +1,4 @@
-This is pdfTeX, Version 3.141592653-2.6-1.40.26 (TeX Live 2024/nixos.org) (preloaded format=pdflatex 1980.1.1)  13 SEP 2026 10:33
+This is pdfTeX, Version 3.141592653-2.6-1.40.26 (TeX Live 2024/nixos.org) (preloaded format=pdflatex 1980.1.1)  23 SEP 2026 10:51
 entering extended mode
  restricted \write18 enabled.
  %&-line parsing enabled.
@@ -720,6 +720,8 @@ Underfull \vbox (badness 10000) has occurred while \output is active []
 
 
 [14]
+
+
 Underfull \hbox (badness 2334) in paragraph at lines 333--334
 []\OT1/ptm/m/n/10 (+20) The cur-rent RTL im-ple-ments the RV32IMA base-line
  []
@@ -733,8 +735,6 @@ Underfull \hbox (badness 3503) in paragraph at lines 333--334
 Underfull \hbox (badness 2790) in paragraph at lines 333--334
 \OT1/ptm/m/n/10 (+20) to RV32IMAFC (adding com-pressed in-struc-tions and
  []
-
-
 
 
 Underfull \hbox (badness 10000) in paragraph at lines 337--338
@@ -757,6 +757,11 @@ Underfull \hbox (badness 1789) in paragraph at lines 341--342
  []
 
 
+Underfull \vbox (badness 10000) has occurred while \output is active []
+
+
+
+[15]
 Underfull \hbox (badness 6625) in paragraph at lines 343--344
 \OT1/ptm/m/n/10 (+20) test-bench (tb[]bmc[]orchestrator.v, tb[]orchestrator[]mc
 u.v,
@@ -767,7 +772,7 @@ Underfull \vbox (badness 10000) has occurred while \output is active []
 
 
 
-[15]
+
 Underfull \hbox (badness 3701) in paragraph at lines 349--350
 []\OT1/ptm/m/n/10 (+20) The de-sign is ver-i-fied by a self-checking test-bench
 
@@ -775,8 +780,6 @@ Underfull \hbox (badness 3701) in paragraph at lines 349--350
 
 
 Underfull \vbox (badness 10000) has occurred while \output is active []
-
-
 
 
 
@@ -823,14 +826,8 @@ Underfull \vbox (badness 10000) has occurred while \output is active []
 
 
 
-Underfull \vbox (badness 10000) has occurred while \output is active []
-
-
 
 [21]
-Underfull \vbox (badness 3838) has occurred while \output is active []
-
-
 
 
 
@@ -901,7 +898,7 @@ Package rerunfilecheck Info: File `paper.out' has not changed.
 Here is how much of TeX's memory you used:
  12011 strings out of 474315
  192304 string characters out of 5718334
- 630954 words of memory out of 5000000
+ 631149 words of memory out of 5000000
  34625 multiletter control sequences out of 15000+600000
  587232 words of font info for 223 fonts, out of 8000000 for 9000
  430 hyphenation exceptions out of 8191
@@ -921,10 +918,10 @@ texmfdist/fonts/type1/urw/times/utmb8a.pfb></nix/store/4l3m65sl104swdhl3hrpnqma
 chm98qgx-texlive-combined-medium-2024-final-texmfdist/fonts/type1/urw/times/utm
 r8a.pfb></nix/store/4l3m65sl104swdhl3hrpnqmachm98qgx-texlive-combined-medium-20
 24-final-texmfdist/fonts/type1/urw/times/utmri8a.pfb>
-Output written on paper.pdf (27 pages, 305295 bytes).
+Output written on paper.pdf (27 pages, 306048 bytes).
 PDF statistics:
- 603 PDF objects out of 1000 (max. 8388607)
- 550 compressed objects within 6 object streams
+ 606 PDF objects out of 1000 (max. 8388607)
+ 553 compressed objects within 6 object streams
  104 named destinations out of 1000 (max. 500000)
  39937 words of extra memory for PDF output out of 42996 (max. 10000000)
 

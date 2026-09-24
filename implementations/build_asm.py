@@ -83,10 +83,57 @@ def scan_hdl():
     return all_mods, mod_files
 
 
+def find_module_instances(text):
+    """Yield module names instantiated in Verilog source.
+
+    Paren-aware: parameter lists (#(...)) may themselves contain nested
+    parens (e.g. .EXP(8), .MAN(7)), which a regex \"#\\([^)]*\\)\" cannot
+    skip.  Scan tokens: identifier [ # ( balanced ) ] identifier ( .
+    """
+    ident = re.compile(r"[A-Za-z_]\w*")
+    i, n = 0, len(text)
+    while i < n:
+        m = ident.search(text, i)
+        if not m:
+            break
+        mod = m.group(0)
+        j = m.end()
+        k = j
+        while k < n and text[k] in " \t\r\n":
+            k += 1
+        if k < n and text[k] == "#":
+            l = k + 1
+            while l < n and text[l] in " \t\r\n":
+                l += 1
+            if l < n and text[l] == "(":
+                depth, l = 1, l + 1
+                while l < n and depth:
+                    if text[l] == "(":
+                        depth += 1
+                    elif text[l] == ")":
+                        depth -= 1
+                    l += 1
+                k = l
+                while k < n and text[k] in " \t\r\n":
+                    k += 1
+        # now expect: instance-name '(' (module may be instantiated without
+        # parameters, so the name is required to disambiguate from keywords
+        # like "if (" or "function (")
+        if k >= n or text[k] not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_":
+            i = m.end()
+            continue
+        im = ident.match(text, k)
+        l = im.end() if im else k
+        while l < n and text[l] in " \t\r\n":
+            l += 1
+        if l < n and text[l] == "(":
+            yield mod
+        i = m.end()
+
+
 def resolve_deps(components, modules, mod_files):
     """Given a set of component module names, transitively add their
     internal instantiations until no new sources are found."""
-    _INST = re.compile(r"\b(\w+)\s+(?:#\([^)]*\)\s+)?(\w+)\s*\(")
     needed = set(components)
     files, seen = [], set()
     while needed:
@@ -99,8 +146,7 @@ def resolve_deps(components, modules, mod_files):
         seen.add(src)
         files.append(src)
         text = strip_comments(src.read_text())
-        for m in _INST.finditer(text):
-            sub_mod = m.group(1)
+        for sub_mod in find_module_instances(text):
             if sub_mod in mod_files and sub_mod not in seen:
                 needed.add(sub_mod)
     return files

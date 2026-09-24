@@ -7,9 +7,10 @@ vendor lock-in, no binary file corruption.
 
 ## Chassis architecture
 
-A PNM chassis is a vertical stack of 1-16 board layers connected by a central
-spine cable. The reference chassis is 8 layers with 64 compute nodes per layer
-(512 nodes total).
+A PNM chassis is a vertical stack of 1-15 board layers connected by a central
+spine cable (the 4-bit Layer ID field of the routing bitmap caps a chassis at 15
+routable layers; see the paper's Section 4.4). The reference chassis is 8 layers
+with 64 compute nodes per layer (512 nodes total).
 
 ```
                     ┌─────────────────────────┐
@@ -36,6 +37,17 @@ spine cable. The reference chassis is 8 layers with 64 compute nodes per layer
         │ LPDDR5      │ │ LPDDR5      │ │ LPDDR5      │
         └─────────────┘ └─────────────┘ └─────────────┘
 ```
+
+## Implementation status
+
+- `interconnect_board/` — generated schematic + circuit netlist (`gen_schematic.py`,
+  5 components: Searay spine tap, LXY repeater, HFR pipe stage, two DF40 NoB
+  connectors), board outline placeholder.
+- `pnm_node/`, `processor/`, `gating_asic/` — project shells with populated
+  local libraries (the symbols/packages/devices listed below); schematics and
+  boards are empty placeholders awaiting placement and routing.
+
+All four projects open cleanly in LibrePCB (`librepcb-cli open-project`).
 
 ## Board descriptions
 
@@ -104,9 +116,11 @@ overlap, populate one):
 | **LPCAMM2** (default) | 644-ball CAMM2 | 16GB+ | 256 GB/s | Same BOM as pnm_node |
 | **Soldered LPDDR5** | BGA-200 | 4-8GB | 50 GB/s | Lower cost, no socket |
 
-The gating ASIC itself contains a BF16 MAC array for logit computation and a
-top-K sorter. It runs once per token (the design bottleneck for MoE routing),
-so DRAM bandwidth directly impacts expert selection latency.
+The gating ASIC runs the moe_gating top-K unit (hidden × router_weights
+projection plus top-K selection) once per token---the design bottleneck for MoE
+routing---so DRAM bandwidth directly impacts expert selection latency. A BF16
+MAC array dimension is provisioned as a parameter; the co-simulated RTL realizes
+the gating unit itself, not a separate systolic-array instance.
 
 **Power**: ~8W (3W logic + 5W DRAM).
 
@@ -136,12 +150,15 @@ with mezzanine connectors on both sides of the cutout.
 ```
 
 The spine cable is a shielded cable harness with Samtec SEARAY 12G pass-through
-connectors (60-pin, 1.27mm pitch, >2 TB/s per pair). Each board taps into the
-spine via the LXY repeater's `spin_in`/`spin_out` port pair — one upstream
-connector, one downstream. Traffic not destined for this layer passes straight
-through. The SEARAY pass-through design allows boards to be added or removed
-without desoldering the cable harness. The board has a center cutout
-(15mm x 150mm) for the spine cable to pass through, with SEARAY
+connectors (60-pin, 1.27mm pitch). Each SEARAY tap carries one byte-wide fabric
+lane (8 data + valid/sop/eop/ready + 2 VC bits and power); the paper's
+≈2 TB/s spine aggregate (Section 2.1) is provisioned as 128 parallel
+16 GB/s lanes spanning the whole chassis, not as a single connector pair. Each
+board taps into the spine via the LXY repeater's `spin_in`/`spin_out` port pair
+— one upstream connector, one downstream. Traffic not destined for this layer
+passes straight through. The SEARAY pass-through design allows boards to be
+added or removed without desoldering the cable harness. The board has a center
+cutout (15mm x 150mm) for the spine cable to pass through, with SEARAY
 connectors flanking the cutout on both sides.
 
 **4-layer stackup**: top copper → inner1 (GND) → inner2 (power) → bottom copper.
@@ -178,37 +195,47 @@ pcb/
 
 ## Local library — PNM-specific components
 
-| Device | Symbol | Package | Description |
-|--------|--------|---------|-------------|
-| PNM-MAC-ASIC | `mac_asic.ls` | `lga830_mac_asic.lp` | DUV MAC compute ASIC, 28x28 mm LGA-830 |
-| PNM-LPCAMM2 | `lpamm2.ls` | `lpamm2_644.lp` | LPCAMM2/LPDDR6 CAMM2 socket, 644-ball |
-| PNM-GATING-ASIC | `gating_asic.ls` | `gating_asic.lp` | MoE gating network ASIC with BF16 MAC |
-| PNM-PI-BRIDGE | `pi_bridge.ls` | `spi_header.lp` | SPI slave interface for Pi CM0-CM4 |
-| PNM-MCU-HEADER | `mcu_header.ls` | `2x10_header.lp` | UART+GPIO header for ESP32/Pico/Arduino |
-| PNM-ROUTER-SOC | `router_soc.ls` | `bga400_soc.lp` | Custom RISC-V SoC, 17x17 mm BGA-400 |
-| PNM-PCIE-X16 | `pcie_edge.ls` | `pcie_x16_edge.lp` | PCIe Gen5 x16 edge connector |
-| PNM-M2-NVME | `m2_nvme.ls` | `m2_m_key.lp` | M.2 Key-M NVMe module slot |
-| PNM-SPINE-MEZZ | `spine_pass.ls` | `searay_60.lp` | Spine cable pass-through, SEARAY 12G 60-pin |
-| PNM-MEZZ | `mezz.ls` | `searay_60.lp` | Mezzanine connector to pnm_node, SEARAY 12G 60-pin |
+Each project ships its own project-local library. Current inventory (device
+names as they appear in `library/dev/`):
+
+| Project | Device | Package | Description |
+|---------|--------|---------|-------------|
+| `pnm_node` | PNM-MAC-ASIC | `LGA-830 MAC ASIC` | DUV MAC compute ASIC socket, ~830 pins |
+| `pnm_node` | PNM-LPCAMM2 | `LPCAMM2-644` | LPCAMM2/LPDDR6 CAMM2 socket, 644-ball |
+| `processor` | PNM-SOC | `Router SoC BGA-400` | Custom RISC-V SoC, 17x17 mm BGA-400 |
+| `processor` | PNM-PCIE | `PCIe x16 Edge` | PCIe Gen5 x16 edge connector |
+| `processor` | PNM-NVME | `M.2 M-Key` | M.2 Key-M NVMe module slot |
+| `processor` | PNM-PI-BRIDGE | `PinHeader_2x6` | SPI slave header for Pi CM0-CM4 |
+| `processor` | PNM-MCU-HEADER | `PinHeader_2x10` | UART+GPIO header for ESP32/Pico/Arduino |
+| `processor` | PNM-SPDT-JUMPER | `SOT-23_SolderJumper` | Processor-select solder jumper |
+| `gating_asic` | PNM-GATE-ASIC | `QFN-48 Gating ASIC` | MoE gating ASIC (moe_gating top-K unit) |
+| `gating_asic` | — (packages only) | `LPCAMM2_Socket`, `LPDDR5_BGA_Soldered` | DRAM option footprints (no device entry yet) |
+| `interconnect_board` | Samtec-Searay-60 | `Searay-60 Spine Mezzanine` | Spine tap, SEARAY 12G 60-pin |
+| `interconnect_board` | PNM-SPINE-MEZZ | `Searay-60 Spine Pass-Through` | Spine cable pass-through, SEARAY 12G 60-pin |
+| `interconnect_board` | Hirose-DF40-40 | `DF40-40 NoB Connector` | NoB board-to-board connector to pnm_node |
+
+The fabric symbols (`LXY Repeater`, `HFR`, `Spine Mezzanine`, `NoB Connector`,
+`Spine SEARAY Pass-Through`) live as components in
+`interconnect_board/library/cmp/`.
 
 ## Assembly variable: board count
 
-The chassis supports 1-16 board layers. The reference configuration is
+The chassis supports 1-15 board layers (the routing bitmap's 4-bit Layer ID
+field; see the paper's Section 4.4). The reference configuration is
 **8 layers × 64 nodes = 512 compute nodes**.
 
-Board count is a build-time parameter. The `gen_topology.py` script generates
-the interconnect board schematic and the Verilog topology for any valid
-configuration:
+Board count is a build-time parameter. The shipped interconnect board
+schematic is regenerated with `gen_schematic.py` (single fixed variant);
+`gen_topology.py` explores parameterized placement layouts (its emitted
+circuit carries nets only — component instances must be completed in
+LibrePCB):
 
 ```bash
-# Reference chassis: 8 layers, 8×8 nodes per layer
-python3 gen_topology.py --variant x2_lxy --layers 8 --board-x 8 --board-y 8
+# Regenerate the committed interconnect board (in place)
+python3 gen_schematic.py
 
-# Small config: 2 layers, 2×2 nodes per layer (8 nodes total)
-python3 gen_topology.py --variant x2_lxy --layers 2 --board-x 2 --board-y 2
-
-# Large config: 16 layers, 8×8 nodes per layer (1024 nodes)
-python3 gen_topology.py --variant x2_lxy --layers 16 --board-x 8 --board-y 8
+# Parameterized layout exploration (output only)
+python3 gen_topology.py --variant x2_lxy --layers 8 --board-x 4 --board-y 4 --output /tmp/board
 ```
 
 The Go co-simulation mirrors this:
@@ -223,7 +250,9 @@ go run ./cmd/pnm -l 16 -x 8 -y 8      # large: 1024 nodes
 
 The spine is a shielded cable harness that passes through the center cutout
 of each interconnect board. Each board taps into the spine via two Samtec
-SEARAY 12G connectors (60-pin, 1.27mm pitch, >2 TB/s per pair):
+SEARAY 12G connectors (60-pin, 1.27mm pitch; each tap carries one byte-wide
+fabric lane — the ≈2 TB/s aggregate spine of the paper's Section 2.1
+spans 128 parallel such lanes chassis-wide):
 
 - **Upstream** (toward processor): carries `spin_in_data/valid/sop/eop/ready/vc`
 - **Downstream** (toward bottom): carries `spin_out_data/valid/sop/eop/ready/vc`

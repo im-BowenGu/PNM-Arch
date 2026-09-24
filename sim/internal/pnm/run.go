@@ -52,7 +52,7 @@ func SimDir() string {
 }
 
 var FABRIC = []string{"flit_gate.v", "hfr.v", "lxy_repeater.v", "xy_turn.v",
-	"node_eject.v", "vc_merge.v", "core/crc16.v", "core/bf16_fma.v", "core/pe_tile_stub.v",
+	"node_eject.v", "vc_merge.v", "core/crc16.v", "core/bf16_fma.v", "core/fma_core.v", "core/pe_tile_stub.v",
 	"core/weight_dequant.v", "core/int8_mac.v", "core/int4_mac.v", "core/int4_mac_array.v",
 	"core/fp4_mac.v", "core/fp4_mac_array.v", "core/mxfp4_mac_array.v", "kv_cache_bank.v", "kv_offload.v"}
 

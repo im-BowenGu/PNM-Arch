@@ -72,7 +72,7 @@ if skip_tool "tb_load" $IVERILOG; then
 fi
 
 if skip_tool "tb_doorbell" $IVERILOG; then
-    run "tb_doorbell" bash -c "cd $HDL && $IVERILOG -g2005 -o /tmp/tb_doorbell.out core/tb_doorbell.v core/pe_tile_stub.v core/doorbell.v core/crc16.v core/bf16_fma.v core/weight_dequant.v core/int8_mac.v core/fp4_mac.v && $VVP /tmp/tb_doorbell.out"
+    run "tb_doorbell" bash -c "cd $HDL && $IVERILOG -g2005 -o /tmp/tb_doorbell.out core/tb_doorbell.v core/pe_tile_stub.v core/doorbell.v core/crc16.v core/bf16_fma.v core/fma_core.v core/weight_dequant.v core/int8_mac.v core/fp4_mac.v && $VVP /tmp/tb_doorbell.out"
 fi
 
 if skip_tool "tb_fp32_alu" $IVERILOG; then

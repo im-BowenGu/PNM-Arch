@@ -37,7 +37,7 @@ run_make() {
 check_cross() {
     if ! command -v riscv64-unknown-linux-musl-gcc >/dev/null 2>&1; then
         echo "WARNING: riscv64-unknown-linux-musl-gcc not in PATH" >&2
-        echo "  Install riscv-tools or use nix-shell." >&2
+        echo "  Install riscv-tools or use `nix develop` (flake.nix)." >&2
     fi
 }
 

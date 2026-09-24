@@ -57,7 +57,7 @@ iverilog -g2005 -o tb_load.out \
 # doorbell discipline: six activations, two refusals, two corrupt_out pulses
 # (paper/HDL is regenerated in full from HDL/ by paper/build.py, so every
 # compute-unit primitive is bundled here and the command runs in place)
-iverilog -g2005 -o tb_doorbell.out core/tb_doorbell.v core/pe_tile_stub.v core/doorbell.v core/crc16.v core/bf16_fma.v core/weight_dequant.v core/int8_mac.v core/fp4_mac.v && vvp tb_doorbell.out
+iverilog -g2005 -o tb_doorbell.out core/tb_doorbell.v core/pe_tile_stub.v core/doorbell.v core/crc16.v core/bf16_fma.v core/fma_core.v core/weight_dequant.v core/int8_mac.v core/fp4_mac.v && vvp tb_doorbell.out
 
 # full fabric smoke test
 iverilog -g2005 -o tb_fabric.out \
