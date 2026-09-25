@@ -10,32 +10,34 @@ vendor lock-in, no binary file corruption.
 A PNM chassis is a vertical stack of 1-15 board layers connected by a central
 spine cable (the 4-bit Layer ID field of the routing bitmap caps a chassis at 15
 routable layers; see the paper's Section 4.4). The reference chassis is 8 layers
-with 64 compute nodes per layer (512 nodes total).
+with 64 compute nodes per layer (512 nodes total). The spine is a single cable:
+every board layer taps that same line through its lxy_repeater, and the one
+control board sits at the spine's root (one end). There are no branching fabric
+paths, with the spine running as one vertical line through every layer:
 
 ```
-                    ┌─────────────────────────┐
-                    │    processor board       │  Spine root (1 per chassis)
-                    │  (Pi Bridge / MCU / SoC) │
-                    │  PCIe host + NVMe boot   │
-                    └──────────┬──────────────┘
-                               │ spine cable (pass-through connectors)
-               ┌───────────────┼───────────────┐
-               │               │               │
-        ┌──────┴──────┐ ┌──────┴──────┐ ┌──────┴──────┐
-        │ interconnect│ │ interconnect│ │ interconnect│  One per board layer
-        │   board     │ │   board     │ │   board     │  Center cutout for spine
-        └──────┬──────┘ └──────┬──────┘ └──────┬──────┘
-               │               │               │
-        ┌──────┴──────┐ ┌──────┴──────┐ ┌──────┴──────┐
-        │  pnm_node   │ │  pnm_node   │ │  pnm_node   │  Compute nodes
-        │  MAC + DRAM │ │  MAC + DRAM │ │  MAC + DRAM │  (64 per layer, reference)
-        └──────┬──────┘ └──────┬──────┘ └──────┬──────┘
-               │               │               │
-        ┌──────┴──────┐ ┌──────┴──────┐ ┌──────┴──────┐
-        │gating board │ │gating board │ │gating board │  Optional MoE gating
-        │ LPCAMM2 or  │ │ LPCAMM2 or  │ │ LPCAMM2 or  │  (1 per layer)
-        │ LPDDR5      │ │ LPDDR5      │ │ LPDDR5      │
-        └─────────────┘ └─────────────┘ └─────────────┘
+                ┌───────────────────────┐    ┌────────────────────────┐
+                │ processor board       │    │ gating board (opt.)    │
+                │ (orchestrator, root)  │    │ MoE gating,            │
+                │ PCIe + NVMe + PNM     │    │ LPCAMM2 or LPDDR5      │
+                └───────────┬───────────┘    └────────────────────────┘
+                            │
+        ┌───────────────────┼───────────────────────────────────────┐
+        │                   │  THE SPINE: one vertical line. It      │
+        │                   │  passes through every layer's          │
+        │                   │  interconnect board (center cutout).   │
+        │                   │  No branching.                         │
+        │  ┌────────────────┼─────────────────┐                     │
+        │  │ layer N:       │                 │                     │
+        │  │  ┌─────────────┴───────┐   ┌─────┴─────────────┐       │
+        │  │  │ interconnect board  │   │ node board        │       │
+        │  │  │ (lxy repeater, HFR, │◄──┤ MAC ASIC + LPDDR6 │       │
+        │  │  │  spine pass-thru)   │NoB│ 64 compute nodes  │       │
+        │  │  └─────────────────────┘   └───────────────────┘       │
+        │  └────────────────────────────────────────────────────┘   │
+        │  layer N-1 … 1: identical boards down the same spine      │
+        └───────────────────┼───────────────────────────────────────┘
+                            │  (spine continues to the last layer)
 ```
 
 ## Implementation status
@@ -106,7 +108,8 @@ SRAM (`orchestrator_sbc.v`); the Pi Bridge and MCU variants run from SRAM only.
 
 ### gating_asic — MoE gating network board
 
-Optional per-layer board for Mixture-of-Experts expert routing. The gating
+Optional board for Mixture-of-Experts expert routing, mounted beside the
+processor board at the spine root (chassis-wide, not one per layer). The gating
 network can have ~1 GB of weights (gating matrices scale with expert count),
 so this board includes DRAM for weight storage. Two options (footprints
 overlap, populate one):
