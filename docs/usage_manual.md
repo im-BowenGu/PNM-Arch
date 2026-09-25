@@ -14,27 +14,34 @@ RTL through PCB assembly to firmware and boot.
 
 ### System architecture
 
-A PNM chassis is a stack of X/Y grid boards connected by a single spine:
+A PNM chassis is a stack of X/Y grid boards connected by a single spine.
+The spine is one vertical line that runs through every layer; each layer is
+an interconnect board with a node board right next to it, and the single
+orchestrator chip sits at the spine root with the optional gating board
+beside it:
 
 ```
-            ┌─────────────────────────────────┐
-            │       Orchestrator chip          │
-            │  (RISC-V SoC, PCIe, MoE route)  │
-            └──────────────┬──────────────────┘
-                           │ spine (SEARAY 12G)
-         ┌─────────────────┼─────────────────┐
-         │                 │                 │
-    ┌────┴────┐      ┌────┴────┐      ┌────┴────┐
-    │ Inter-  │      │ Inter-  │      │ Inter-  │
-    │ connect │      │ connect │      │ connect │
-    │ board   │      │ board   │      │ board   │
-    └────┬────┘      └────┬────┘      └────┬────┘
-         │                │                │
-    ┌────┴────┐      ┌────┴────┐      ┌────┴────┐
-    │  Node   │      │  Node   │      │  Node   │
-    │  board  │      │  board  │      │  node   │
-    │(MAC+DRAM)│     │(MAC+DRAM)│     │(MAC+DRAM)│
-    └─────────┘      └─────────┘      └─────────┘
+                ┌───────────────────────┐    ┌───────────────────────┐
+                │  Orchestrator chip    │    │ gating board (opt.)   │
+                │ (RISC-V SoC, PCIe,    │    │ MoE gating,           │
+                │  MoE route) — root    │    │ LPCAMM2 or LPDDR5     │
+                └───────────┬───────────┘    └───────────────────────┘
+                            │
+        ┌───────────────────┼───────────────────────────────────────┐
+        │                   │  THE SPINE: one vertical line through │
+        │                   │  every layer (interconnect board      │
+        │                   │  center cutout). No branching.        │
+        │  ┌────────────────┼─────────────────┐                     │
+        │  │ layer N:       │                 │                     │
+        │  │  ┌─────────────┴───────┐   ┌─────┴─────────────┐       │
+        │  │  │ interconnect board  │   │ node board        │       │
+        │  │  │ (lxy repeater, HFR, │◄──┤ MAC ASIC + LPDDR6 │       │
+        │  │  │  spine pass-thru)   │NoB│ 64 compute nodes  │       │
+        │  │  └─────────────────────┘   └───────────────────┘       │
+        │  └────────────────────────────────────────────────────┘   │
+        │  layer N-1 … 1: identical boards down the same spine      │
+        └───────────────────┼───────────────────────────────────────┘
+                            │  (spine continues to the last layer)
 ```
 
 Four kinds of hardware:

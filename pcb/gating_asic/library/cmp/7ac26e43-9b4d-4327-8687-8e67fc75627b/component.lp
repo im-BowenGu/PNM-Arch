@@ -1,6 +1,6 @@
 (librepcb_component 7ac26e43-9b4d-4327-8687-8e67fc75627b
  (name "PNM Gating ASIC")
- (description "MoE gating network ASIC with top-K expert selection, weight SRAM, BF16 MAC array")
+ (description "MoE gating network ASIC with top-K expert selection and weight SRAM")
  (keywords "moe,gating,pnm")
  (author "PNM Project")
  (version "0.1")
