@@ -39,6 +39,18 @@ REFS = [
     "B. Gu. Breaking the HBM wall: Verilog HDL sources, Go co-simulation harness, and manuscript repository. https://github.com/im-BowenGu/PNM-Arch, 2026.",
     "Linux Foundation. Linux kernel RISC-V architecture documentation: NOMMU (no-MMU) support. https://www.kernel.org/doc/html/latest/arch/riscv/, 2025.",
     "JEDEC Solid State Technology Association. Double data rate 5 (DDR5) SDRAM standard. JESD79-5C, 2024.",
+    "F. Devaux. The true processing in memory accelerator. \\textit{2019 IEEE Hot Chips 31 Symposium (HCS)}. pg. 1-24, 2019.",
+    "Y.-C. Kwon, S. H. Lee, J. Lee, et al. A 20nm 6GB function-in-memory DRAM, based on HBM2 with a 1.2TFLOPS programmable computing unit using bank-level parallelism, for machine learning applications. \\textit{2021 IEEE International Solid-State Circuits Conference (ISSCC)}. pg. 350-352, 2021.",
+    "J. H. Kim, S. Kang, S. Lee, et al. Aquabolt-XL: Samsung HBM2-PIM with in-memory processing for ML accelerators and beyond. \\textit{2021 IEEE Hot Chips 33 Symposium (HCS)}. pg. 1-26, 2021.",
+    "J. H. Kim, et al. Aquabolt-XL HBM2-PIM, LPDDR5-PIM with in-memory processing, and AXDIMM with acceleration buffer. \\textit{IEEE Micro}. Vol. 42, pg. 20-30, 2022.",
+    "S. Ghose, A. Boroumand, J. S. Kim, J. Gomez-Luna, O. Mutlu. Processing-in-memory: A workload-driven perspective. \\textit{IBM Journal of Research and Development}. Vol. 63, pg. 3:1-3:19, 2019.",
+    "J. Ahn, S. Yoo, O. Mutlu, K. Choi. PIM-enabled instructions: A low-overhead, locality-aware processing-in-memory architecture. \\textit{Proceedings of the 42nd Annual International Symposium on Computer Architecture (ISCA '15)}. pg. 336-348, 2015.",
+    "J. Gomez-Luna, I. E. Hajj, I. Fernandez, C. Giannoula, G. F. Oliveira, O. Mutlu. Benchmarking a new paradigm: Experimental analysis and characterization of a real processing-in-memory system. \\textit{IEEE Access}. Vol. 10, pg. 52565-52608, 2022.",
+    "T. Mann. Why did Nvidia really drop \\$20B on Groq? \\textit{The Register}. December 31, 2025.",
+    "Cerebras Systems. CS-3: the WSE-3 wafer-scale engine. Vendor product documentation. 2025.",
+    "T. P. Morgan. Taalas etches AI models onto transistors to rocket-boost inference. \\textit{The Next Platform}. February 19, 2026.",
+    "T. Mann. AMD acquires AI chip startup Taalas to boost inference performance by etching models into silicon. \\textit{The Register}. August 6, 2026.",
+    "S. Ma, H. Wang, L. Ma, L. Wang, W. Wang, S. Huang, L. Dong, R. Wang, J. Xue, F. Wei. The era of 1-bit LLMs: all large language models are in 1.58 bits. \\textit{arXiv preprint} arXiv:2402.17764, 2024.",
 ]
 
 TOP_SECTIONS = {
@@ -92,6 +104,93 @@ def label_headings(text: str) -> str:
     return '\n'.join(out)
 
 
+def convert_tables(text: str) -> str:
+    """Turn `Table N. caption` + pipe rows into booktabs tabularx floats.
+
+    Must run last (after brace/backslash collapsing): the emitted LaTeX is
+    final --- single braces, literal `\\\\` row separators.
+    """
+    lines = text.split("\n")
+    out = []
+    cap_re = re.compile(r"^Table (\d+)\. (.*)$")
+    i = 0
+    while i < len(lines):
+        m = cap_re.match(lines[i])
+        j = i + 1
+        if m and j < len(lines) and lines[j].strip() == "":
+            j += 1
+        rows = []
+        if m:
+            while j < len(lines) and lines[j].strip() and "|" in lines[j]:
+                cells = [c.strip() for c in lines[j].split("|")]
+                if not all(re.fullmatch(r":?-{3,}:?", c) for c in cells):
+                    rows.append(cells)
+                j += 1
+        if not m or len(rows) < 2:
+            out.append(lines[i])
+            i += 1
+            continue
+        num, caption = m.group(1), m.group(2)
+        ncol = max(len(r) for r in rows)
+        rows = [r + [""] * (ncol - len(r)) for r in rows]
+        weights = []
+        for c in range(ncol):
+            w = max(len(r[c]) for r in rows)
+            weights.append(min(max(w, 6), 64))
+        total = sum(weights)
+        specs = []
+        for w in weights:
+            h = ncol * w / total
+            specs.append(f">{{\\hsize={h:.4f}\\hsize}}X")
+        wide = ncol >= 4
+        env = "table*" if wide else "table"
+        target = "\\textwidth" if wide else "\\columnwidth"
+        body = [
+            f"\\begin{{{env}}}[t]",
+            "\\centering",
+            "\\footnotesize",
+            f"\\caption{{{caption}}}\\label{{tab:{num}}}",
+            f"\\begin{{tabularx}}{{{target}}}{{{''.join(specs)}}}",
+            "\\toprule",
+            " & ".join(rows[0]) + " \\\\",
+            "\\midrule",
+        ]
+        for r in rows[1:]:
+            body.append(" & ".join(r) + " \\\\")
+        body += ["\\bottomrule", "\\end{tabularx}", f"\\end{{{env}}}", ""]
+        out.append("\n".join(body))
+        i = j
+    return "\n".join(out)
+
+
+PDF_SUBJECT = (
+    "Distributed spatial Processing-Near-Memory architecture: commodity LPDDR6 "
+    "CAMM2 modules, mature-node DUV MAC ASICs, and a deterministic single-spine "
+    "wormhole fabric with machine-checked transport claims"
+)
+PDF_KEYWORDS = (
+    "Processing-Near-Memory; Wormhole Switching; Deterministic Routing; "
+    "Dimension-Order Routing; Spatial Computing; LPDDR6 CAMM2; DUV ASIC; "
+    "Mixture-of-Experts Transformers; Stencil Computation; Roofline Analysis; "
+    "RISC-V; BMC; High-Performance Computing"
+)
+
+
+def stage_figures() -> None:
+    """Copy manuscript figures next to the generated .tex.
+
+    Paper.MD references ``../figures/fig_*.png`` (paths relative to
+    ``paper/``). Rewriting those to ``figures/...`` after staging the PNGs
+    into ``submission/figures/`` makes ``paper.tex`` a self-contained arXiv
+    source package without editing the manuscript source.
+    """
+    src = ROOT / "figures"
+    dst = ROOT / "submission" / "figures"
+    dst.mkdir(parents=True, exist_ok=True)
+    for png in sorted(src.glob("fig_*.png")):
+        shutil.copy2(png, dst / png.name)
+
+
 def latex_source(text: str, review: bool) -> str:
     """Wrap the manuscript body in a LaTeX document.
 
@@ -104,7 +203,7 @@ def latex_source(text: str, review: bool) -> str:
         docclass = "11pt,onecolumn"
         geometry = "margin=1.5in"
         spacing = "\\setstretch{1.5}"
-        date = "August 23, 2026 (review copy)"
+        date = "October 18, 2026 (review copy)"
         head = r"""
 \usepackage{fancyhdr}
 \pagestyle{fancy}
@@ -117,7 +216,7 @@ def latex_source(text: str, review: bool) -> str:
         docclass = "10pt,twocolumn"
         geometry = "margin=0.85in"
         spacing = "\\singlespacing"
-        date = "August 23, 2026"
+        date = "October 18, 2026"
         head = ""
 
     return rf"""\documentclass[{docclass}]{{article}}
@@ -128,7 +227,15 @@ def latex_source(text: str, review: bool) -> str:
 \usepackage{{amsmath,amssymb}}
 \usepackage{{array}}
 \usepackage{{booktabs}}
+\usepackage{{graphicx}}
+\usepackage{{tabularx}}
 \usepackage[hidelinks]{{hyperref}}
+\hypersetup{{
+  pdftitle={{{TITLE}}},
+  pdfauthor={{Bowen Gu}},
+  pdfsubject={{{PDF_SUBJECT}}},
+  pdfkeywords={{{PDF_KEYWORDS}}}
+}}
 \usepackage{{microtype}}
 {head}
 \setlength{{\parskip}}{{0.3em}}
@@ -172,6 +279,10 @@ def sync_hdl() -> None:
 def main():
     review = "--review" in sys.argv
     sync_hdl()  # paper/HDL is generated, not tracked
+    fig_script = ROOT / "figures" / "make_figures.py"
+    if fig_script.is_file():
+        subprocess.run([sys.executable, str(fig_script)], cwd=ROOT,
+                       capture_output=True, text=True)  # best effort: PNGs are tracked
     md = ROOT / "Paper.MD"
     text = md.read_text(encoding="utf-8")
 
@@ -190,8 +301,14 @@ def main():
     # Fix common escaped sequences: \\X → \X
     text = text.replace("\\\\", "\\")
 
+    # Manuscript figure paths are ../figures/ (from paper/); stage PNGs next
+    # to the generated .tex so the arXiv source package is self-contained.
+    stage_figures()
+    text = text.replace("../figures/", "figures/")
+
     text = link_sections(text)
     text = label_headings(text)
+    text = convert_tables(text)
 
     latex = latex_source(text, review)
 

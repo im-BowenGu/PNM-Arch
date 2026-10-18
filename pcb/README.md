@@ -104,7 +104,7 @@ SRAM (`orchestrator_sbc.v`); the Pi Bridge and MCU variants run from SRAM only.
 - Lustre FS backing store
 - General block I/O for NOMMU Linux userland
 
-**4-layer stackup**: top copper → inner1 (GND) → inner2 (power) → bottom copper.
+**6-layer stackup** (board.lp declares `inner 4`): top copper → four inner GND/power planes → bottom copper.
 
 ### gating_asic — MoE gating network board
 
@@ -164,7 +164,7 @@ added or removed without desoldering the cable harness. The board has a center
 cutout (15mm x 150mm) for the spine cable to pass through, with SEARAY
 connectors flanking the cutout on both sides.
 
-**4-layer stackup**: top copper → inner1 (GND) → inner2 (power) → bottom copper.
+**6-layer stackup** (board.lp declares `inner 4`): top copper → four inner GND/power planes → bottom copper.
 
 ## Project layout
 
@@ -181,7 +181,7 @@ pcb/
 │   ├── library/               Pi Bridge, MCU header, Custom SoC BGA-400,
 │   │                          PCIe x16 edge, M.2 NVMe
 │   ├── schematics/            schematic sheets
-│   └── boards/                4-layer board layout
+│   └── boards/                6-layer board layout
 ├── gating_asic/              MoE gating ASIC board (BF16 MAC) + LPCAMM2/LPDDR5
 │   ├── gating_asic.lpp       LibrePCB project
 │   ├── library/               Gating ASIC, LPCAMM2, LPDDR5 BGA
@@ -193,7 +193,7 @@ pcb/
     ├── schematics/            schematic sheets
     ├── gen_topology.py         parameterized topology generator
     ├── gen_schematic.py        schematic netlist generator
-    └── boards/                4-layer board layout
+    └── boards/                6-layer board layout
 ```
 
 ## Local library — PNM-specific components

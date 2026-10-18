@@ -1,6 +1,7 @@
 .*
 !.gitignore
-AGENTS.md
+!AGENTS.md
+!.librepcb-*
 
 # Nix
 result
@@ -45,9 +46,16 @@ sim/r_pnm
 # Build artifacts
 *.o
 
-# Paper submission build artifacts
+# Paper submission build artifacts (paper.pdf/docx are tracked deliverables;
+# the regenerated .tex/.aux/.log/.out and staged figure copies are not)
 paper/submission/*.aux
 paper/submission/*.out
+paper/submission/paper.tex
+paper/submission/paper_review.*
+paper/submission/figures/
+
+# Downloaded real-weight checkpoints (download_model.sh)
+models/
 
 # Toolchain build artifacts (downloaded kernels, compiled images)
 toolchain/soc-linux/build/
@@ -66,3 +74,16 @@ viz/pnm_viz
 # paper/HDL — regenerated from HDL/ by build.py (paper proof mirror)
 paper/HDL/
 sim/pnmt
+
+# Paper submission build logs
+paper/submission/*.log
+
+# Host/toolchain compiled binaries
+pi_host/pnm_pi_go
+pi_host/pnm_pi_rs
+toolchain/mcu/firmware.bin
+toolchain/mcu/firmware.elf
+toolchain/mcu/firmware.hex
+toolchain/mcu/firmware.map
+toolchain/soc/pnm_socd
+toolchain/soc/pnm_socd.map
