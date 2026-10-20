@@ -1,0 +1,16 @@
+Creative Commons Attribution-ShareAlike 4.0 International (CC BY-SA 4.0)
+
+SPDX-License-Identifier: CC-BY-SA-4.0
+
+This arXiv source package contains the manuscript *Breaking the HBM
+wall: A Distributed Spatial Processing-Near-Memory Architecture using
+DUV ASICs and Deterministic Routing* and its figures, both under
+CC BY-SA 4.0. The full text of the license is available at
+https://creativecommons.org/licenses/by-sa/4.0/legalcode
+
+The open-hardware artifacts that back the paper (Verilog RTL, the Go
+co-simulation harness, the C firmware, the PCB designs and the
+cross-compilation toolchains) are published separately under the
+three-way license split documented in the artifact repository's
+LICENSE file (CERN-OHL-S v2 for the HDL, AGPL-3.0 for the harness
+and firmware).

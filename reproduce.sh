@@ -206,6 +206,29 @@ if skip_tool "synth.sh" yosys; then
     run "yosys generic synthesis (9 modules)" "$ROOT/synth.sh"
 fi
 
+echo ""
+echo "=== arXiv source package ==="
+if command -v pdflatex >/dev/null 2>&1; then
+    # The bundle must compile on its own (arXiv compiles the sources it is
+    # given): copy it out of the repo, build there, and check the page count.
+    rm -rf /tmp/pnm_arxiv_check
+    if [ -d "$ROOT/paper/submission/arxiv" ]; then
+        cp -r "$ROOT/paper/submission/arxiv" /tmp/pnm_arxiv_check
+        run "arXiv bundle compiles standalone (pdflatex)" bash -c \
+            "cd /tmp/pnm_arxiv_check && pdflatex -interaction=nonstopmode -halt-on-error paper.tex >/dev/null 2>&1"
+        printf "  %-52s" "arXiv bundle page count"
+        pages=$(cd /tmp/pnm_arxiv_check && pdflatex -interaction=nonstopmode paper.tex 2>&1 | grep -oE "Output written on paper.pdf \(([0-9]+) pages" | grep -oE "[0-9]+" | head -1)
+        if [ -n "$pages" ]; then
+            printf "PASS (%s pages)\n" "$pages"; pass=$((pass + 1))
+        else
+            printf "FAIL\n"; fail=$((fail + 1))
+        fi
+    else
+        printf "  %-52s" "arXiv bundle present"
+        printf "FAIL (run: cd paper && python3 build.py)\n"; fail=$((fail + 1))
+    fi
+fi
+
 if [ "$REAL_WEIGHTS" = 1 ]; then
     echo ""
     echo "=== Real-weight inference (Gemma 4 26B-A4B, ~52 GB) ==="
