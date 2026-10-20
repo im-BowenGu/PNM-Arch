@@ -1,11 +1,14 @@
 `timescale 1ns/1ps
 
 // =============================================================================
-// weight_dequant — Weight-Only Quantization Dequantizer (INT4/INT8/FP4/MXFP4 → BF16)
+// weight_dequant — Weight-Only Quantization Dequantizer (INT4/INT8/FP4/MXFP4/
+// ternary → BF16)
 //
 // Converts quantized weights to BF16 for the BF16 MAC array.
-// Supports INT4 (packed nibbles), INT8 (full byte), and FP4 (E2M1, packed
-// nibbles) plus MXFP4 (E2M1 with a shared per-block scale).
+// Supports INT4 (packed nibbles), INT8 (full byte), FP4 (E2M1, packed
+// nibbles), MXFP4 (E2M1 with a shared per-block scale), and BitNet b1.58
+// ternary (2-bit codes {-1,0,+1} → BF16 ±1.0/0; the per-tensor scale is
+// applied host-side, matching the node's select-add accumulate).
 //
 // BF16 output format: sign(1) | exponent(8) | mantissa(7)
 // Conversion: bf16_out = bf16(quantized_weight) [x 2^scale for MXFP4]
@@ -21,9 +24,11 @@ module weight_dequant (
     input  wire        clk,
     input  wire        rst_n,
 
-    // Configuration (2-bit): 0 = INT4 nibbles, 1 = INT8, 2 = FP4 (E2M1)
-    // nibbles, 3 = MXFP4 (E2M1 nibbles with 2^scale block scale).
-    input  wire [1:0]  mode,
+    // Configuration (3-bit): 0 = INT4 nibbles, 1 = INT8, 2 = FP4 (E2M1)
+    // nibbles, 3 = MXFP4 (E2M1 nibbles with 2^scale block scale),
+    // 4 = ternary b1.58 (weight_in[1:0] = 2'b01 -> +1, 2'b10 -> -1, else 0;
+    // per-tensor/channel scale is applied downstream, not here).
+    input  wire [2:0]  mode,
 
     // Weight input
     input  wire [7:0]  weight_in,   // packed or full-byte value
@@ -40,9 +45,15 @@ module weight_dequant (
     // Feed extraction: packed nibble (INT4/FP4/MXFP4) or full byte (INT8)
     // =========================================================================
     wire [3:0] packed_nibble = nibble_sel ? weight_in[7:4] : weight_in[3:0];
-    wire signed [7:0] weight_raw = (mode == 2'b01) ?
+    wire signed [7:0] weight_raw = (mode == 3'b001) ?
         weight_in :  // INT8: full byte
         {{4{packed_nibble[3]}}, packed_nibble};  // INT4/FP4: sign-extended nibble
+
+    // Ternary b1.58: 2-bit code -> exactly ±1.0 / 0 in BF16
+    wire [1:0]  tern_code = weight_in[1:0];
+    wire [15:0] tern_bf16 = (tern_code == 2'b01) ? 16'h3F80 :   // +1.0
+                            (tern_code == 2'b10) ? 16'hBF80 :   // -1.0
+                                                    16'h0000;   // 0.0
 
     // =========================================================================
     // Combinational: Extract sign and absolute value (9-bit to handle INT8 -128)
@@ -113,7 +124,10 @@ module weight_dequant (
             bf16_out  <= 16'h0;
             valid_out <= 1'b0;
         end else begin
-            if (mode[1]) begin
+            if (mode == 3'b100) begin
+                // Ternary b1.58: 2-bit code -> ±1.0 / 0
+                bf16_out <= tern_bf16;
+            end else if (mode[1]) begin
                 // FP4/MXFP4: magnitude from the E2M1 lookup, sign from the nibble
                 bf16_out <= bf16_mag | {packed_nibble[3], 15'h0};
             end else begin

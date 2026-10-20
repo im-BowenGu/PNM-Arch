@@ -85,8 +85,8 @@ module tb_fp16_mac_array;
         @(posedge clk); #1;
         weight_load = 0;
 
-        if (dut.weights[0][0] !== FP16_2) begin
-            $display("[TB] FAIL: weights[0][0] = %h, expected %h", dut.weights[0][0], FP16_2);
+        if (dut.u_core.weights[0][0] !== FP16_2) begin
+            $display("[TB] FAIL: weights[0][0] = %h, expected %h", dut.u_core.weights[0][0], FP16_2);
             errors = errors + 1;
         end
 
@@ -105,8 +105,8 @@ module tb_fp16_mac_array;
         weight_load = 0;
 
         // Verify weights loaded
-        if (dut.weights[0][0] !== FP16_1) begin
-            $display("[TB] FAIL: weights[0][0] = %h, expected %h", dut.weights[0][0], FP16_1);
+        if (dut.u_core.weights[0][0] !== FP16_1) begin
+            $display("[TB] FAIL: weights[0][0] = %h, expected %h", dut.u_core.weights[0][0], FP16_1);
             errors = errors + 1;
         end
 

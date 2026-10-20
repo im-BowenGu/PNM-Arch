@@ -63,6 +63,12 @@ module fp4_mac_array #(
     end
 
     // =========================================================================
+    // Partial-sum pipeline registers indexed by [row][col][stage].
+    // =========================================================================
+    reg [31:0] psum_sr  [0:ARRAY_SIZE-1][0:ARRAY_SIZE-1][0:PIPE_DEPTH-1];
+    reg        psum_v_sr[0:ARRAY_SIZE-1][0:ARRAY_SIZE-1][0:PIPE_DEPTH-1];
+
+    // =========================================================================
     // Per-row activation hold: latched once on the feed cycle, kept stable.
     // Row 0 fires one cycle after the feed (act_valid_q) so its activation hold
     // has settled before sampling.
@@ -98,12 +104,6 @@ module fp4_mac_array #(
     // =========================================================================
     wire [31:0] mac_result    [0:ARRAY_SIZE-1][0:ARRAY_SIZE-1];
     wire        mac_valid_out [0:ARRAY_SIZE-1][0:ARRAY_SIZE-1];
-
-    // =========================================================================
-    // Partial-sum pipeline registers indexed by [row][col][stage].
-    // =========================================================================
-    reg [31:0] psum_sr  [0:ARRAY_SIZE-1][0:ARRAY_SIZE-1][0:PIPE_DEPTH-1];
-    reg        psum_v_sr[0:ARRAY_SIZE-1][0:ARRAY_SIZE-1][0:PIPE_DEPTH-1];
 
     // =========================================================================
     // PE grid — each PE consumes the low nibble of its activation and weight

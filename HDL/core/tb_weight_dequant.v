@@ -3,7 +3,7 @@
 module tb_weight_dequant;
 
     reg clk, rst_n;
-    reg [1:0] mode;
+    reg [2:0] mode;
     reg [7:0] weight_in;
     reg nibble_sel;
     reg [7:0] scale_in;
@@ -115,6 +115,16 @@ module tb_weight_dequant;
         send_and_check(8'h01, 16'h4080, "MXFP4 0.5<<3");      // 4.0
         scale_in = 8'd0;
         send_and_check(8'h02, 16'h3F80, "MXFP4 1.0<<0");      // 1.0
+
+        // Ternary b1.58 (mode=4): weight_in[1:0] = 01 -> +1.0, 10 -> -1.0, else 0
+        mode = 3'b100;
+        nibble_sel = 0;
+        scale_in = 8'd0;
+        send_and_check(8'h01, 16'h3F80, "ternary code +1");   // +1.0
+        send_and_check(8'h02, 16'hBF80, "ternary code -1");   // -1.0
+        send_and_check(8'h00, 16'h0000, "ternary code 0");    // 0.0
+        send_and_check(8'h03, 16'h0000, "ternary code 11");   // unused -> 0
+        send_and_check(8'hFD, 16'h3F80, "ternary lowbits +1");// low 2 bits = 01
 
         $display("");
         if (errors == 0)

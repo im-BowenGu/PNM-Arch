@@ -67,6 +67,12 @@ module mxfp4_mac_array #(
     end
 
     // =========================================================================
+    // Partial-sum pipeline registers
+    // =========================================================================
+    reg [31:0] psum_sr  [0:ARRAY_SIZE-1][0:ARRAY_SIZE-1][0:PIPE_DEPTH-1];
+    reg        psum_v_sr[0:ARRAY_SIZE-1][0:ARRAY_SIZE-1][0:PIPE_DEPTH-1];
+
+    // =========================================================================
     // Per-row block scale (MXFP4): clamped to [0..15] so it doubles as the
     // fp4_mac wshift width; the low nibble of the loaded byte is the shift.
     // =========================================================================
@@ -115,12 +121,6 @@ module mxfp4_mac_array #(
     // =========================================================================
     wire [31:0] mac_result    [0:ARRAY_SIZE-1][0:ARRAY_SIZE-1];
     wire        mac_valid_out [0:ARRAY_SIZE-1][0:ARRAY_SIZE-1];
-
-    // =========================================================================
-    // Partial-sum pipeline registers
-    // =========================================================================
-    reg [31:0] psum_sr  [0:ARRAY_SIZE-1][0:ARRAY_SIZE-1][0:PIPE_DEPTH-1];
-    reg        psum_v_sr[0:ARRAY_SIZE-1][0:ARRAY_SIZE-1][0:PIPE_DEPTH-1];
 
     // =========================================================================
     // PE grid — each PE consumes the low nibble plane of its activation and

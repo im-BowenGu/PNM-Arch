@@ -59,7 +59,11 @@ module moe_gating #(
     output reg  [TOP_K*8-1:0]   expert_module_packed, // {module[K-1], ..., module[0]}
 
     // -- FMA status -------------------------------------------------------
-    output wire        fma_busy          // FMA unit is computing
+    output wire        fma_busy,          // FMA unit is computing
+
+    // -- Logit peek (read any expert's final logit, for host retrieval) ---
+    input  wire [7:0]  logit_idx,         // expert whose logit to read
+    output wire [15:0] logit_val          // logits[logit_idx] (BF16)
 );
 
     // =========================================================================
@@ -76,6 +80,8 @@ module moe_gating #(
     // Logit output buffer
     // =========================================================================
     reg [15:0] logits [0:NUM_EXPERTS-1];
+
+    assign logit_val = (logit_idx < NUM_EXPERTS[7:0]) ? logits[logit_idx] : 16'h0000;
 
     // =========================================================================
     // Expert coordinate map: expert_index → (layer, module_id)

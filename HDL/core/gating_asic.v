@@ -38,22 +38,20 @@ module gating_asic #(
     // Register map (active-high active, byte offset from base)
     //   0x00  CTRL         [0]=start [1]=soft_reset
     //   0x02  STATUS       [0]=busy [1]=done [2]=fma_busy
-    //   0x04  CYCLE_LO
-    //   0x06  CYCLE_HI
-    //   0x08  CFG_EXPERTS   (read-only, NUM_EXPERTS)
-    //   0x0A  CFG_HIDDEN    (read-only, HIDDEN_DIM)
-    //   0x0C  CFG_TOPK      (read-only, TOP_K)
-    //   0x0E  CFG_ARRAY     (read-only, ARRAY_SIZE)
-    //   0x10  WGHT_ADDR     (weight SRAM write address)
-    //   0x12  WGHT_DATA     (weight SRAM write data, BF16)
-    //   0x14  HIDDEN_ADDR   (hidden SRAM write address)
+    //   0x04  CYCLE_LO / 0x06 CYCLE_HI
+    //   0x08  CFG_EXPERTS / 0x0A CFG_HIDDEN / 0x0C CFG_TOPK / 0x0E CFG_ARRAY
+    //   0x10  WGHT_ADDR_LO (weight SRAM write address, low 16)
+    //   0x11  WGHT_ADDR_HI (high 16)
+    //   0x12  WGHT_DATA    (weight SRAM write data, BF16; asserting this
+    //                       register performs the actual SRAM write)
+    //   0x14  HIDDEN_ADDR_LO / 0x15 HIDDEN_ADDR_HI
     //   0x16  HIDDEN_DATA   (hidden SRAM write data, BF16)
-    //   0x18  COORD_LAYER   (layer coordinate input)
-    //   0x1A  COORD_MODULE  (module coordinate input)
-    //   0x20  RESULT_IDX0   (expert_idx[0], read-only)
-    //   0x22  RESULT_IDX1   (expert_idx[1], read-only)
-    //   0x24  RESULT_LOGIT0 (expert_logit[0:1], read-only)
-    //   0x26  RESULT_LOGIT1 (expert_logit[2:3], read-only)
+    //   0x18  COORD_LAYER   (layer coordinate input, also latched to weights
+    //                       being loaded)
+    //   0x1A  COORD_MODULE
+    //   0x20  RESULT_IDX0 / 0x22 RESULT_IDX1
+    //   0x24  RESULT_LOGIT0 / 0x26 RESULT_LOGIT1
+    //   0x30+ 2*e           LOGIT[e] (read-only, all NUM_EXPERTS logits)
     localparam [15:0] REG_CTRL      = 16'h0000;
     localparam [15:0] REG_STATUS    = 16'h0002;
     localparam [15:0] REG_CYCLE_LO  = 16'h0004;
@@ -62,16 +60,19 @@ module gating_asic #(
     localparam [15:0] REG_CFG_HID   = 16'h000A;
     localparam [15:0] REG_CFG_TOPK  = 16'h000C;
     localparam [15:0] REG_CFG_ARR   = 16'h000E;
-    localparam [15:0] REG_WGHT_ADDR = 16'h0010;
-    localparam [15:0] REG_WGHT_DATA = 16'h0012;
-    localparam [15:0] REG_HID_ADDR  = 16'h0014;
-    localparam [15:0] REG_HID_DATA  = 16'h0016;
+    localparam [15:0] REG_WGHT_ADDR_LO = 16'h0010;
+    localparam [15:0] REG_WGHT_ADDR_HI = 16'h0011;
+    localparam [15:0] REG_WGHT_DATA    = 16'h0012;
+    localparam [15:0] REG_HID_ADDR_LO  = 16'h0014;
+    localparam [15:0] REG_HID_ADDR_HI  = 16'h0015;
+    localparam [15:0] REG_HID_DATA     = 16'h0016;
     localparam [15:0] REG_COORD_L   = 16'h0018;
     localparam [15:0] REG_COORD_M   = 16'h001A;
     localparam [15:0] REG_RES_IDX0  = 16'h0020;
     localparam [15:0] REG_RES_IDX1  = 16'h0022;
     localparam [15:0] REG_RES_LOG0  = 16'h0024;
     localparam [15:0] REG_RES_LOG1  = 16'h0026;
+    localparam [15:0] REG_LOGIT     = 16'h0030;
 
     // ---------------------------------------------------------------
     // Control / status registers
@@ -83,18 +84,37 @@ module gating_asic #(
     reg [7:0]  current_module;
 
     // ---------------------------------------------------------------
-    // Weight SRAM write port (written by orchestrator bus)
+    // Weight SRAM write port (bus -> moe_gating weight_load interface).
+    // Addresses are assembled from two 16-bit bus writes into a 32-bit
+    // word; moe_gating only sees ADDR_BITS of it.
     // ---------------------------------------------------------------
-    reg                  wght_we;
-    reg  [ADDR_BITS-1:0] wght_waddr;
+    reg  [15:0]          wght_waddr_lo;
+    reg  [15:0]          wght_waddr_hi;
     reg  [15:0]          wght_wdata;
+    reg                  wght_we;           // registered pulse on WGHT_DATA
+    reg                  wght_incr;         // auto-increment request
 
     // ---------------------------------------------------------------
     // Hidden SRAM write port (written by orchestrator bus)
     // ---------------------------------------------------------------
-    reg                  hidden_we;
-    reg  [ADDR_BITS-1:0] hidden_waddr;
+    reg  [15:0]          hidden_waddr_lo;
+    reg  [15:0]          hidden_waddr_hi;
     reg  [15:0]          hidden_wdata;
+    reg                  hidden_we;
+    reg                  hidden_incr;
+
+    wire [31:0] wght_waddr = {wght_waddr_hi, wght_waddr_lo};
+    wire [31:0] hidden_waddr = {hidden_waddr_hi, hidden_waddr_lo};
+
+    // ---------------------------------------------------------------
+    // Hidden state SRAM (orchestrator-written, read by gating unit)
+    // ---------------------------------------------------------------
+    reg [15:0] hidden_sram [0:HIDDEN_DEPTH-1];
+
+    always @(posedge clk) begin
+        if (hidden_we)
+            hidden_sram[hidden_waddr[ADDR_BITS-1:0]] <= hidden_wdata;
+    end
 
     // ---------------------------------------------------------------
     // MoE gating unit signals
@@ -107,12 +127,14 @@ module gating_asic #(
     wire [TOP_K*8-1:0]  mg_module_out;
     wire [ADDR_BITS-1:0] mg_hidden_addr;
 
-    // Hidden-data handshake for the gating unit. hidden_raddr tracks the
-    // gating unit's read pointer; hidden_valid is high while gating is active
-    // (hidden_sram is a combinational read, so hidden_data is valid the same
-    // cycle the address is presented). moe_gating ignores hidden_valid outside
-    // G_LOAD_HIDDEN, so this is safe.
+    wire [ADDR_BITS-1:0] hidden_raddr;
+    wire [15:0]          hidden_rdata;
     assign hidden_raddr = mg_hidden_addr;
+    assign hidden_rdata = hidden_sram[hidden_raddr];
+
+    // Hidden-data handshake for the gating unit. hidden_valid is high while
+    // gating is active (hidden_sram is a combinational read, so hidden_data
+    // is valid the same cycle the address is presented).
     reg hidden_valid;
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n)
@@ -131,7 +153,6 @@ module gating_asic #(
     assign expert_module = mg_module_out;
     assign cycle_count  = cycle_counter;
 
-    // Result valid: latched when gating unit asserts done
     reg result_valid_r;
     assign result_valid = result_valid_r;
 
@@ -144,7 +165,6 @@ module gating_asic #(
             result_valid_r <= 1'b0;
     end
 
-    // Cycle counter
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n)
             cycle_counter <= 32'd0;
@@ -155,7 +175,16 @@ module gating_asic #(
     end
 
     // ---------------------------------------------------------------
-    // Bus interface (registered, one-cycle latency)
+    // Logit peek window: read logits[REG_LOGIT + 2*e]
+    // ---------------------------------------------------------------
+    wire [7:0]  logit_idx = (bus_addr >= REG_LOGIT) ?
+                            (bus_addr - REG_LOGIT) >> 1 : 8'd0;
+    wire [15:0] logit_val;
+
+    // ---------------------------------------------------------------
+    // Bus interface (registered, one-cycle latency). A WGHT_DATA write
+    // latched here pulses moe_gating.weight_load on the following edge,
+    // i.e. when wght_we/wght_waddr/wght_wdata are all stable.
     // ---------------------------------------------------------------
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -165,16 +194,46 @@ module gating_asic #(
             ctrl_soft_reset <= 1'b0;
             current_layer  <= 8'd0;
             current_module <= 8'd0;
-            wght_we    <= 1'b0;
-            wght_waddr <= {ADDR_BITS{1'b0}};
-            wght_wdata <= 16'd0;
-            hidden_we    <= 1'b0;
-            hidden_waddr <= {ADDR_BITS{1'b0}};
+            wght_waddr_lo <= 16'd0;
+            wght_waddr_hi <= 16'd0;
+            wght_wdata   <= 16'd0;
+            wght_we      <= 1'b0;
+            wght_incr    <= 1'b0;
+            hidden_waddr_lo <= 16'd0;
+            hidden_waddr_hi <= 16'd0;
             hidden_wdata <= 16'd0;
+            hidden_we    <= 1'b0;
+            hidden_incr  <= 1'b0;
         end else begin
             bus_ready <= bus_valid;
             ctrl_start   <= 1'b0;
             ctrl_soft_reset <= 1'b0;
+            wght_we   <= 1'b0;
+            hidden_we <= 1'b0;
+
+            // Auto-increment fires the cycle AFTER a data write, so the data
+            // write itself still targets the current pointer value. The hidden
+            // write pointer wraps at HIDDEN_DIM and the weight pointer at
+            // NUM_EXPERTS*HIDDEN_DIM, so streaming exactly one region's worth
+            // of words (re)loads it back to the base without an address write.
+            if (wght_incr) begin
+                if (wght_waddr == NUM_EXPERTS*HIDDEN_DIM - 1)
+                    wght_waddr_lo <= 16'd0;
+                else
+                    wght_waddr_lo <= wght_waddr_lo + 16'd1;
+                if (wght_waddr_lo == 16'hFFFF)
+                    wght_waddr_hi <= wght_waddr_hi + 16'd1;
+            end
+            if (hidden_incr) begin
+                if (hidden_waddr_lo == (HIDDEN_DIM - 1))
+                    hidden_waddr_lo <= 16'd0;
+                else
+                    hidden_waddr_lo <= hidden_waddr_lo + 16'd1;
+                if (hidden_waddr_lo == 16'hFFFF)
+                    hidden_waddr_hi <= hidden_waddr_hi + 16'd1;
+            end
+            wght_incr   <= 1'b0;
+            hidden_incr <= 1'b0;
 
             if (bus_valid && bus_ready) begin
                 if (bus_we) begin
@@ -183,23 +242,25 @@ module gating_asic #(
                             ctrl_start    <= bus_wdata[0];
                             ctrl_soft_reset <= bus_wdata[1];
                         end
-                        REG_WGHT_ADDR: wght_waddr <= bus_wdata[ADDR_BITS-1:0];
+                        REG_WGHT_ADDR_LO: wght_waddr_lo <= bus_wdata;
+                        REG_WGHT_ADDR_HI: wght_waddr_hi <= bus_wdata;
                         REG_WGHT_DATA: begin
                             wght_wdata <= bus_wdata;
                             wght_we    <= 1'b1;
+                            wght_incr  <= 1'b1;
                         end
-                        REG_HID_ADDR: hidden_waddr <= bus_wdata[ADDR_BITS-1:0];
+                        REG_HID_ADDR_LO: hidden_waddr_lo <= bus_wdata;
+                        REG_HID_ADDR_HI: hidden_waddr_hi <= bus_wdata;
                         REG_HID_DATA: begin
                             hidden_wdata <= bus_wdata;
                             hidden_we    <= 1'b1;
+                            hidden_incr  <= 1'b1;
                         end
                         REG_COORD_L: current_layer  <= bus_wdata[7:0];
                         REG_COORD_M: current_module <= bus_wdata[7:0];
                         default: ;
                     endcase
                 end else begin
-                    wght_we   <= 1'b0;
-                    hidden_we <= 1'b0;
                     case (bus_addr)
                         REG_STATUS:    bus_rdata <= {13'd0, mg_fma_busy, mg_done, busy};
                         REG_CYCLE_LO:  bus_rdata <= cycle_counter[15:0];
@@ -212,48 +273,21 @@ module gating_asic #(
                         REG_RES_IDX1:  bus_rdata <= {8'd0, mg_idx[15:8]};
                         REG_RES_LOG0:  bus_rdata <= mg_logit[15:0];
                         REG_RES_LOG1:  bus_rdata <= mg_logit[31:16];
-                        default:       bus_rdata <= 16'd0;
+                        default:
+                            if (bus_addr >= REG_LOGIT)
+                                bus_rdata <= logit_val;
+                            else
+                                bus_rdata <= 16'd0;
                     endcase
                 end
-            end else begin
-                wght_we   <= 1'b0;
-                hidden_we <= 1'b0;
             end
         end
     end
 
     // ---------------------------------------------------------------
-    // Weight SRAM (written by orchestrator, read by gating unit)
-    // ---------------------------------------------------------------
-    wire [ADDR_BITS-1:0] wght_raddr;
-    wire [15:0]          wght_rdata;
-
-    reg [15:0] wght_sram [0:WEIGHT_DEPTH-1];
-
-    always @(posedge clk) begin
-        if (wght_we)
-            wght_sram[wght_waddr] <= wght_wdata;
-    end
-
-    assign wght_rdata = wght_sram[wght_raddr];
-
-    // ---------------------------------------------------------------
-    // Hidden state SRAM (written by orchestrator, read by gating unit)
-    // ---------------------------------------------------------------
-    wire [ADDR_BITS-1:0] hidden_raddr;
-    wire [15:0]          hidden_rdata;
-
-    reg [15:0] hidden_sram [0:HIDDEN_DEPTH-1];
-
-    always @(posedge clk) begin
-        if (hidden_we)
-            hidden_sram[hidden_waddr] <= hidden_wdata;
-    end
-
-    assign hidden_rdata = hidden_sram[hidden_raddr];
-
-    // ---------------------------------------------------------------
-    // MoE gating unit
+    // MoE gating unit. Its own on-chip weight SRAM is written over the
+    // bus (WGHT_ADDR_LO/HI + WGHT_DATA pulses weight_load); hidden words
+    // come from the hidden state SRAM.
     // ---------------------------------------------------------------
     moe_gating #(
         .NUM_EXPERTS(NUM_EXPERTS),
@@ -268,17 +302,19 @@ module gating_asic #(
         .hidden_addr      (mg_hidden_addr),
         .hidden_data      (hidden_rdata),
         .hidden_valid     (hidden_valid),
-        .weight_load      (1'b0),
-        .weight_addr      ({ADDR_BITS{1'b0}}),
-        .weight_data      (16'h0000),
+        .weight_load      (wght_we),
+        .weight_addr      (wght_waddr[ADDR_BITS-1:0]),
+        .weight_data      (wght_wdata),
         .current_layer    (current_layer),
-        .moe_layer_in     (8'd0),
-        .moe_module_in    (8'd0),
+        .moe_layer_in     (current_layer),
+        .moe_module_in    (current_module),
         .expert_idx_packed   (mg_idx),
         .expert_logit_packed (mg_logit),
         .expert_layer_packed (mg_layer_out),
         .expert_module_packed(mg_module_out),
-        .fma_busy         (mg_fma_busy)
+        .fma_busy         (mg_fma_busy),
+        .logit_idx        (logit_idx),
+        .logit_val        (logit_val)
     );
 
 endmodule

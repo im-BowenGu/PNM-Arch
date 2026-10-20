@@ -77,6 +77,14 @@ module int4_mac_array #(
     end
 
     // =========================================================================
+    // Partial-sum pipeline registers indexed by [row][col][stage].
+    // psum_sr[row][col][PIPE_DEPTH-1] holds the accumulated dot-product
+    // through rows 0..row and feeds the row-below MAC's c input.
+    // =========================================================================
+    reg [31:0] psum_sr  [0:ARRAY_SIZE-1][0:ARRAY_SIZE-1][0:PIPE_DEPTH-1];
+    reg        psum_v_sr[0:ARRAY_SIZE-1][0:ARRAY_SIZE-1][0:PIPE_DEPTH-1];
+
+    // =========================================================================
     // Per-row activation hold: latched once on the feed cycle, kept stable so
     // a row's MAC can sample its own activation whenever its upstream partial
     // sum has settled (rows fire at progressively later times). The row-0 fire
@@ -114,14 +122,6 @@ module int4_mac_array #(
     // =========================================================================
     wire [31:0] mac_result    [0:ARRAY_SIZE-1][0:ARRAY_SIZE-1];
     wire        mac_valid_out [0:ARRAY_SIZE-1][0:ARRAY_SIZE-1];
-
-    // =========================================================================
-    // Partial-sum pipeline registers indexed by [row][col][stage].
-    // psum_sr[row][col][PIPE_DEPTH-1] holds the accumulated dot-product
-    // through rows 0..row and feeds the row-below MAC's c input.
-    // =========================================================================
-    reg [31:0] psum_sr  [0:ARRAY_SIZE-1][0:ARRAY_SIZE-1][0:PIPE_DEPTH-1];
-    reg        psum_v_sr[0:ARRAY_SIZE-1][0:ARRAY_SIZE-1][0:PIPE_DEPTH-1];
 
     // =========================================================================
     // PE grid

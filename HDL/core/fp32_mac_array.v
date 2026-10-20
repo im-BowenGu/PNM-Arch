@@ -48,6 +48,14 @@ module fp32_mac_array #(
 
     reg [7:0] row_delay_cnt [0:ARRAY_SIZE-1];
     reg       row_armed [0:ARRAY_SIZE-1];
+
+    // Output collection state (declared here: accept reads out_active).
+    reg [7:0] out_pipe_cnt;
+    reg       out_active;
+    reg       out_sop_q, out_eop_q;
+    reg       out_valid_reg;
+    integer ri;
+
     wire accept = act_valid && !out_active;
 
     integer r, c, s;
@@ -141,12 +149,6 @@ module fp32_mac_array #(
             end
         end
     endgenerate
-
-    reg [7:0] out_pipe_cnt;
-    reg       out_active;
-    reg       out_sop_q, out_eop_q;
-    reg       out_valid_reg;
-    integer ri;
 
     assign busy = out_active;
 
