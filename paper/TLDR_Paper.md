@@ -105,7 +105,7 @@ compute units, and firmware untouched — each variant verified by its own testb
 |--------|-------|
 | Nodes | 512 (8 layers × 8×8 grid) |
 | Attached memory | 64 TB |
-| Aggregate node-local bandwidth | ~131 TB/s |
+| Aggregate node-local bandwidth | ~262 TB/s (2 × 64 GB 192-bit modules/node, 384-bit) |
 | FP64 throughput | ~197 TFLOPS |
 | Power | ~15 W per node; ~8–10 kW per chassis |
 | Cost | ~$1M per chassis (~$16/GB), vs ~$24M+ of HBM-class hardware for the same bytes |

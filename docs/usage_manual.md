@@ -48,7 +48,7 @@ Four kinds of hardware:
 
 | Component | What it is | Package |
 |-----------|-----------|---------|
-| LPDDR6 CAMM2 module | Commodity DRAM (~256 GB/s per node) | CAMM2 socket |
+| LPDDR6 CAMM2 modules | Commodity DRAM, 2 x 64 GB 192-bit per node (~512 GB/s, 128 GB/node) | CAMM2 sockets (x2) |
 | MAC ASIC | Mature-node DUV compute (BF16/FP16/FP32 FMA, INT8 MAC) | LGA-830 |
 | Hardware Flit Repeater (HFR) | Stateless retimer for signal integrity | On interconnect board |
 | Orchestrator chip | RISC-V SoC: boot, dispatch, MoE routing, PCIe | BGA-400 |
@@ -101,6 +101,7 @@ Each node's PE tile instantiates one compute unit type:
 | `fp64_alu.v` | ALU | FP64 | 3 (ADD/SUB/MUL/MIN/MAX/CMP), 56 (DIV) | Double-precision math |
 | `int8_alu.v` | ALU | INT8 | 1 (ADD/SUB/SHIFT/MIN/MAX), 2 (MUL) | INT8 element-wise ops |
 | `int8_mac.v` | MAC | INT8 | 2 cycles | Quantized inference |
+| `ternary_acc.v` | Select-add accumulator | Ternary {-1,0,+1} x INT8 | 2 cycles | BitNet b1.58 weight streaming (~1.58 bits/weight) |
 | `int4_mac.v` | MAC | INT4 | 2 cycles | INT4 quantized (packed nibbles) |
 | `int4_mac_array.v` | Systolic array | INT4/INT8 | variable | INT4 quantized inference (4x density vs BF16) |
 | `fp4_mac.v` | MAC | FP4 (E2M1) | 2 cycles | FP4 quantized (packed nibbles) |
@@ -164,6 +165,28 @@ PCB traces are components too: `pcb_link` with `DELAY_NS=40` models a 40 mm
 motherboard trace. Clock gating uses `clk_gate`, reset synchronization uses
 `rst_sync`.
 
+#### Node compute variants
+
+`HDL/core/node.v` is the compute node of the node network — one MoE expert
+pass. Its `CU_TYPE` parameter selects the embedded numeric ASIC behind a
+shared accumulate interface (`c = a*b + c`) and one control FSM, so the same
+node source builds as different products:
+
+| Board | `CU_TYPE` / `WIDTH` | Engine |
+|-------|---------------------|--------|
+| `boards/node_bf16.json` | 0 / 16 | BF16 expert: gate/up → swiglu → down |
+| `boards/node_fp32.json` | 2 / 32 | FP32 MAC (identity activation) |
+| `boards/node_int8.json` | 4 / 8 | INT8 MAC, INT32 accumulate |
+| `boards/node_ternary.json` | 8 / 8 | BitNet b1.58 ternary {-1,0,+1} x INT8, INT32 accumulate |
+| `boards/node_fp4.json`  | 6 / 8 | FP4 (E2M1) MAC, INT32 accumulate |
+| `boards/node_dual_mem.json` | 0 / 16 | Reference node: BF16 expert + dual-module memory (`node_mem.v`, CHANNELS=2 = 2 x 64 GB 192-bit LPCAMM2, 384-bit) |
+
+Values 1/3/5/7 select fp16/fp64/int4/`fp4`+MXFP4-block-scale respectively.
+Each board instantiates `rst_sync` + `clk_gate` + `node` and builds, lints,
+and smoke-sims clean. The BF16 (`CU_TYPE 0`) and INT8 (`CU_TYPE 4`) expert
+passes are bit-exact validated by `HDL/core/node_reference_test.py` (flag
+`--cu N`); the other formats are covered by their unit testbenches.
+
 Generated artifacts (in `implementations/build/<name>/`):
 
 | File | Contents |
@@ -225,7 +248,12 @@ Open `pcb/gating_asic/gating_asic.lpp` in LibrePCB.
 
 #### Compute node board (manual)
 
-MAC ASIC (LGA-830) + LPCAMM2 socket. Open `pcb/pnm_node/pnm_node.lpp`.
+MAC ASIC (LGA-830) + **two** LPCAMM2 sockets (64 GB 192-bit modules, 384-bit
+dual-module bus). Open `pcb/pnm_node/pnm_node.lpp`.
+The RTL node (`HDL/core/node.v`) is `CU_TYPE`-selectable (BF16/FP16/FP32/FP64/
+INT8/INT4/FP4/MXFP4) — see the node compute variants above. The dual-module
+memory is the assembly board `implementations/boards/node_dual_mem.json`
+(`node_mem.v`, `CHANNELS=2`).
 
 #### PCB workflow
 
@@ -346,6 +374,7 @@ and LLM inference — all with timestamped logging and structured result export.
 | `pnmhost program <path.pnm>` | Compile and run a .pnm program |
 | `pnmhost model <dir>` | Compile a HuggingFace model onto the chassis |
 | `pnmhost inference <dir> <prompt>` | Run LLM inference |
+| `pnmhost benchmark` | Fabric sweep + cost/TCO model (PNM vs HBM vs SRAM LPU) |
 | `pnmhost run <path.pnm>` | Auto-detect and run |
 
 ### Usage
@@ -363,7 +392,44 @@ pnmhost program examples/bias_add.pnm -log results/run.log
 # Full model compilation + inference pipeline
 pnmhost model examples/gemma4_test_synthetic -o results/
 pnmhost inference examples/gemma4_test_synthetic "Hello, world!" -max-tokens 16
+
+# Architecture benchmark: measured fabric sweep (latency / bytes-per-cycle /
+# machine-checked delivery) + the projected cost/TCO table + the DRAM
+# latency/bandwidth estimate (per memory class), exported to CSV/JSON
+pnmhost benchmark -output results/bench
 ```
+
+The benchmark report appends a `DRAM latency / bandwidth estimate` table:
+for each memory class (LPDDR6 reference, LPDDR5X, LPDDR5, DDR5 baseline,
+HBM3E, GDDR6) it derives a bandwidth-bound token rate (chassis aggregate
+bandwidth after refresh / bytes-per-token) and a strict serial read-latency
+floor (1/(30 layers x read latency)), then reports the headroom against the
+honest alpha=7/8 fabric anchor (~1.1M tok/s) and the measured reference-chassis
+sweep point. Every figure in that table is a characterized model input
+(published-typical class values / repo RTL profiles), not a measurement; the
+JSON export carries it under `dram_estimate`.
+
+Two further model tables are appended, both labeled projections:
+
+- **`Node-network energy estimate`** (`energy_estimate`): per chassis shape, the
+  repeater/SerDes dynamic power `270 dispatches/token x mean NoB hops x per-hop
+  repeater+SerDes energy` (hops = `E|layer diff| + E|dx| + E|dy|`, dimension-order
+  spine + X/Y), the node rail power (`nodes x (idle 1.15 W + MAC 8.7 W + DRAM
+  3.0 W)`, from `power_rails.v`), chassis infrastructure, and the wall power
+  (raw/0.92 PSU). The flit-repeater network is a small share of a 512-node
+  chassis (well under 1%).
+- **`Per-node multi-channel memory`** (`memory_channels`): the `node_mem.v`
+  interleave scaling — each node's memory split into C word-interleaved
+  channels multiplies node bandwidth by C (per-channel rate unchanged) and
+  widens the `node.v` `MEM_CHAN` ingest to `C x element width` bytes/clock. The
+  reference node is two 64 GB 192-bit LPCAMM2 modules (128 GB, 384-bit, 32
+  twelve-bit sub-channels, ~512 GB/s); the sweep runs the per-module and
+  two/four-module points and flags the two-module reference row. The RTL is
+  validated bit-exact by `HDL/core/node_mem_reference_test.py`
+  (CHANNELS in {2,4,8}, CAS in {1,2,5}) and the node result is
+  channel-invariant by `HDL/core/node_reference_test.py` (MEM_CHAN in {1,2,4}).
+  The assembly board `implementations/boards/node_dual_mem.json` composes the
+  two-module memory with the node (`build_asm.py`, vvp).
 
 ### Global options
 
@@ -523,6 +589,71 @@ lowered to `f64_*` kernels for ABI/dispatch compatibility on the
 chassis. Operands are packed in the FP64 payload format (8 bytes per
 slot) in token payloads.
 
+### Chained dataflow execution (`-run`)
+
+The static `.pnm` listing serializes operands as deterministic
+name-hash placeholders, so a `.pnm` program dispatched through `pnmc`
+exercises the fabric structure but never threads actual values between
+operations. The `-run` flag executes the **value-accurate chained
+dataflow** instead: each IR instruction's operand registers are
+resolved against the real producer results, real big-endian FP64
+payloads are packed into each node's token, and the whole schedule is
+verified with a single cycle-exact fabric run (`PASS: byte-exact
+delivery ...`). The `f64_*` kernels execute in the host twin exactly
+as for any dispatched token; the fabric verifies byte-exact transport
+of every chained payload.
+
+Free input registers (variables with no writer) are bound with
+`-inputs name=value,...` and printed back as `inputs bound:`. For
+`hello.R`/`hello.hs`/`hello.hlsl` the free inputs are `x, y`. For a
+Haskell program the executable is its **entry function** (`main` when
+defined, otherwise the last function in source order), fully inlined
+with the function's own parameters as its free inputs. Constant and
+move instructions fold into the register file without a dispatch.
+
+Expected output:
+```
+[0] f64_mul r0 @ (0,0,0)  args=[4 7]  ->  28   [PASS]
+[1] f64_add r0 @ (0,0,1)  args=[28 4]  ->  32   [PASS]
+[2] f64_add r0 @ (0,1,0)  args=[32 7]  ->  39   [PASS]
+
+result (r0) = 39   3 fabric dispatches across 3 node(s)
+inputs bound: x, y
+```
+
+#### Function placement (`-place`, Haskell)
+
+`-place` gives each compiled function a dedicated node and runs the
+program's **entry function on the router SBC**. The SoC router chip
+(orchestrator) executes the entry frame's control arithmetic on the host
+side and dispatches every callee function's arithmetic to that function's
+assigned node over the fabric. The assignment mirrors the `.pnm`
+round-robin formula in source order:
+
+```
+-- funcs.hs
+mul x y = x * y
+add a b = a + b
+main x = x + add (mul 4 7) 7
+
+$ go run ./cmd/haskell_pnm funcs.hs -l 2 -x 2 -y 2 -run -place -inputs x=4
+
+  mul      -> node (0,0,0)
+  add      -> node (0,0,1)
+  main     -> router SBC (entry, orchestration + folding)
+
+  [2] f64_mul r12 @ (0,0,0)  args=[4 7]  ->  28   [PASS]
+  [5] f64_add r14 @ (0,0,1)  args=[28 7]  ->  35   [PASS]
+  [7] f64_add r7  @ router-SBC           ->  39   [PASS]
+
+  result (r7) = 39   2 fabric dispatches across 2 node(s), 1 router-SBC fold(s)
+```
+
+The entry frame's own arithmetic (``x + add (mul 4 7) 7``'s leading
+`+`) folds on the router SBC; only callee-function math is dispatched.
+The R and HLSL frontends define no functions, so `-place` is
+Haskell-only.
+
 ### Usage
 
 ```bash
@@ -530,15 +661,15 @@ cd sim
 
 # Haskell
 go run ./cmd/haskell_pnm examples/hello.hs -l 2 -x 2 -y 2
-go run ./cmd/haskell_pnm examples/hello.hs -l 2 -x 2 -y 2 -run
+go run ./cmd/haskell_pnm examples/hello.hs -l 2 -x 2 -y 2 -run -inputs x=4,y=7
 
 # R
 go run ./cmd/r_pnm examples/hello.R -l 2 -x 2 -y 2
-go run ./cmd/r_pnm examples/hello.R -l 2 -x 2 -y 2 -run
+go run ./cmd/r_pnm examples/hello.R -l 2 -x 2 -y 2 -run -inputs x=4,y=7
 
 # HLSL
 go run ./cmd/hlsl_pnm examples/hello.hlsl -l 2 -x 2 -y 2
-go run ./cmd/hlsl_pnm examples/hello.hlsl -l 2 -x 2 -y 2 -run
+go run ./cmd/hlsl_pnm examples/hello.hlsl -l 2 -x 2 -y 2 -run -inputs x=4,y=7
 ```
 
 ### FP64 kernels

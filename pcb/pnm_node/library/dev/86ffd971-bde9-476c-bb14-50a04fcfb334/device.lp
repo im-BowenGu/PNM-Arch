@@ -1,6 +1,6 @@
 (librepcb_device 86ffd971-bde9-476c-bb14-50a04fcfb334
  (name "PNM-LPCAMM2")
- (description "LPCAMM2/LPDDR6 CAMM2 socket, 644-ball, 256 GB/s")
+ (description "LPCAMM2/LPDDR6 CAMM2 socket, 644-ball; one 64 GB 192-bit module per socket, two per node (384-bit, ~512 GB/s)")
  (keywords "lpcamm2,lpddr6,memory,pnm")
  (author "PNM Project")
  (version "0.1")

@@ -10,7 +10,7 @@
 ||--------|-------|
 || Nodes | 512 (8 layers x 8x8 grid) |
 || Aggregate memory | 64 TB |
-|| Aggregate bandwidth | ~131 TB/s (512 nodes × ~256 GB/s node-local) |
+|| Aggregate bandwidth | ~262 TB/s (512 nodes × ~512 GB/s node-local, 2×64 GB modules) |
 || FP64 throughput | ~197 TFLOPS |
 || Cost per GB | ~$16 (vs ~$375 for HBM) |
 || Chassis power | 8-10 kW |
@@ -38,4 +38,4 @@
 - `pcb/` — Manufacturable PCB assembly (interconnect board, processor board, gating ASIC)
 - `sim/examples/` — Synthetic test configs (Gemma-4, mini GLM-MoE, bias_add program)
 
-**Verification:** All transport claims are machine-checked by the co-simulation harness against a cycle-exact Verilog model. Six scenarios (sweep, vcsweep, load, hotspot, stress, replay) verify byte-exact delivery, zero drops, doorbell accounting, kernel correctness, and deterministic replay.
+**Verification:** All transport claims are machine-checked by the co-simulation harness against a cycle-exact Verilog model. Six scenarios (sweep, vcsweep, load, hotspot, stress, replay) verify byte-exact delivery, zero drops, doorbell accounting, kernel correctness, and deterministic replay. On the real **Gemma-4 26B-A4B** checkpoint the harness's pure-Go BF16 forward pass is greedy-token-identical to a Hugging Face reference on the tested chat prompts (`./download_model.sh` fetches the gated weights; `./reproduce.sh --real-weights` runs the check), and a real router-weight tile executes bit-exactly on the BF16 FMA systolic array under `vvp`. The full RTL decoder block (attention, dense MLP, MoE top-2) is also bit-exact against a BF16 arithmetic reference on real layer-0 slices, validated through a standalone BF16 op library (10,984/10,984 vectors exact). The compute node (`HDL/core/node.v`, one MoE expert pass on a `CU_TYPE`-selectable BF16/FP16/FP32/FP64/INT8/INT4/FP4/MXFP4 MAC ASIC) is bit-exact against its oracle on real layer-0 expert slices.

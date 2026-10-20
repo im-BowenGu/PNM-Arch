@@ -10,8 +10,6 @@
 
 #define NUM_NODES 32
 
-static const uint8_t jacobi_weights[5] = {0x28, 0x08, 0x08, 0x08, 0x08};
-
 static uint8_t tx_buf[64];
 
 void dispatch_init(void) {

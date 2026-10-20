@@ -24,7 +24,7 @@ and the host drivers.
 |---|---|
 | **Problem** | GPU/HBM monoliths cost ~$375/GB (H100-class), are capacity-capped by interposer reticle limits, and spend most energy on data movement |
 | **Solution** | Replace HBM with commodity 192-bit LPDDR6 CAMM2 (~$16/GB, ~24× cheaper per byte), each paired with a mature-node DUV MAC ASIC on a rigid X/Y grid |
-| **Reference chassis** | 512 nodes (8 layers × 8×8 grid) · 64 TB · ~131 TB/s aggregate · ~197 TFLOPS FP64 |
+| **Reference chassis** | 512 nodes (8 layers × 8×8 grid) · 64 TB · ~262 TB/s aggregate · ~197 TFLOPS FP64 |
 | **Hardware** | Four kinds: DRAM modules, MAC ASICs, stateless flit repeaters, one RISC-V orchestrator chip |
 | **Routing** | Source-routed wormhole, O(1) coordinate arithmetic, deterministic latency, no runtime scheduling |
 | **Gate** | Hardware doorbell: three-condition fire (byte count, CRC, destination match) — sub-microsecond activation, no software interrupt |
@@ -53,6 +53,7 @@ sim/                    ← Go co-simulation harness (stdlib only)
   cmd/pnm/                orchestrator + verification scenarios
   cmd/pnmc/               program compiler + model compiler + driver CLI
   cmd/pnmhost/            unified host driver (all workloads)
+  cmd/pnmgate/            hardware-gated inference (real router on the Gating ASIC, vvp)
   cmd/haskell_pnm/        Haskell → PNM compiler + co-simulation runner
   cmd/r_pnm/              R → PNM compiler + co-simulation runner
   cmd/hlsl_pnm/           HLSL → PNM compiler + co-simulation runner
@@ -118,6 +119,93 @@ go run ./cmd/pnmhost/ inference examples/gemma4_test_synthetic "Hello" -max-toke
 
 See [`docs/usage_manual.md`](docs/usage_manual.md#unified-host-driver)
 for full command reference and all options.
+
+### Real-weight inference (Gemma 4 26B-A4B)
+
+The harness runs the **actual Gemma 4 26B-A4B checkpoint** — a pure-Go BF16
+forward pass with bf16 store emulation, no torch/transformers — and is
+greedy-token-identical to a Hugging Face / vLLM reference on the tested chat
+prompts:
+
+```bash
+HF_TOKEN=hf_xxx ./download_model.sh                 # gated, ~52 GB, SHA-256 verified
+cd sim && go run ./cmd/pnmhost inference "$PNM_MODEL_DIR" \
+    "What is the capital of Germany" -max-tokens 32
+# -> real-weights forward: "The capital of Germany is Berlin.<turn|>"   (stops on <turn|>)
+```
+
+The downloader is also wired into `./reproduce.sh --real-weights`. See
+[`docs/real_weights.md`](docs/real_weights.md) for the HF parity results
+(Germany and France chat token-for-token through the stop), the benchmark, and
+the RTL proofs of concept — a real router-weight tile executed on the BF16 FMA
+systolic array under `vvp` bit-exact, and the full RTL decoder block
+(attention, dense MLP, MoE top-2) bit-exact against a BF16 reference on real
+layer-0 slices.
+
+### Node compute ASIC (`HDL/core/node.v`)
+
+`node.v` is the compute node of the node network: one MoE expert pass
+(gate/up → swiglu → down) on the same BF16 fused-FMA datapath as the router.
+Its `CU_TYPE` parameter selects the embedded numeric ASIC behind a shared
+accumulate interface, so the one source builds as BF16 / FP16 / FP32 / FP64 /
+INT8 / INT4 / FP4 / MXFP4 nodes. Bit-exact validation
+(`HDL/core/node_reference_test.py`, `--cu N`) covers BF16 and INT8 against
+exact oracles, plus a real layer-0 expert; the format-specific boards live in
+`implementations/boards/node_{bf16,fp32,int8,fp4}.json`.
+
+### Hardware-gated inference (`pnmgate`)
+
+`pnmgate` routes selected MoE layers through the **RTL Gating ASIC**
+(`HDL/core/gating_asic.v`) running under `vvp`: it loads the layer's real
+`router.proj.weight` rows into the ASIC's on-chip RAM over the register bus,
+runs the gating network (all 128 expert logits + top-k, BF16 fused-FMA)
+on the ASIC, feeds the ASIC logits back into the Go engine's softmax/MoE, and
+runs the rest of the forward pass on the CPU over the real weights:
+
+```bash
+cd sim && go run ./cmd/pnmgate -model "$PNM_MODEL_DIR" -layers 0 -width 256 \
+    "What is the capital of Germany"
+# -> answer: "The capital of Germany is Berlin.<turn|>"   (same as the software engine)
+```
+
+`-width` sets the projection width loaded into the ASIC (256 = the paper's
+gating-SRAM tile; `-width 2816` = full hidden). `-layers 0,7,14` gates several
+layers, `-prefill-last=false` gates every prompt position. Needs `iverilog`/`vvp`
+(`nix develop`) and `./reproduce.sh --real-weights` exercises it end-to-end.
+
+Add `-network` to dispatch the ASIC's selected experts over the **node-network
+fabric RTL** (`HDL/`: `hfr`/`flit_gate`/`xy_turn`/`node_eject`/...): each
+top-k expert becomes a routed flit on the X/Y grid and `RunOne` proves
+byte-exact delivery to the expert node (and per-node kernel correctness) before
+the expert math runs on the CPU:
+
+```bash
+cd sim && go run ./cmd/pnmgate -model "$PNM_MODEL_DIR" -layers 0 -width 256 \
+    -network "Hello"
+# -> asic L0 top-k experts: [109 103 51 41 1 79 4 56]
+# -> network: 8 packets, 8 doorbell activations, 304 DMA bytes, latency 40/41/43 cyc
+# -> network: PASS — byte-exact to the expert nodes
+```
+
+`-net-bx/-net-by` set the chassis grid, `-net-layers` the chassis depth
+(default: cover the gated layers), `-net-replays 2` checks determinism. Expert
+`e` of layer `l` maps to node `(l, e mod bx, (e/bx) mod by)`.
+
+Note on checkpoints: `/data/gemma4_dl/complete` is the **base/pretrained**
+`google/gemma-4-26B-A4B` — it completes/echoes and never reasons, so for
+instruction-following runs point `-model` at the bf16 instruction-tuned model
+built from the FP8 export (`/data/ai/models/gemma-4-26b-a4b-it-bf16-fused`,
+converted with `tools/dequant_fp8.py` + `tools/fuse_experts.py`). The IT model
+opens its `thought` channel on its own (first token is `<|channel>`), so its
+`generation_config` (`do_sample, temperature 1.0, top_k 64, top_p 0.95`) is
+what governs output; use `-temp 0.7` for a serving-style answer and `-think` to
+see the reasoning trace.
+
+`./compare_vllm.sh` runs this engine and the official vLLM stack (the FP8 IT
+checkpoint) in parallel on the same prompt, chat template and sampling params —
+on the IT weights both sides produce essentially the same reasoning
+(`<|channel>thought\n* Topic 1: Dataflow Architecture.…`, first 13 tokens
+identical, a near-tie fork that reconverges).
 
 ### Source-language compilation
 
@@ -205,6 +293,10 @@ a wrapper, testbench, and filelist.
 python3 implementations/build_asm.py implementations/boards/node_board.json
 python3 implementations/build_asm.py implementations/boards/node_board.json --lint    # verilator only
 python3 implementations/build_asm.py implementations/boards/node_board.json --no-sim  # emit only
+
+# node compute variants (same node.v, different CU_TYPE/WIDTH)
+python3 implementations/build_asm.py implementations/boards/node_bf16.json
+python3 implementations/build_asm.py implementations/boards/node_int8.json
 ```
 
 See [`implementations/schema.md`](implementations/schema.md) for the

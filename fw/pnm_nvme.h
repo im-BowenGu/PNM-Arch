@@ -5,7 +5,9 @@
  * AXI-Lite register window. Used by the firmware for:
  *   - Model weight persistence across power cycles
  *   - KV cache overflow to NVMe-backed swap
- *   - Lustre FS object storage backend
+ *
+ * (The Lustre FS object-storage backend that once sat on top of this
+ * driver is quarantined under archive/fw/.)
  *
  * The register window is at a fixed physical base address on the SoC
  * memory map (NVME@0xD0000000, 64-byte window). On MCU targets the

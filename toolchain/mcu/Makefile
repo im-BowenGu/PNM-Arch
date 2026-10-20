@@ -9,12 +9,20 @@
 #   make clean
 #   make disasm      # dump firmware.dis for debugging
 #
-# Cross-compiler: install riscv-none-elf-gcc (xPack) or use the Nix shell.
+# Cross-compiler: bare-metal target, so prefer the embedded (newlib-free,
+# none-elf) toolchain. The Nix shell provides riscv32-none-elf-gcc; xPack
+# installs riscv-none-elf-gcc. Pick whichever exists on PATH.
 # Fallback: any RV32I-capable cross-compiler works (clang --target=riscv32).
 # =============================================================================
 
-CROSS   ?= riscv-none-elf-
-CC      := $(CROSS)gcc
+# The Nix dev shell exports NIX_CFLAGS_COMPILE/NIX_LDFLAGS with target
+# headers for ALL cross toolchains in scope; a bare-metal build must not
+# pick up the musl-target include/lib dirs. The embedded gcc wrapper
+# supplies its own include paths only when these are cleared.
+ENV_PURGE := env -u NIX_CFLAGS_COMPILE -u NIX_LDFLAGS -u NIX_CFLAGS_LINK
+
+CROSS   ?= $(shell command -v riscv32-none-elf-gcc >/dev/null 2>&1 && echo riscv32-none-elf- || echo riscv-none-elf-)
+CC      := $(ENV_PURGE) $(CROSS)gcc
 OBJCOPY := $(CROSS)objcopy
 OBJDUMP := $(CROSS)objdump
 SIZE    := $(CROSS)size
@@ -27,7 +35,7 @@ CFLAGS   := $(ARCH) $(OPT) $(WARN) -std=c11 -ffreestanding -nostdlib \
 LDFLAGS  := $(ARCH) -nostdlib -static -Wl,--gc-sections \
             -T linker.ld -Wl,-Map=firmware.map
 
-SRCS     := startup.c dispatch.c pnm_regs.c
+SRCS     := startup.c main.c dispatch.c pnm_regs.c
 OBJS     := $(SRCS:.c=.o)
 TARGET   := firmware
 

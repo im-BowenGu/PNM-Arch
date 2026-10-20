@@ -56,8 +56,16 @@ All four projects open cleanly in LibrePCB (`librepcb-cli open-project`).
 ### pnm_node — Compute node board
 
 The core compute element. One DUV MAC ASIC socket (LGA-830, ~830 pins) paired
-with one LPCAMM2/LPDDR6 socket (644 pins), connected via point-to-point fabric
-links through a mezzanine connector to the interconnect board above.
+with **two** LPCAMM2/LPDDR6 sockets (644 pins each), connected via
+point-to-point fabric links through a mezzanine connector to the interconnect
+board above.
+
+Each LPCAMM2 socket holds a 64 GB 192-bit LPDDR6 module; the pair gives the
+node 128 GB across a **384-bit dual-module** memory bus (~512 GB/s), which is
+the reference packaging. Total chassis capacity is unchanged at 64 TB (512
+nodes x 128 GB) — the module count, not the capacity, is what doubles the
+node-local bandwidth (Sections 2.4/2.16 of the paper). Both sockets escape to
+the same ASIC, whose memory controller drives both 192-bit PHYs.
 
 Per-node power: ~15 W total (9 W MAC, 5 W DRAM, 1 W fabric) on three rails
 (core 0.8 V, I/O 1.2 V, LPDDR6 PHY 1.1 V).
@@ -101,8 +109,8 @@ SRAM (`orchestrator_sbc.v`); the Pi Bridge and MCU variants run from SRAM only.
 **NVMe** provides block storage for:
 - Model weight persistence (survives power cycles)
 - KV cache overflow to swap
-- Lustre FS backing store
 - General block I/O for NOMMU Linux userland
+(The earlier Lustre FS striping backend is quarantined under `archive/`.)
 
 **6-layer stackup** (board.lp declares `inner 4`): top copper → four inner GND/power planes → bottom copper.
 
@@ -116,7 +124,7 @@ overlap, populate one):
 
 | Option | Package | Capacity | Bandwidth | Notes |
 |--------|---------|----------|-----------|-------|
-| **LPCAMM2** (default) | 644-ball CAMM2 | 16GB+ | 256 GB/s | Same BOM as pnm_node |
+| **LPCAMM2** (default) | 644-ball CAMM2 | 16GB+ | 256 GB/s | Same single-module LPCAMM2 BOM as one pnm_node socket |
 | **Soldered LPDDR5** | BGA-200 | 4-8GB | 50 GB/s | Lower cost, no socket |
 
 The gating ASIC runs the moe_gating top-K unit (hidden × router_weights
@@ -204,7 +212,7 @@ names as they appear in `library/dev/`):
 | Project | Device | Package | Description |
 |---------|--------|---------|-------------|
 | `pnm_node` | PNM-MAC-ASIC | `LGA-830 MAC ASIC` | DUV MAC compute ASIC socket, ~830 pins |
-| `pnm_node` | PNM-LPCAMM2 | `LPCAMM2-644` | LPCAMM2/LPDDR6 CAMM2 socket, 644-ball |
+| `pnm_node` | PNM-LPCAMM2 | `LPCAMM2-644` | LPCAMM2/LPDDR6 CAMM2 socket, 644-ball; 2 per node (64 GB 192-bit modules, 384-bit dual-module bus) |
 | `processor` | PNM-SOC | `Router SoC BGA-400` | Custom RISC-V SoC, 17x17 mm BGA-400 |
 | `processor` | PNM-PCIE | `PCIe x16 Edge` | PCIe Gen5 x16 edge connector |
 | `processor` | PNM-NVME | `M.2 M-Key` | M.2 Key-M NVMe module slot |

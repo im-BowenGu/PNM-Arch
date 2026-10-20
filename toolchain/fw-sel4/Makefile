@@ -12,7 +12,8 @@
 # Prerequisites:
 #   - CMake >= 3.18
 #   - seL4 source tree at sel4/ (or set SEL4_DIR)
-#   - riscv32-unknown-elf-gcc toolchain (available in flake.nix)
+#   - riscv32-unknown-elf-gcc or riscv32-none-elf-gcc toolchain
+#     (the Nix shell provides riscv32-none-elf-gcc)
 #
 # Usage:
 #   make            # build everything (kernel + root task)
@@ -24,7 +25,7 @@
 SEL4_DIR     ?= $(PWD)/sel4
 BUILD        := build
 ROOT_TASK    := root_task
-CROSS        ?= riscv32-unknown-elf-
+CROSS        ?= $(shell command -v riscv32-unknown-elf-gcc >/dev/null 2>&1 && echo riscv32-unknown-elf- || echo riscv32-none-elf-)
 CROSS_CC     := $(CROSS)gcc
 PLATFORM     := generic
 

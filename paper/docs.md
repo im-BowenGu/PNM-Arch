@@ -148,8 +148,7 @@ counters. The same module, re-parameterized, models DDR4/DDR5 SODIMM modules:
 - **`nvme_ctrl.v` — NVMe storage controller** (`tb_nvme_ctrl.v`). A lightweight
   NVMe endpoint for SBC-class orchestrator chips providing block storage to the SoC
   firmware: model weight persistence across power cycles, KV cache overflow
-  to NVMe-backed swap, Lustre FS object storage backend, and general-purpose
-  block I/O. AXI-Lite register window (16 registers at 0x00–0x3C) drives a
+  to NVMe-backed swap, and general-purpose block I/O. AXI-Lite register window (16 registers at 0x00–0x3C) drives a
   command FSM (READ/WRITE/FLUSH) that moves data over AXI-Stream DMA with
   completion interrupts. `tb_nvme_ctrl.v` validates register reads (CAP,
   version), controller enable, an 8-block READ with exact status, a
@@ -296,26 +295,22 @@ Two toolchains target the chip family:
 - **fw-sel4** (`toolchain/fw-sel4/`): seL4 microkernel root task for `orchestrator_sbc`. CMake-based build for RV32IMA generic platform. The root task maps UART@`0x10000000` and PNM@`0xF0000000` device frames via seL4 capabilities, prints a boot banner, reads PNM STATUS to confirm the orchestrator chip is alive, and enters a `seL4_Yield` idle loop. seL4 provides formal verification, capability-based access control, and temporal isolation — a hardened alternative to Linux for the orchestrator chip's control plane.
 - **Pi host** (`pi_host/`): Raspberry Pi Compute Module drivers that reach the orchestrator PNM register window from a Pi: through the `HDL/pi_bridge.v` SPI slave (CM0-CM4 GPIO SPI) or directly via PCIe BAR0 (CM5). The same 48-bit frame protocol is implemented five times for maximum compatibility — Python (`pnm_pi.py`, spidev), Go (`pnm_pi.go`, stdlib-only raw ioctl), Rust (`pnm_pi.rs`, zero crates), C (`pnm_pi_spi.c`, raw ioctl), and C-over-PCIe (`pnm_pi_cm5.c`, sysfs BAR0 mmap). Frame: header byte `{rw<<7|sel}`, 32-bit data, status byte (0x01 write-ack / 0x00 read-ok); sel 0-9 map to PNM offsets 0x00-0x24.
 
-### NVMe storage and Lustre filesystem
+### NVMe storage
 
-The orchestrator chip's firmware gains block-level persistence through two
-complementary layers:
+The orchestrator chip's firmware gains block-level persistence through the
+NVMe driver:
 
 - **NVMe driver** (`fw/pnm_nvme.{h,c}`, Go twin
-  `sim/internal/pnm/nvme_lustre.go`): register-level driver for
+  `sim/internal/pnm/nvme_device.go`): register-level driver for
   `HDL/nvme_ctrl.v`. Probes CAP, sets CSTS.ready, then submits READ/WRITE/
   FLUSH commands through the AXI-Lite window with poll-for-done completion.
   Used for model weight save/load across power cycles and KV cache overflow
   pages.
-- **Lustre client** (`fw/pnm_lustre.{h,c}`): a minimal Lustre OSS
-  endpoint that splits the NVMe device into up to 16 object storage targets
-  and stripes files round-robin across them with configurable stripe count
-  (1–8) and stripe size (up to 1 MB). Each router node acts as both a Lustre
-  OSS target and a PNM compute node; object IDs are allocated sequentially
-  per file so the striping layout is deterministic and verifiable from the
-  Go harness (`LustreClient.Create/Write/Read/Sync` mirror the C API).
-  Production deployments run a real Lustre client on the NOMMU kernel;
-  this module handles the firmware-side layout decisions that must match.
+
+> Note: an earlier Lustre OSS striping client (`fw/pnm_lustre.{h,c}` and the
+> Go twin `sim/internal/pnm/nvme_lustre.go`) sat on top of this driver. It was
+> unrelated to the processing-near-memory argument and is quarantined under
+> `archive/` (see `archive/README.md`); the NVMe driver is unchanged.
 
 ### Testbenches
 

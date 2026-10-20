@@ -16,6 +16,7 @@ Verilog-2005 model of the **routing fabric**, **compute units**, and **co-simula
 | `crc16.v` | Byte-wise CRC-16/CCITT-FALSE (init `0xFFFF`, poly `0x1021`) |
 | `doorbell.v` | Node DMA doorbell FSM — fires on byte count + CRC + DEST match, `NODE_ERR` on refusal |
 | `pe_tile_stub.v` | Processing Element (PE) tile — AXI-Stream slave→master elastic pipe (1–2 cycle MAC latency) running a bias-add kernel (`KERNEL_CONST`) with in-silicon CRC-16 validate + recompute (`corrupt_out` doorbell verdict); carries the node's routing bitmap and mask-compares the DEST nibble against DIST (`route_err`) |
+| `node.v` | **Compute node** — one MoE expert pass (gate/up → gelu-tanh·up → down) on a `CU_TYPE`-selectable numeric ASIC (BF16/FP16/FP32/FP64/INT8/INT4/FP4/MXFP4) behind a shared `c = a*b + c` accumulate interface and FSM; converges with the router's fused-FMA datapath. Supersedes the `pe_tile_stub` bias-add placeholder as the node's real MAC |
 | **Compute units** | |
 | `fp16_fma.v` | FP16 Fused Multiply-Add (3-cycle pipeline) |
 | `bf16_fma.v` | BF16 Fused Multiply-Add (3-cycle pipeline) |
@@ -50,6 +51,7 @@ Verilog-2005 model of the **routing fabric**, **compute units**, and **co-simula
 | `tb_int8_mac.v` | INT8 MAC testbench |
 | `tb_orchestrator_chip.v` | Router chip testbench |
 | `tb_moe_gating.v` | MoE gating testbench |
+| `tb_node.v` | Compute-node testbench — boots expert weights, streams the hidden vector, dumps gate/up/act/out (`node_reference_test.py` drives it; BF16 + INT8 bit-exact) |
 | `tb_dma_lpddr6.v` | Host→BMC→DMA→LPDDR6 roundtrip with mid-transfer refresh stalls |
 | `tb_sodimm_lpddr.v` | Same protocol stack across DDR4/DDR5/LPDDR6 timing generations |
 | `tb_pcb_link.v` | PCB links: passthrough, exact latency, 200-packet stream, triple-link counter |
@@ -81,6 +83,10 @@ Each node's PE tile (`pe_tile_stub.v`) instantiates one of several compute unit 
 All FMA modules share an identical interface: `clk, rst_n, a, b, c, valid_in → result, valid_out`
 (3-cycle pipeline). The `pe_tile_stub.v` uses `USE_FMA` (0=bias-add, 1=BF16 FMA) and `CU_TYPE`
 (0=bias-add, 1=BF16 FMA, 2=INT4 MAC, 3=FP4 MAC, 4=MXFP4 MAC) parameters to select the compute path.
+`node.v` is the real expert MAC: its `CU_TYPE` (0..7) selects the embedded engine from the
+table above behind one shared accumulate interface, and `WIDTH` (16/16/32/64/8/8/8/8) must
+match. Bit-exact RTL validation for CU 0 (BF16) and CU 4 (INT8) lives in
+`core/node_reference_test.py` (`--cu N`, plus `--real` for a real layer-0 expert).
 
 ## Packet format (byte-wide links, CRC-protected destination)
 

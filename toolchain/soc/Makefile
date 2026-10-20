@@ -15,7 +15,15 @@
 #   make clean
 # =============================================================================
 
-CROSS   ?= riscv64-unknown-linux-musl-
+# The daemon targets the RV32IMA (FPU-less) orchestrator core, so it must be
+# built soft-float (-march=rv32ima -mabi=ilp32). The nixpkgs riscv32-musl
+# triplet defaults to rv32gc/ilp32d (double-float) and cannot link such
+# objects; the Nix flake therefore builds a static-only soft-float musl and
+# exports its lib dir as PNM_MUSL_RV32IMA. When that variable is present the
+# link uses the musl crt files and libc.a from it directly; otherwise the
+# classic tripelt default is used (compile-only, or link if your distro's
+# riscv32 musl happens to be soft-float).
+CROSS   ?= $(shell command -v riscv32-unknown-linux-musl-gcc >/dev/null 2>&1 && echo riscv32-unknown-linux-musl- || echo riscv64-unknown-linux-musl-)
 CC      := $(CROSS)gcc
 
 ARCH     := -march=rv32ima -mabi=ilp32 -mcmodel=medany
@@ -35,9 +43,17 @@ TARGET   := pnm_socd
 
 all: $(TARGET)
 
+ifdef PNM_MUSL_RV32IMA
+MUSL_CRT := -nostartfiles $(PNM_MUSL_RV32IMA)/lib/crt1.o $(PNM_MUSL_RV32IMA)/lib/crti.o
+MUSL_LIB := $(PNM_MUSL_RV32IMA)/lib/libc.a $(PNM_MUSL_RV32IMA)/lib/crtn.o
+$(TARGET): $(OBJS) linker_soc.ld
+	$(CC) $(LDFLAGS) $(MUSL_CRT) -o $@ $(OBJS) $(MUSL_LIB)
+	@echo "Built $@ ($$(stat -c%s $@) bytes, soft-float musl)"
+else
 $(TARGET): $(OBJS) linker_soc.ld
 	$(CC) $(LDFLAGS) -o $@ $(OBJS)
-	@echo "Built $(TARGET) ($(shell stat -c%s $@) bytes)"
+	@echo "Built $@ ($$(stat -c%s $@) bytes)"
+endif
 
 %.o: %.c
 	$(CC) $(CFLAGS) -c -o $@ $<
