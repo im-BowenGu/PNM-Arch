@@ -462,10 +462,15 @@ func (r *runner) lintTests() {
 
 	// reproduce.sh structural self-check: fails fast if a path the harness
 	// feeds to iverilog/yosys/gcc moved or the build dirs aren't writable
-	// (regex of the earlier assembly-builder board-path bug).
-	r.runTest(cat, "reproduce_self_check", func() (string, int) {
-		return r.run("bash", "..", "reproduce.sh", "--self-check")
-	})
+	// (regex of the earlier assembly-builder board-path bug). The script ships
+	// with the monorepo, so a split-repo checkout skips it.
+	if _, err := os.Stat("../reproduce.sh"); err == nil {
+		r.runTest(cat, "reproduce_self_check", func() (string, int) {
+			return r.run("bash", "..", "reproduce.sh", "--self-check")
+		})
+	} else {
+		r.skipTest(cat, "reproduce_self_check", "reproduce.sh not present (monorepo-only)")
+	}
 
 	if r.t.verilator != "" {
 		r.runTest(cat, "verilator_fabric", func() (string, int) {
