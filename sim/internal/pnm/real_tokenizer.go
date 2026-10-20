@@ -299,8 +299,8 @@ func bf16ToF32(b uint16) float32 {
 
 // Tensor is a lazily-loaded BF16 matrix from a safetensors shard.
 type Tensor struct {
-	Data   []byte   // raw shard bytes for the tensor
-	Shape  []int64  // row-major dimensions
+	Data   []byte  // raw shard bytes for the tensor
+	Shape  []int64 // row-major dimensions
 	Loaded bool
 }
 

@@ -35,10 +35,10 @@ import (
 // ── Tool Discovery ──────────────────────────────────────────────────────────
 
 type tools struct {
-	iverilog string
-	vvp      string
-	goBin    string
-	gcc      string
+	iverilog  string
+	vvp       string
+	goBin     string
+	gcc       string
 	verilator string
 }
 
@@ -105,12 +105,12 @@ type result struct {
 // ── Test Runner ─────────────────────────────────────────────────────────────
 
 type runner struct {
-	t         tools
-	results   []result
-	verbose   bool
-	jobs      int
-	failed    bool
-	failures  []string
+	t        tools
+	results  []result
+	verbose  bool
+	jobs     int
+	failed   bool
+	failures []string
 }
 
 func newRunner(t tools, verbose bool, jobs int) *runner {
@@ -205,33 +205,35 @@ func (r *runner) hdlCore() {
 	}
 
 	cases := []tbCase{
-		{"bf16_fma", []string{"core/bf16_fma.v", "core/fma_core.v", "core/tb_bf16_fma.v"}},
-		{"bf16_fma_edge", []string{"core/bf16_fma.v", "core/fma_core.v", "core/tb_bf16_fma_edge.v"}},
-		{"fp16_fma", []string{"core/fp16_fma.v", "core/fma_core.v", "core/tb_fp16_fma.v"}},
-		{"fp16_fma_edge", []string{"core/fp16_fma.v", "core/fma_core.v", "core/tb_fp16_fma_edge.v"}},
-		{"fp32_fma", []string{"core/fp32_fma.v", "core/fma_core.v", "core/tb_fp32_fma.v"}},
-		{"fp64_fma", []string{"core/fp64_fma.v", "core/fma_core.v", "core/tb_fp64_fma.v"}},
-		{"fp32_alu", []string{"core/fp32_alu.v", "core/fp32_fma.v", "core/fma_core.v", "core/tb_fp32_alu.v"}},
-		{"fp32_alu_edge", []string{"core/fp32_alu.v", "core/fp32_fma.v", "core/fma_core.v", "core/tb_fp32_alu_edge.v"}},
-		{"fp32_alu_chip", []string{"core/fp32_alu_chip.v", "core/fp32_alu.v", "core/fp32_fma.v", "core/fma_core.v", "core/crc16.v", "core/tb_fp32_alu_chip.v"}},
-		{"pe_int4", []string{"core/pe_tile_stub.v", "core/crc16.v", "core/bf16_fma.v", "core/fma_core.v", "core/weight_dequant.v", "core/int8_mac.v", "core/fp4_mac.v", "core/tb_pe_int4.v"}},
-		{"fp64_alu", []string{"core/fp64_alu.v", "core/fp64_fma.v", "core/fma_core.v", "core/tb_fp64_alu.v"}},
-		{"int8_mac", []string{"core/int8_mac.v", "core/tb_int8_mac.v"}},
-		{"int8_alu", []string{"core/int8_alu.v", "core/tb_int8_alu.v"}},
-		{"bf16_mac_array", []string{"core/bf16_mac_array.v", "core/bf16_fma.v", "core/fma_core.v", "core/tb_bf16_mac_array.v"}},
-		{"fp16_mac_array", []string{"core/fp16_mac_array.v", "core/fp16_fma.v", "core/fma_core.v", "core/tb_fp16_mac_array.v"}},
-		{"fp32_mac_array", []string{"core/fp32_mac_array.v", "core/fp32_fma.v", "core/fma_core.v", "core/tb_fp32_mac_array.v"}},
-		{"int4_mac_array", []string{"core/int4_mac_array.v", "core/int8_mac.v", "core/tb_int4_mac_array.v"}},
-		{"fp4_mac", []string{"core/fp4_mac.v", "core/tb_fp4_mac.v"}},
-		{"fp4_mac_array", []string{"core/fp4_mac_array.v", "core/fp4_mac.v", "core/tb_fp4_mac_array.v"}},
-		{"mxfp4_mac_array", []string{"core/mxfp4_mac_array.v", "core/fp4_mac.v", "core/tb_mxfp4_mac_array.v"}},
-		{"moe_gating", []string{"core/moe_gating.v", "core/bf16_fma.v", "core/fma_core.v", "core/tb_moe_gating.v"}},
+		{"bf16_fma", []string{"core/arith_unit.v", "core/bf16_fma.v", "core/fma_core.v", "core/tb_bf16_fma.v"}},
+		{"bf16_fma_edge", []string{"core/arith_unit.v", "core/bf16_fma.v", "core/fma_core.v", "core/tb_bf16_fma_edge.v"}},
+		{"fp16_fma", []string{"core/arith_unit.v", "core/fp16_fma.v", "core/fma_core.v", "core/tb_fp16_fma.v"}},
+		{"fp16_fma_edge", []string{"core/arith_unit.v", "core/fp16_fma.v", "core/fma_core.v", "core/tb_fp16_fma_edge.v"}},
+		{"fp32_fma", []string{"core/arith_unit.v", "core/fp32_fma.v", "core/fma_core.v", "core/tb_fp32_fma.v"}},
+		{"fp64_fma", []string{"core/arith_unit.v", "core/fp64_fma.v", "core/fma_core.v", "core/tb_fp64_fma.v"}},
+		{"fp32_alu", []string{"core/arith_unit.v", "core/fp32_alu.v", "core/fp32_fma.v", "core/fma_core.v", "core/tb_fp32_alu.v"}},
+		{"fp32_alu_edge", []string{"core/arith_unit.v", "core/fp32_alu.v", "core/fp32_fma.v", "core/fma_core.v", "core/tb_fp32_alu_edge.v"}},
+		{"fp32_alu_chip", []string{"core/arith_unit.v", "core/fp32_alu_chip.v", "core/fp32_alu.v", "core/fp32_fma.v", "core/fma_core.v", "core/crc16.v", "core/tb_fp32_alu_chip.v"}},
+		{"pe_int4", []string{"core/arith_unit.v", "core/pe_tile_stub.v", "core/crc16.v", "core/bf16_fma.v", "core/fma_core.v", "core/weight_dequant.v", "core/int8_mac.v", "core/fp4_mac.v", "core/tb_pe_int4.v"}},
+		{"fp64_alu", []string{"core/arith_unit.v", "core/fp64_alu.v", "core/fp64_fma.v", "core/fma_core.v", "core/tb_fp64_alu.v"}},
+		{"int8_mac", []string{"core/arith_unit.v", "core/int8_mac.v", "core/tb_int8_mac.v"}},
+		{"ternary_acc", []string{"core/arith_unit.v", "core/ternary_acc.v", "core/tb_ternary_acc.v"}},
+		{"int8_alu", []string{"core/arith_unit.v", "core/int8_alu.v", "core/tb_int8_alu.v"}},
+		{"bf16_mac_array", []string{"core/arith_unit.v", "core/fp_mac_array.v", "core/bf16_mac_array.v", "core/bf16_fma.v", "core/fma_core.v", "core/tb_bf16_mac_array.v"}},
+		{"fp16_mac_array", []string{"core/arith_unit.v", "core/fp_mac_array.v", "core/fp16_mac_array.v", "core/fp16_fma.v", "core/fma_core.v", "core/tb_fp16_mac_array.v"}},
+		{"fp32_mac_array", []string{"core/arith_unit.v", "core/fp32_mac_array.v", "core/fp32_fma.v", "core/fma_core.v", "core/tb_fp32_mac_array.v"}},
+		{"int4_mac_array", []string{"core/arith_unit.v", "core/int4_mac_array.v", "core/int8_mac.v", "core/tb_int4_mac_array.v"}},
+		{"ternary_acc_array", []string{"core/arith_unit.v", "core/ternary_acc_array.v", "core/ternary_acc.v", "core/tb_ternary_acc_array.v"}},
+		{"fp4_mac", []string{"core/arith_unit.v", "core/fp4_mac.v", "core/tb_fp4_mac.v"}},
+		{"fp4_mac_array", []string{"core/arith_unit.v", "core/fp4_mac_array.v", "core/fp4_mac.v", "core/tb_fp4_mac_array.v"}},
+		{"mxfp4_mac_array", []string{"core/arith_unit.v", "core/mxfp4_mac_array.v", "core/fp4_mac.v", "core/tb_mxfp4_mac_array.v"}},
+		{"moe_gating", []string{"core/arith_unit.v", "core/moe_gating.v", "core/bf16_fma.v", "core/fma_core.v", "core/tb_moe_gating.v"}},
 		{"rotary_engine", []string{"core/rotary_engine.v", "core/tb_rotary_engine.v"}},
 		{"weight_dequant", []string{"core/weight_dequant.v", "core/tb_weight_dequant.v"}},
 		{"kv_quant", []string{"core/kv_quant.v", "core/tb_kv_quant.v"}},
 		{"dyn_act_quant", []string{"core/dyn_act_quant.v", "core/tb_dyn_act_quant.v"}},
 		{"crc16", []string{"core/crc16.v", "core/tb_crc16.v"}},
-		{"doorbell", []string{"core/pe_tile_stub.v", "core/doorbell.v", "core/crc16.v", "core/bf16_fma.v", "core/fma_core.v", "core/weight_dequant.v", "core/int8_mac.v", "core/fp4_mac.v", "core/tb_doorbell.v"}},
+		{"doorbell", []string{"core/arith_unit.v", "core/pe_tile_stub.v", "core/doorbell.v", "core/crc16.v", "core/bf16_fma.v", "core/fma_core.v", "core/weight_dequant.v", "core/int8_mac.v", "core/fp4_mac.v", "core/tb_doorbell.v"}},
 	}
 
 	for _, c := range cases {
@@ -256,10 +258,10 @@ func (r *runner) hdlFabric() {
 	cases := []tbCase{
 		{"fabric", []string{"hfr.v", "flit_gate.v", "vc_merge.v", "lxy_repeater.v", "xy_turn.v", "node_eject.v", "tb_fabric.v"}},
 		{"load", []string{"hfr.v", "flit_gate.v", "vc_merge.v", "lxy_repeater.v", "xy_turn.v", "node_eject.v", "tb_load.v"}},
-		{"orchestrator_chip", []string{"orchestrator_chip.v", "core/moe_gating.v", "core/bf16_fma.v", "core/fma_core.v", "tb_orchestrator_chip.v"}},
-		{"orchestrator_mcu", []string{"orchestrator_mcu.v", "rv32_core.v", "uart.v", "clint.v", "tb_orchestrator_mcu.v"}},
-		{"orchestrator_sbc", []string{"orchestrator_sbc.v", "rv32_core.v", "uart.v", "clint.v", "pcie_phy.v", "nvme_ctrl.v", "tb_orchestrator_sbc.v"}},
-		{"orchestrator_sbc_moe", []string{"orchestrator_sbc_moe.v", "rv32_core.v", "uart.v", "clint.v", "core/moe_gating.v", "core/bf16_fma.v", "core/fma_core.v", "tb_orchestrator_sbc_moe.v"}},
+		{"orchestrator_chip", []string{"orchestrator.v", "core/arith_unit.v", "orchestrator_chip.v", "core/moe_gating.v", "core/bf16_fma.v", "core/fma_core.v", "tb_orchestrator_chip.v"}},
+		{"orchestrator_mcu", []string{"orchestrator.v", "orchestrator_mcu.v", "rv32_core.v", "uart.v", "clint.v", "tb_orchestrator_mcu.v"}},
+		{"orchestrator_sbc", []string{"orchestrator.v", "orchestrator_sbc.v", "rv32_core.v", "uart.v", "clint.v", "pcie_phy.v", "nvme_ctrl.v", "tb_orchestrator_sbc.v"}},
+		{"orchestrator_sbc_moe", []string{"orchestrator.v", "core/arith_unit.v", "orchestrator_sbc_moe.v", "rv32_core.v", "uart.v", "clint.v", "core/moe_gating.v", "core/bf16_fma.v", "core/fma_core.v", "tb_orchestrator_sbc_moe.v"}},
 		{"bmc_orchestrator", []string{"rv32_core.v", "uart.v", "clint.v", "bmc_orchestrator_top.v", "tb_bmc_orchestrator.v"}},
 		{"pi_bridge", []string{"pi_bridge.v", "tb_pi_bridge.v"}},
 		{"host_bmc", []string{"pi_bridge.v", "pnm_arb.v", "tb_host_bmc.v"}},
@@ -313,8 +315,8 @@ func (r *runner) goTests() {
 	sim := "."
 
 	type testRun struct {
-		name  string
-		pat   string
+		name string
+		pat  string
 	}
 
 	cases := []testRun{
@@ -328,6 +330,7 @@ func (r *runner) goTests() {
 		{"driver", "Test(DriverFirmware|RouterBitmaps|ComputeUnit)"},
 		{"run_flit", "TestFlit_"},
 		{"toolchain", "TestToolchain"},
+		{"dataflow", "TestFP64DataFlow"},
 		{"llm_client", "TestLLMClient"},
 		{"property_crc", "TestCRC16_(Incremental|Deterministic)"},
 	}
@@ -363,16 +366,16 @@ func (r *runner) cTests() {
 		return r.run(r.t.gcc, "../fw", "-Wall", "-Wextra", "-std=c11", "-DPNM_MCU", "-c", "pnm_fw.c", "-o", "/dev/null")
 	})
 
-	// Source-language firmware ports (R / Haskell / HLSL) plus the NVMe and
-	// Lustre twins: compiled on every C run so they can no longer ship
-	// un-harnessed (round-28 fixed their MoE gating to token-seeded
-	// select_topk; these compile checks keep that fix under guard).
+	// Source-language firmware ports (R / Haskell / HLSL) plus the NVMe twin:
+	// compiled on every C run so they can no longer ship un-harnessed
+	// (round-28 fixed their MoE gating to token-seeded select_topk; these
+	// compile checks keep that fix under guard). The Lustre twin
+	// (pnm_lustre.c) is quarantined under archive/ and is no longer built.
 	for _, port := range []struct{ name, src string }{
 		{"fw_compile_r", "pnm_fw_r.c"},
 		{"fw_compile_haskell", "pnm_fw_haskell.c"},
 		{"fw_compile_hlsl", "pnm_fw_hlsl.c"},
 		{"fw_compile_nvme", "pnm_nvme.c"},
-		{"fw_compile_lustre", "pnm_lustre.c"},
 	} {
 		p_, s_ := port.name, port.src
 		r.runTest(cat, p_, func() (string, int) {
@@ -439,9 +442,28 @@ func (r *runner) integrationTests() {
 	})
 }
 
+func (r *runner) benchmarkTests() {
+	cat := "benchmark"
+	sim := "."
+
+	r.runTest(cat, "fabric_sweep_cost_model", func() (string, int) {
+		if r.t.goBin == "" || r.t.iverilog == "" {
+			return "", 1
+		}
+		return r.run(r.t.goBin, sim, "run", "./cmd/pnmhost", "benchmark")
+	})
+}
+
 func (r *runner) lintTests() {
 	cat := "lint"
 	sim := "."
+
+	// reproduce.sh structural self-check: fails fast if a path the harness
+	// feeds to iverilog/yosys/gcc moved or the build dirs aren't writable
+	// (regex of the earlier assembly-builder board-path bug).
+	r.runTest(cat, "reproduce_self_check", func() (string, int) {
+		return r.run("bash", "..", "reproduce.sh", "--self-check")
+	})
 
 	if r.t.verilator != "" {
 		r.runTest(cat, "verilator_fabric", func() (string, int) {
@@ -457,6 +479,21 @@ func (r *runner) lintTests() {
 		r.runTest(cat, "go_vet", func() (string, int) {
 			return r.run(r.t.goBin, sim, "vet", "./...")
 		})
+	}
+
+	if _, err := exec.LookPath("gofmt"); err == nil {
+		r.runTest(cat, "gofmt", func() (string, int) {
+			out, code := r.run("gofmt", sim, "-l", ".")
+			if code != 0 {
+				return out, code
+			}
+			if strings.TrimSpace(out) != "" {
+				return "unformatted files (run: gofmt -w sim/):\n" + out, 1
+			}
+			return out, 0
+		})
+	} else {
+		r.skipTest(cat, "gofmt", "gofmt not found")
 	}
 }
 
@@ -566,6 +603,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  go           Go unit tests\n")
 		fmt.Fprintf(os.Stderr, "  c            C firmware compile check\n")
 		fmt.Fprintf(os.Stderr, "  integration  end-to-end simulation\n")
+		fmt.Fprintf(os.Stderr, "  benchmark     fabric sweep + cost/TCO model\n")
 		fmt.Fprintf(os.Stderr, "  lint         static analysis\n")
 		fmt.Fprintf(os.Stderr, "  coverage     Go coverage report\n\n")
 		fmt.Fprintf(os.Stderr, "Flags:\n")
@@ -642,6 +680,10 @@ func main() {
 		r.printCategory("Integration Tests")
 		r.integrationTests()
 
+	case "benchmark":
+		r.printCategory("Architecture benchmark (fabric sweep + cost/TCO)")
+		r.benchmarkTests()
+
 	case "lint":
 		r.printCategory("Lint / Static Analysis")
 		r.lintTests()
@@ -663,6 +705,8 @@ func main() {
 		r.cTests()
 		r.printCategory("Integration Tests")
 		r.integrationTests()
+		r.printCategory("Architecture benchmark")
+		r.benchmarkTests()
 		r.printCategory("Lint / Static Analysis")
 		r.lintTests()
 

@@ -19,12 +19,12 @@ import (
 
 // Workload describes a generated program plus its metadata.
 type Workload struct {
-	Name     string // e.g. "jacobi5"
-	Desc     string // human-readable description
-	Program  string // .pnm directive text
-	Routing  string // routing pattern exercised
-	Nodes    int    // number of compute nodes used
-	Tokens   int    // number of tokens dispatched
+	Name    string // e.g. "jacobi5"
+	Desc    string // human-readable description
+	Program string // .pnm directive text
+	Routing string // routing pattern exercised
+	Nodes   int    // number of compute nodes used
+	Tokens  int    // number of tokens dispatched
 }
 
 // GenJacobi5 generates a 5-point Jacobi stencil iteration mapped onto a single

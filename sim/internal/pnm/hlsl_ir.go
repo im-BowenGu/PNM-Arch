@@ -24,10 +24,10 @@ const (
 	ALUCmp
 	ALUMov
 	ALUConst
-	ALUDot  // dot product (expanded to mul+add chain)
-	ALULerp // lerp(a,b,t) = a + t*(b-a)
+	ALUDot   // dot product (expanded to mul+add chain)
+	ALULerp  // lerp(a,b,t) = a + t*(b-a)
 	ALUClamp // clamp(x,lo,hi)
-	ALURcp  // reciprocal (1/x)
+	ALURcp   // reciprocal (1/x)
 )
 
 func (o FP32ALUOp) String() string {
@@ -287,7 +287,7 @@ func compileHLSLExprTo(p *HLSLProgram, dest, expr string) error {
 		// Vector constructors: just use the first component as scalar
 		for _, vt := range []string{"float4", "float3", "float2", "float1", "int4", "int3", "int2", "int1", "half4", "half3", "half2", "half1"} {
 			if funcName == vt {
-				args := splitHLSLArgs(argsStr)
+				args := splitTopLevelArgs(argsStr)
 				if len(args) > 0 {
 					return compileHLSLExprTo(p, dest, args[0])
 				}
@@ -397,7 +397,7 @@ func resolveHLSLAtom(p *HLSLProgram, s string) string {
 }
 
 func compileHLSLCall(p *HLSLProgram, dest, funcName, argsStr string) error {
-	args := splitHLSLArgs(argsStr)
+	args := splitTopLevelArgs(argsStr)
 	switch funcName {
 	case "dot":
 		if len(args) == 2 {
@@ -513,35 +513,6 @@ func compileHLSLCall(p *HLSLProgram, dest, funcName, argsStr string) error {
 		}
 	}
 	return fmt.Errorf("unsupported HLSL intrinsic: %s", funcName)
-}
-
-func splitHLSLArgs(s string) []string {
-	var args []string
-	depth := 0
-	cur := strings.Builder{}
-	for _, c := range s {
-		switch c {
-		case '(':
-			depth++
-			cur.WriteRune(c)
-		case ')':
-			depth--
-			cur.WriteRune(c)
-		case ',':
-			if depth == 0 {
-				args = append(args, strings.TrimSpace(cur.String()))
-				cur.Reset()
-			} else {
-				cur.WriteRune(c)
-			}
-		default:
-			cur.WriteRune(c)
-		}
-	}
-	if cur.Len() > 0 {
-		args = append(args, strings.TrimSpace(cur.String()))
-	}
-	return args
 }
 
 func emitALUAbs(p *HLSLProgram, dest, src string) {

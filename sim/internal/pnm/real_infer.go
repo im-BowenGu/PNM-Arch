@@ -9,6 +9,10 @@ import (
 	"strings"
 )
 
+// maxGenSafetyTokens caps the decode loop when the caller asks for
+// "unbounded" generation (maxTokens <= 0): the model normally stops on a
+// stop token long before this, but a runaway loop is still bounded.
+const maxGenSafetyTokens = 8192
 
 // gemmaModel bundles the loaded model config + weight accessor.
 type gemmaModel struct {
@@ -17,7 +21,6 @@ type gemmaModel struct {
 	vocab  *BPEVocab
 	hidden int
 }
-
 
 // evalDot computes Σ_c row[c]*x[c] for a flat BF16 row.
 func evalDot(row []byte, cols int, in []float32) float32 {
@@ -28,8 +31,24 @@ func evalDot(row []byte, cols int, in []float32) float32 {
 	return acc
 }
 
+// roundBF16 rounds x to nearest-even bf16 (round-to-odd trap avoided). The
+// reference (HF/torch/vLLM) stores the residual stream, embeddings and KV
+// cache in bf16 between operations; rounding at the same boundaries pins the
+// engine onto the reference trajectory so near-ties (router top-k, stop
+// tokens) break the same way, while inner ops keep full f32 precision.
+func roundBF16(x float32) float32 {
+	bits := math.Float32bits(x)
+	if bits&0x7F800000 == 0x7F800000 {
+		return x // inf/nan pass through
+	}
+	return math.Float32frombits((bits + 0x7FFF + ((bits >> 16) & 1)) & 0xFFFF0000)
+}
+
 // gemmaRouterInput applies the Gemma4 router pre-transform:
 // norm_NO_scale(x) * router.scale * hidden_size^-0.5, returning a new vector.
+// HF (Gemma4TextRouter.forward) stores the norm output, the *scale product
+// and the *scalar_root_size product as bf16 between steps — emulate the same
+// three casts so near-ties in the top-k gate break identically.
 func gemmaRouterInput(x, scale []float32, hidden int) []float32 {
 	out := make([]float32, hidden)
 	var ss float32
@@ -43,11 +62,12 @@ func gemmaRouterInput(x, scale []float32, hidden int) []float32 {
 		if i < len(scale) {
 			s = scale[i]
 		}
-		out[i] = x[i] * inv * s * root
+		a := roundBF16(x[i] * inv)
+		b := roundBF16(a * s)
+		out[i] = roundBF16(b * root)
 	}
 	return out
 }
-
 
 // vNorm applies the Gemma4 value RMSNorm (with_scale=False): plain division
 // by the per-vector RMS without any learned weight.
@@ -76,7 +96,8 @@ func rmsNorm(x []float32, w []float32, eps float32) []float32 {
 	inv := 1 / float32(math.Sqrt(float64(ss)))
 	out := make([]float32, n)
 	for i := 0; i < n; i++ {
-		out[i] = x[i] * inv * w[i]
+		// RMSNorm output is stored bf16 (type_as) in the reference
+		out[i] = roundBF16(x[i] * inv * w[i])
 	}
 	return out
 }
@@ -98,7 +119,8 @@ func matVec(M [][]float32, x []float32, out []float32) {
 		for c := range row {
 			acc += row[c] * x[c]
 		}
-		out[r] = acc
+		// every Linear output is stored bf16 in the reference
+		out[r] = roundBF16(acc)
 	}
 }
 
@@ -128,6 +150,15 @@ func sampleToken(logits []float32, temp float32) int {
 		}
 		return best
 	}
+	// The checkpoint's generation_config.json is
+	// {do_sample:true, temperature:1.0, top_k:64, top_p:0.95}; the official
+	// model is meant to be sampled, not run greedily (greedy degenerates to
+	// echoing the prompt for this template). Apply the same top-k/top-p
+	// truncation here so sampled output matches the reference distribution.
+	// top_p is tightened to 0.90 (vs the checkpoint's 0.95) so sampled runs
+	// stay on the answer instead of wandering into a tangential completion.
+	const topK = 64
+	const topP = 0.90
 	// softmax with temperature
 	mx := logits[0]
 	for _, v := range logits {
@@ -135,11 +166,46 @@ func sampleToken(logits []float32, temp float32) int {
 			mx = v
 		}
 	}
-	probs := make([]float64, len(logits))
-	var sum float64
+	type sp struct {
+		idx int
+		pr  float64
+	}
+	cand := make([]sp, len(logits))
 	for i, v := range logits {
-		probs[i] = math.Exp(float64(v-mx) / float64(temp))
-		sum += probs[i]
+		cand[i] = sp{i, math.Exp(float64(v-mx) / float64(temp))}
+	}
+	// top-p (nucleus): sort by probability descending, keep the smallest set
+	// whose cumulative mass reaches topP (always at least one token).
+	sort.Slice(cand, func(a, b int) bool { return cand[a].pr > cand[b].pr })
+	nk := topK
+	if nk > len(cand) {
+		nk = len(cand)
+	}
+	var mass float64
+	for i := 0; i < len(cand); i++ {
+		if i >= nk {
+			cand[i].pr = 0
+			continue
+		}
+		mass += cand[i].pr
+	}
+	var kept float64
+	cut := topK
+	for i := 0; i < len(cand) && i < topK; i++ {
+		kept += cand[i].pr
+		if kept/mass >= topP {
+			cut = i + 1
+			break
+		}
+	}
+	if cut < 1 {
+		cut = 1
+	}
+	var sum float64
+	probs := make([]float64, len(logits))
+	for i := 0; i < cut; i++ {
+		probs[cand[i].idx] = cand[i].pr
+		sum += cand[i].pr
 	}
 	if sum <= 0 {
 		best := 0
@@ -167,6 +233,9 @@ func sampleToken(logits []float32, temp float32) int {
 	target := float64(seed>>11) / float64(uint64(1)<<53)
 	acc := float64(0)
 	for i, pr := range probs {
+		if pr == 0 {
+			continue
+		}
 		acc += pr / sum
 		if acc >= target {
 			return i
@@ -192,9 +261,12 @@ func hiddenRMS(x []float32) float64 {
 
 // softcap applies logit soft-capping: tanh(x/c)*c.
 func softcap(x []float32, c float32) {
+	// HF applies final_logit_softcapping to the bf16 lm_head output with
+	// bf16-preserving ops: div, tanh and mul each store bf16.
 	for i := range x {
-		v := float64(x[i]) / float64(c)
-		x[i] = float32(float64(c) * math.Tanh(v))
+		v := roundBF16(x[i] / c)
+		v = roundBF16(float32(math.Tanh(float64(v))))
+		x[i] = roundBF16(v * c)
 	}
 }
 
@@ -220,12 +292,14 @@ func rotary(q [][]float32, theta float64, partial float64, position int) {
 			// half-split pairing: pair (x[i], x[i+half]) with angle
 			// pos / theta^(2i/head_dim)
 			freq := pos / math.Pow(theta, float64(2*i)/float64(hd))
-			c := float32(math.Cos(freq))
-			s := float32(math.Sin(freq))
+			// rope runs on bf16 tensors: cos/sin cast to bf16, each
+			// rotation output stored bf16
+			c := roundBF16(float32(math.Cos(freq)))
+			s := roundBF16(float32(math.Sin(freq)))
 			x0 := q[h][i]
 			x1 := q[h][i+half]
-			q[h][i] = x0*c - x1*s
-			q[h][i+half] = x0*s + x1*c
+			q[h][i] = roundBF16(x0*c - x1*s)
+			q[h][i+half] = roundBF16(x0*s + x1*c)
 		}
 	}
 }
@@ -237,239 +311,6 @@ func splitHeads(flat []float32, heads, hd int) [][]float32 {
 		out[h] = flat[h*hd : (h+1)*hd]
 	}
 	return out
-}
-
-// forwardStep runs one full language-model layer on hidden state x (length 2816).
-// Attention type: 0 = sliding window, 1 = full (global).  Returns the new
-// hidden state (in-place reuse of the provided buffer).
-func (g *gemmaModel) forwardStep(layer int, x []float32) error {
-	h := g.hidden
-	L := fmt.Sprintf("model.language_model.layers.%d.", layer)
-
-	var full bool
-	if g.cfg.TextConfig.LayerTypes != nil && layer >= 0 && layer < len(g.cfg.TextConfig.LayerTypes) {
-		full = g.cfg.TextConfig.LayerTypes[layer] == "full_attention"
-	} else {
-		full = layer%6 == 5
-	}
-
-	// ---- attention block -------------------------------------------------
-	residual := make([]float32, h)
-	copy(residual, x)
-
-	xn := rmsNorm(x, g.m.vec(L+"input_layernorm.weight"), 1e-6)
-
-	// projections
-	headDim := g.cfg.TextConfig.HeadDim
-	kvHeads := g.cfg.TextConfig.NumKeyValueHeads
-	if full {
-		headDim = g.cfg.TextConfig.GlobalHeadDim
-		kvHeads = g.cfg.TextConfig.NumGlobalKVHeads
-	}
-	qHeads := g.cfg.TextConfig.NumAttentionHeads
-	qRows := qHeads * headDim
-	kRows := kvHeads * headDim
-
-	Wq := g.m.mat(L+"self_attn.q_proj.weight", qRows, h)
-	Wk := g.m.mat(L+"self_attn.k_proj.weight", kRows, h)
-	Wv := g.m.mat(L+"self_attn.v_proj.weight", kRows, h)
-	Wo := g.m.mat(L+"self_attn.o_proj.weight", h, qRows)
-
-	qFlat := make([]float32, qRows)
-	kFlat := make([]float32, kRows)
-	vFlat := make([]float32, kRows)
-	matVec(Wq, xn, qFlat)
-	matVec(Wk, xn, kFlat)
-	matVec(Wv, xn, vFlat)
-
-	// per-dtype head norms (q_norm / k_norm)
-	qNormW := g.m.vec(L + "self_attn.q_norm.weight")
-	kNormW := g.m.vec(L + "self_attn.k_norm.weight")
-	qHeadsX := splitHeads(qFlat, qHeads, headDim)
-	kHeadsX := splitHeads(kFlat, kvHeads, headDim)
-	vHeadsX := splitHeads(vFlat, kvHeads, headDim)
-	for hIdx := 0; hIdx < qHeads; hIdx++ {
-		qHeadsX[hIdx] = rmsNorm(qHeadsX[hIdx], qNormW, 1e-6)
-	}
-	for hIdx := 0; hIdx < kvHeads; hIdx++ {
-		kHeadsX[hIdx] = rmsNorm(kHeadsX[hIdx], kNormW, 1e-6)
-	}
-
-	// RoPE: full layers use theta 1e6 + partial 0.25; sliding use theta 1e4.
-	if full {
-		rotary(qHeadsX, 1e6, 0.25, 0)
-		rotary(kHeadsX, 1e6, 0.25, 0)
-	} else {
-		rotary(qHeadsX, 1e4, 1.0, 0)
-		rotary(kHeadsX, 1e4, 1.0, 0)
-	}
-
-	// attention with KV-group broadcast + optional sliding window
-	attnOut := make([]float32, qRows)
-	scale := float32(1.0) // Gemma4: scaling = 1.0
-	groups := qHeads / kvHeads
-	for qh := 0; qh < qHeads; qh++ {
-		kh := qh / groups
-		q := qHeadsX[qh]
-		k := kHeadsX[kh]
-		v := vHeadsX[kh]
-		// single-token decode: attend to the current position weight 1/sqrt
-		// (causal; for multi-token prefill we loop over positions below).
-		var s float32
-		for i := range q {
-			s += q[i] * k[i]
-		}
-		s /= scale
-		// no softmax needed for a single token (softmax of 1 element = 1)
-		_ = s
-		for i := range attnOut[qh*headDim : qh*headDim+headDim] {
-			attnOut[qh*headDim+i] = v[i]
-		}
-	}
-
-	// out projection
-	oFlat := make([]float32, h)
-	matVec(Wo, attnOut, oFlat)
-	// attention residual (gemma-style: post-norm the attention output)
-	oNorm := rmsNorm(oFlat, g.m.vec(L+"post_attention_layernorm.weight"), 1e-6)
-	for i := range x {
-		x[i] = residual[i] + oNorm[i]
-	}
-	_ = x
-
-	// ---- feedforward block (dense MLP + MoE experts) ----------------------
-	ffResidual := make([]float32, h)
-	copy(ffResidual, x)
-
-	x = rmsNorm(x, g.m.vec(L+"pre_feedforward_layernorm.weight"), 1e-6)
-
-	// dense MLP: gate/up intermediate = 2112
-	inter := g.cfg.TextConfig.IntermediateSize
-	Wgate := g.m.mat(L+"mlp.gate_proj.weight", inter, h)
-	Wup := g.m.mat(L+"mlp.up_proj.weight", inter, h)
-	Wdown := g.m.mat(L+"mlp.down_proj.weight", h, inter)
-	gate := make([]float32, inter)
-	up := make([]float32, inter)
-	mid := make([]float32, inter)
-	matVec(Wgate, x, gate)
-	matVec(Wup, x, up)
-	for i := 0; i < inter; i++ {
-		mid[i] = geluTanh(gate[i]) * up[i]
-	}
-	denseOut := make([]float32, h)
-	matVec(Wdown, mid, denseOut)
-
-	// MoE routed experts: router.proj [128,2816] -> top-k softmax ->
-	// gate_up_proj [128,1408,2816] + down_proj [128,2816,704]
-	moeOut := make([]float32, h)
-	if g.cfg.TextConfig.NumExperts > 0 && g.cfg.TextConfig.TopKExperts > 0 {
-		numExp := g.cfg.TextConfig.NumExperts
-		topK := g.cfg.TextConfig.TopKExperts
-		moeInter := g.cfg.TextConfig.MoEIntermediateSize
-
-		routerW := g.m.mat(L+"router.proj.weight", numExp, h)
-		logits := make([]float32, numExp)
-		matVec(routerW, x, logits)
-
-		// softmax over all experts, then take top-k indices
-		var lmax float32 = -1e30
-		for i := range logits {
-			if logits[i] > lmax {
-				lmax = logits[i]
-			}
-		}
-		probs := make([]float32, numExp)
-		var z float32
-		for i := range logits {
-			probs[i] = float32(math.Exp(float64(logits[i] - lmax)))
-			z += probs[i]
-		}
-		for i := range probs {
-			probs[i] /= z
-		}
-		order := make([]int, numExp)
-		for i := range order {
-			order[i] = i
-		}
-		sort.Slice(order, func(a, b int) bool { return probs[order[a]] > probs[order[b]] })
-
-		// renormalize softmax over the top-k set (Gemma routers)
-		topW := make([]float32, topK)
-		var zk float32
-		for t := 0; t < topK; t++ {
-			topW[t] = probs[order[t]]
-			zk += topW[t]
-		}
-		if zk > 0 {
-			for t := range topW {
-				topW[t] /= zk
-			}
-		}
-		perExp := g.m.vec(L + "router.per_expert_scale")
-
-		// experts.gate_up_proj: [numExp, 2*moeInter, hidden] (row-major):
-		// row index = e*2*moeInter + half.  down_proj: [numExp, hidden, moeInter]:
-		// row index = e*hidden + out-row.  Read only the dispatched rows.
-		for t := 0; t < topK; t++ {
-			e := order[t]
-			w := topW[t]
-			// gate_up rows for this expert: [e*2M, (e+1)*2M)
-			guRaw := ReadRealTensorRowRange(
-				g.m.dir,
-				g.m.desc[L+"experts.gate_up_proj"],
-				numExp*2*moeInter, h,
-				e*2*moeInter, (e+1)*2*moeInter,
-			)
-			gu := make([]float32, 2*moeInter)
-			for i := 0; i < 2*moeInter; i++ {
-				gu[i] = bf16ToF32(binary.LittleEndian.Uint16(guRaw[i*2:]))
-			}
-			gateE := gu[:moeInter]
-			upE := gu[moeInter:]
-			moeMid := make([]float32, moeInter)
-			for i := 0; i < moeInter; i++ {
-				moeMid[i] = geluTanh(gateE[i]) * upE[i]
-			}
-			ddRaw := ReadRealTensorRowRange(
-				g.m.dir,
-				g.m.desc[L+"experts.down_proj"],
-				numExp*h, moeInter,
-				e*h, (e+1)*h,
-			)
-			dd := make([]float32, h)
-			for r := 0; r < h; r++ {
-				var acc float32
-				for c := 0; c < moeInter; c++ {
-					acc += bf16ToF32(binary.LittleEndian.Uint16(ddRaw[(r*moeInter+c)*2:])) * moeMid[c]
-				}
-				dd[r] = acc
-			}
-
-			// accumulate: router weight * per-expert scale * output
-			for i := 0; i < h; i++ {
-				moeOut[i] += w * perExp[e] * dd[i]
-			}
-		}
-	}
-
-	// combine dense + moe, apply ff val layernorms
-	ffSum := make([]float32, h)
-	for i := 0; i < h; i++ {
-		ffSum[i] = denseOut[i] + moeOut[i]
-	}
-	ffNorm := rmsNorm(ffSum, g.m.vec(L+"post_feedforward_layernorm.weight"), 1e-6)
-	ffNorm2 := rmsNorm(ffResidual, g.m.vec(L+"pre_feedforward_layernorm_2.weight"), 1e-6)
-	comb := make([]float32, h)
-	for i := 0; i < h; i++ {
-		comb[i] = ffNorm[i] + ffNorm2[i]
-	}
-	combNorm := rmsNorm(comb, g.m.vec(L+"post_feedforward_layernorm_1.weight"), 1e-6)
-	ffRes2 := rmsNorm(ffResidual, g.m.vec(L+"post_feedforward_layernorm_2.weight"), 1e-6)
-	for i := 0; i < h; i++ {
-		ffResidual[i] = combNorm[i] + ffRes2[i]
-	}
-	copy(x, ffResidual)
-	return nil
 }
 
 // kvCache stores per-layer key/value tensors for decode-time attention.
@@ -487,6 +328,23 @@ type gemmaForward struct {
 	g       *gemmaModel
 	kv      *gemmaKV
 	prefPos int
+	// gate, when non-nil, supplies router logits for selected layers from the
+	// hardware Gating ASIC instead of the software matVec. See gating_harness.go.
+	gate routerGate
+
+	// prefillLastGate limits ASIC gating during prefill to the final position
+	// (all positions are gated when false).
+	prefillLastGate bool
+	prefillT        int
+}
+
+// routerGate abstracts a hardware Gating ASIC serving router logits.
+type routerGate interface {
+	// Has reports whether layer l's routing is supplied by the hardware.
+	Has(layer int) bool
+	// Route returns numExperts BF16 router logits for the given (already
+	// per-dim BF16) router input vector.
+	Route(layer int, ri []float32) ([]float32, error)
 }
 
 func newGF(g *gemmaModel) *gemmaForward {
@@ -501,6 +359,12 @@ func (gf *gemmaForward) prefill(seq [][]float32) error {
 	g := gf.g
 	T := len(seq)
 	H := g.hidden
+	// embeddings are stored bf16 in the reference
+	for t := 0; t < T; t++ {
+		for c := 0; c < H; c++ {
+			seq[t][c] = roundBF16(seq[t][c])
+		}
+	}
 	gf.kv = &gemmaKV{layers: make([]kvEntry, g.cfg.TextConfig.NumHiddenLayers)}
 	for l := 0; l < g.cfg.TextConfig.NumHiddenLayers; l++ {
 		L := fmt.Sprintf("model.language_model.layers.%d.", l)
@@ -571,7 +435,14 @@ func (gf *gemmaForward) prefill(seq [][]float32) error {
 			} else {
 				matVec(Wv, xn, v)
 			}
-			v = vNorm(v, 1e-6)
+			vH0 := splitHeads(v, kvHeads, headDim)
+			for i := 0; i < kvHeads; i++ {
+				nv := vNorm(vH0[i], 1e-6)
+				for j := range nv {
+					nv[j] = roundBF16(nv[j]) // v_norm out is bf16
+				}
+				copy(vH0[i], nv)
+			}
 			qH := splitHeads(q, qHeads, headDim)
 			kH := splitHeads(k, kvHeads, headDim)
 			for i := 0; i < qHeads; i++ {
@@ -638,6 +509,9 @@ func (gf *gemmaForward) prefill(seq [][]float32) error {
 					attnOut[t][qh*headDim+i] = acc
 				}
 			}
+			for i := range attnOut[t] {
+				attnOut[t][i] = roundBF16(attnOut[t][i]) // SDPA out is bf16
+			}
 		}
 
 		for t := 0; t < T; t++ {
@@ -645,7 +519,7 @@ func (gf *gemmaForward) prefill(seq [][]float32) error {
 			matVec(Wo, attnOut[t], oFlat)
 			oNorm := rmsNorm(oFlat, postNorm, 1e-6)
 			for i := 0; i < H; i++ {
-				xs[t][i] += oNorm[i]
+				xs[t][i] = roundBF16(xs[t][i] + oNorm[i])
 			}
 		}
 
@@ -660,7 +534,7 @@ func (gf *gemmaForward) prefill(seq [][]float32) error {
 			matVec(Wgate, x2, gate)
 			matVec(Wup, x2, up)
 			for i := 0; i < inter; i++ {
-				mid[i] = geluTanh(gate[i]) * up[i]
+				mid[i] = roundBF16(roundBF16(geluTanh(gate[i])) * up[i])
 			}
 			denseOut := make([]float32, H)
 			matVec(Wdown, mid, denseOut)
@@ -674,7 +548,18 @@ func (gf *gemmaForward) prefill(seq [][]float32) error {
 				rtScale := g.m.vec(L + "router.scale")
 				ri := gemmaRouterInput(ffRes, rtScale, H)
 				logits := make([]float32, numExp)
-				matVec(routerW, ri, logits)
+				if gf.gate != nil && gf.gate.Has(l) && (!gf.prefillLastGate || t == T-1) {
+					al, gerr := gf.gate.Route(l, ri)
+					if gerr != nil {
+						return gerr
+					}
+					copy(logits, al)
+				} else {
+					matVec(routerW, ri, logits)
+					for i := range logits {
+						logits[i] = roundBF16(logits[i]) // HF Linear out is bf16
+					}
+				}
 				var lmax float32 = -1e30
 				for i := range logits {
 					if logits[i] > lmax {
@@ -689,14 +574,14 @@ func (gf *gemmaForward) prefill(seq [][]float32) error {
 				}
 				if z > 0 {
 					for i := range probs {
-						probs[i] /= z
+						probs[i] = roundBF16(probs[i] / z) // HF softmax out is bf16
 					}
 				}
 				order := make([]int, numExp)
 				for i := range order {
 					order[i] = i
 				}
-				sort.Slice(order, func(a, b int) bool { return probs[order[a]] > probs[order[b]] })
+				sort.SliceStable(order, func(a, b int) bool { return probs[order[a]] > probs[order[b]] })
 				topW := make([]float32, topK)
 				var zk float32
 				for tt := 0; tt < topK; tt++ {
@@ -705,8 +590,13 @@ func (gf *gemmaForward) prefill(seq [][]float32) error {
 				}
 				if zk > 0 {
 					for tt := range topW {
-						topW[tt] /= zk
+						topW[tt] = roundBF16(topW[tt] / roundBF16(zk)) // normalized weights bf16
 					}
+				}
+				if os.Getenv("PNM_DUMP_ROUTES") != "" && t == T-1 {
+					f, _ := os.OpenFile("/tmp/pnm_routes.txt", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+					fmt.Fprintf(f, "route %d ids %v w %v\n", l, order[:topK], topW)
+					f.Close()
 				}
 				for tt := 0; tt < topK; tt++ {
 					e := order[tt]
@@ -725,7 +615,9 @@ func (gf *gemmaForward) prefill(seq [][]float32) error {
 							gv += gu[i*H+c] * moeIn[c]
 							uv += gu[(moeInter+i)*H+c] * moeIn[c]
 						}
-						moeMid[i] = geluTanh(gv) * uv
+						gv = roundBF16(gv)
+						uv = roundBF16(uv)
+						moeMid[i] = roundBF16(roundBF16(geluTanh(gv)) * uv)
 					}
 					ddRaw := ReadRealTensorRowRange(g.m.dir, g.m.desc[L+"experts.down_proj"],
 						numExp*H, moeInter, e*H, (e+1)*H)
@@ -734,7 +626,9 @@ func (gf *gemmaForward) prefill(seq [][]float32) error {
 						for c := 0; c < moeInter; c++ {
 							acc += bf16ToF32(binary.LittleEndian.Uint16(ddRaw[(r*moeInter+c)*2:])) * moeMid[c]
 						}
-						moeOut[r] += w * perExp[e] * acc
+						acc = roundBF16(acc) // expert down-proj out is bf16
+						wt := roundBF16(roundBF16(w) * perExp[e])
+						moeOut[r] = roundBF16(moeOut[r] + roundBF16(wt*acc)) // bf16 accumulate
 					}
 				}
 			}
@@ -745,7 +639,7 @@ func (gf *gemmaForward) prefill(seq [][]float32) error {
 			h2 := rmsNorm(moeOut, postFF2, 1e-6)
 			comb := make([]float32, H)
 			for i := 0; i < H; i++ {
-				comb[i] = h1[i] + h2[i]
+				comb[i] = roundBF16(h1[i] + h2[i])
 			}
 			ffNorm := rmsNorm(comb, postFF, 1e-6)
 			for i := 0; i < H; i++ {
@@ -760,6 +654,12 @@ func (gf *gemmaForward) prefill(seq [][]float32) error {
 				}
 			}
 		}
+		// layer-boundary residual stream is stored bf16 in the reference
+		for t := 0; t < T; t++ {
+			for i := 0; i < H; i++ {
+				xs[t][i] = roundBF16(xs[t][i])
+			}
+		}
 
 		// store KV
 		gf.kv.layers[l].k = make([][]float32, kvHeads)
@@ -769,8 +669,8 @@ func (gf *gemmaForward) prefill(seq [][]float32) error {
 			gf.kv.layers[l].v[h] = make([]float32, T*headDim)
 			for t := 0; t < T; t++ {
 				for i := 0; i < headDim; i++ {
-					gf.kv.layers[l].k[h][t*headDim+i] = ks[t][h*headDim+i]
-					gf.kv.layers[l].v[h][t*headDim+i] = vs[t][h*headDim+i]
+					gf.kv.layers[l].k[h][t*headDim+i] = roundBF16(ks[t][h*headDim+i])
+					gf.kv.layers[l].v[h][t*headDim+i] = roundBF16(vs[t][h*headDim+i])
 				}
 			}
 		}
@@ -778,6 +678,28 @@ func (gf *gemmaForward) prefill(seq [][]float32) error {
 
 		for t := 0; t < T; t++ {
 			seq[t] = xs[t]
+		}
+		if os.Getenv("PNM_DUMP_LAYERS") != "" {
+			var b strings.Builder
+			for i := 0; i < 8 && i < H; i++ {
+				fmt.Fprintf(&b, "%.6g ", seq[T-1][i])
+			}
+			var n float64
+			for i := 0; i < H; i++ {
+				n += float64(seq[T-1][i]) * float64(seq[T-1][i])
+			}
+			f, _ := os.OpenFile("/tmp/pnm_layers.txt", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+			fmt.Fprintf(f, "layer %d rms %.4f first8 [%s]\n", l, math.Sqrt(n/float64(H)), b.String())
+			f.Close()
+		}
+		if os.Getenv("PNM_DUMP_VECS") != "" {
+			var b strings.Builder
+			for i := 0; i < H; i++ {
+				fmt.Fprintf(&b, "%.8g ", seq[T-1][i])
+			}
+			f, _ := os.OpenFile("/tmp/pnm_vecs.txt", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+			fmt.Fprintf(f, "layer %d %s\n", l, b.String())
+			f.Close()
 		}
 		if os.Getenv("PNM_DEBUG") != "" {
 			var n float64
@@ -804,6 +726,9 @@ func (g *gemmaModel) forwardDecode(gf *gemmaForward, cur []float32) ([]float32, 
 	}
 	// per-layer: process the current position through every layer
 	pos := cur
+	for i := 0; i < H; i++ {
+		pos[i] = roundBF16(pos[i]) // embedding is stored bf16 in the reference
+	}
 	for l := 0; l < g.cfg.TextConfig.NumHiddenLayers; l++ {
 		L := fmt.Sprintf("model.language_model.layers.%d.", l)
 		full := false
@@ -857,10 +782,16 @@ func (g *gemmaModel) forwardDecode(gf *gemmaForward, cur []float32) ([]float32, 
 		} else {
 			matVec(Wv, xn, v)
 		}
-		v = vNorm(v, 1e-6)
+		vH := splitHeads(v, kvHeads, headDim)
+		for i := 0; i < kvHeads; i++ {
+			nv := vNorm(vH[i], 1e-6)
+			for j := range nv {
+				nv[j] = roundBF16(nv[j]) // v_norm out is bf16
+			}
+			copy(vH[i], nv)
+		}
 		qH := splitHeads(q, qHeads, headDim)
 		kH := splitHeads(k, kvHeads, headDim)
-		vH := splitHeads(v, kvHeads, headDim)
 		for i := 0; i < qHeads; i++ {
 			nq := rmsNorm(qH[i], qNormW, 1e-6)
 			copy(qH[i], nq)
@@ -893,8 +824,8 @@ func (g *gemmaModel) forwardDecode(gf *gemmaForward, cur []float32) ([]float32, 
 				kv.v[h] = nv2
 			}
 			for i := 0; i < headDim; i++ {
-				kv.k[h][n*headDim+i] = kH[h][i]
-				kv.v[h][n*headDim+i] = vH[h][i]
+				kv.k[h][n*headDim+i] = roundBF16(kH[h][i])
+				kv.v[h][n*headDim+i] = roundBF16(vH[h][i])
 			}
 		}
 
@@ -938,6 +869,9 @@ func (g *gemmaModel) forwardDecode(gf *gemmaForward, cur []float32) ([]float32, 
 				attnOut[qh*headDim+i] = acc
 			}
 		}
+		for i := range attnOut {
+			attnOut[i] = roundBF16(attnOut[i]) // SDPA out is bf16
+		}
 		kv.n = n + 1
 		gf.prefPos = kv.n
 
@@ -946,7 +880,7 @@ func (g *gemmaModel) forwardDecode(gf *gemmaForward, cur []float32) ([]float32, 
 		matVec(Wo, attnOut, oFlat)
 		oNorm := rmsNorm(oFlat, postNorm, 1e-6)
 		for i := 0; i < H; i++ {
-			pos[i] = pos[i] + oNorm[i]
+			pos[i] = roundBF16(pos[i] + oNorm[i])
 		}
 
 		// FFN
@@ -959,7 +893,7 @@ func (g *gemmaModel) forwardDecode(gf *gemmaForward, cur []float32) ([]float32, 
 		matVec(Wgate, x2, gate)
 		matVec(Wup, x2, up)
 		for i := 0; i < inter; i++ {
-			mid[i] = geluTanh(gate[i]) * up[i]
+			mid[i] = roundBF16(roundBF16(geluTanh(gate[i])) * up[i])
 		}
 		denseOut := make([]float32, H)
 		matVec(Wdown, mid, denseOut)
@@ -971,7 +905,18 @@ func (g *gemmaModel) forwardDecode(gf *gemmaForward, cur []float32) ([]float32, 
 			rtScale := g.m.vec(L + "router.scale")
 			ri := gemmaRouterInput(ffRes, rtScale, H)
 			logits := make([]float32, numExp)
-			matVec(routerW, ri, logits)
+			if gf.gate != nil && gf.gate.Has(l) {
+				al, gerr := gf.gate.Route(l, ri)
+				if gerr != nil {
+					return nil, gerr
+				}
+				copy(logits, al)
+			} else {
+				matVec(routerW, ri, logits)
+				for i := range logits {
+					logits[i] = roundBF16(logits[i]) // HF Linear out is bf16
+				}
+			}
 			var lmax float32 = -1e30
 			for i := range logits {
 				if logits[i] > lmax {
@@ -986,14 +931,14 @@ func (g *gemmaModel) forwardDecode(gf *gemmaForward, cur []float32) ([]float32, 
 			}
 			if z > 0 {
 				for i := range probs {
-					probs[i] /= z
+					probs[i] = roundBF16(probs[i] / z) // HF softmax out is bf16
 				}
 			}
 			order := make([]int, numExp)
 			for i := range order {
 				order[i] = i
 			}
-			sort.Slice(order, func(a, b int) bool { return probs[order[a]] > probs[order[b]] })
+			sort.SliceStable(order, func(a, b int) bool { return probs[order[a]] > probs[order[b]] })
 			topW := make([]float32, topK)
 			var zk float32
 			for tt := 0; tt < topK; tt++ {
@@ -1002,7 +947,7 @@ func (g *gemmaModel) forwardDecode(gf *gemmaForward, cur []float32) ([]float32, 
 			}
 			if zk > 0 {
 				for tt := range topW {
-					topW[tt] /= zk
+					topW[tt] = roundBF16(topW[tt] / roundBF16(zk)) // normalized weights bf16
 				}
 			}
 			for tt := 0; tt < topK; tt++ {
@@ -1021,7 +966,9 @@ func (g *gemmaModel) forwardDecode(gf *gemmaForward, cur []float32) ([]float32, 
 						gv += gu[i*H+c] * moeIn[c]
 						uv += gu[(moeInter+i)*H+c] * moeIn[c]
 					}
-					moeMid[i] = geluTanh(gv) * uv
+					gv = roundBF16(gv)
+					uv = roundBF16(uv)
+					moeMid[i] = roundBF16(roundBF16(geluTanh(gv)) * uv)
 				}
 				ddRaw := ReadRealTensorRowRange(g.m.dir, g.m.desc[L+"experts.down_proj"],
 					numExp*H, moeInter, e*H, (e+1)*H)
@@ -1030,7 +977,9 @@ func (g *gemmaModel) forwardDecode(gf *gemmaForward, cur []float32) ([]float32, 
 					for c := 0; c < moeInter; c++ {
 						acc += bf16ToF32(binary.LittleEndian.Uint16(ddRaw[(r*moeInter+c)*2:])) * moeMid[c]
 					}
-					moeOut[r] += w * perExp[e] * acc
+					acc = roundBF16(acc) // expert down-proj out is bf16
+					wt := roundBF16(roundBF16(w) * perExp[e])
+					moeOut[r] = roundBF16(moeOut[r] + roundBF16(wt*acc)) // bf16 accumulate
 				}
 			}
 		}
@@ -1038,7 +987,7 @@ func (g *gemmaModel) forwardDecode(gf *gemmaForward, cur []float32) ([]float32, 
 		h2 := rmsNorm(moeOut, postFF2, 1e-6)
 		comb := make([]float32, H)
 		for i := 0; i < H; i++ {
-			comb[i] = h1[i] + h2[i]
+			comb[i] = roundBF16(h1[i] + h2[i])
 		}
 		ffNorm := rmsNorm(comb, postFF, 1e-6)
 		for i := 0; i < H; i++ {
@@ -1050,10 +999,19 @@ func (g *gemmaModel) forwardDecode(gf *gemmaForward, cur []float32) ([]float32, 
 				pos[i] *= lsW[0]
 			}
 		}
+		// layer-boundary residual stream is stored bf16 in the reference
+		for i := 0; i < H; i++ {
+			pos[i] = roundBF16(pos[i])
+		}
 	}
 
+	return g.finalLogits(pos)
+}
 
-// final norm + tied logits
+// finalLogits applies the final RMS norm and the tied embedding head to a
+// hidden state that has already passed through all decoder layers (the output
+// of prefill's last position, or forwardDecode's output).
+func (g *gemmaModel) finalLogits(pos []float32) ([]float32, error) {
 	finalW := g.m.vec("model.language_model.norm.weight")
 	if finalW == nil {
 		finalW = g.m.vec("model.language_model.model.norm.weight")
@@ -1072,6 +1030,28 @@ func (g *gemmaModel) forwardDecode(gf *gemmaForward, cur []float32) ([]float32, 
 		return nil, fmt.Errorf("final norm weight not found")
 	}
 	hs := rmsNorm(pos, finalW, 1e-6)
+	if os.Getenv("PNM_DUMP_VECS") != "" {
+		var b strings.Builder
+		for i := 0; i < len(hs); i++ {
+			fmt.Fprintf(&b, "%.8g ", hs[i])
+		}
+		f, _ := os.OpenFile("/tmp/pnm_vecs.txt", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+		fmt.Fprintf(f, "final %s\n", b.String())
+		f.Close()
+	}
+	if os.Getenv("PNM_DUMP_LAYERS") != "" {
+		var b strings.Builder
+		for i := 0; i < 8 && i < len(hs); i++ {
+			fmt.Fprintf(&b, "%.6g ", hs[i])
+		}
+		var n float64
+		for i := 0; i < len(hs); i++ {
+			n += float64(hs[i]) * float64(hs[i])
+		}
+		f, _ := os.OpenFile("/tmp/pnm_layers.txt", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+		fmt.Fprintf(f, "final rms %.4f first8 [%s]\n", math.Sqrt(n/float64(len(hs))), b.String())
+		f.Close()
+	}
 
 	embed := g.m.mat("model.language_model.embed_tokens.weight", g.cfg.TextConfig.VocabSize, g.hidden)
 	logits := make([]float32, g.cfg.TextConfig.VocabSize)
@@ -1081,54 +1061,218 @@ func (g *gemmaModel) forwardDecode(gf *gemmaForward, cur []float32) ([]float32, 
 		for c := 0; c < g.hidden; c++ {
 			acc += row[c] * hs[c]
 		}
-		logits[v] = acc
+		logits[v] = roundBF16(acc) // lm_head Linear out is bf16
 	}
 	softcap(logits, 30)
 	return logits, nil
 }
 
-
-
 // ============================================================================
 // High-level generation entry point
 // ============================================================================
+
+// chatIDs wraps a user prompt in the Gemma-4 IT chat template shipped with
+// the model (chat_template.jinja), rendered with enable_thinking=true:
+// "<|turn>system\n<|think|>\n<turn|>\n<|turn>user\n{p}<turn|>\n<|turn>model\n".
+// The injected system turn (jinja:179-186) is present even without a user
+// system message; WITHOUT it the engine drifted from HF and flipped the
+// stop-token tie at step 7 (verified: ids now identical to HF's
+// apply_chat_template output, and Germany greedy matches HF through the
+// terminating "<turn|>"). The template's thinking-DISABLED variant adds an
+// empty "<|channel>thought\n<channel|>" block that makes the model echo the
+// conversation instead of answering. Special tokens are looked up by ID so
+// the pretokenizer never splits them.
+func chatIDs(vocab *BPEVocab, prompt string, forceThink bool) ([]int, error) {
+	id := func(s string) (int, error) {
+		v, ok := vocab.TokenToID[s]
+		if !ok {
+			return 0, fmt.Errorf("chat template token %q missing from vocab", s)
+		}
+		return v, nil
+	}
+	// piece returns Encode output but appends a real newline token (id 107)
+	// when the text ended with '\n', since Encode strips whitespace.
+	piece := func(s string) ([]int, error) {
+		nl := strings.HasSuffix(s, "\n")
+		ids, err := vocab.Encode(strings.TrimRight(s, "\n"))
+		if err != nil {
+			return nil, err
+		}
+		if nl {
+			v, ok := vocab.TokenToID["\n"]
+			if ok {
+				ids = append(ids, v)
+			}
+		}
+		return ids, nil
+	}
+	var out []int
+	t := func(toks ...string) error {
+		for _, s := range toks {
+			v, err := id(s)
+			if err != nil {
+				return err
+			}
+			out = append(out, v)
+		}
+		return nil
+	}
+	if err := t("<|turn>"); err != nil {
+		return nil, err
+	}
+	// enable_thinking rendering: the template injects a system turn with
+	// <|think|> at the very top (chat_template.jinja:179-186), even when
+	// the caller supplies no system message: <turn>system\n<|think|>\n<turn|>\n
+	sysHdr, err := piece("system\n")
+	if err != nil {
+		return nil, err
+	}
+	out = append(out, sysHdr...)
+	if err := t("<|think|>"); err != nil {
+		return nil, err
+	}
+	nlT, err := piece("\n")
+	if err != nil {
+		return nil, err
+	}
+	out = append(out, nlT...)
+	if err := t("<turn|>"); err != nil {
+		return nil, err
+	}
+	nlT2, err := piece("\n")
+	if err != nil {
+		return nil, err
+	}
+	out = append(out, nlT2...)
+	// end injected system turn; now the real user turn
+	if err := t("<|turn>"); err != nil {
+		return nil, err
+	}
+	wrap, err := piece("user\n")
+	if err != nil {
+		return nil, err
+	}
+	out = append(out, wrap...)
+	pids, err := piece(prompt)
+	if err != nil {
+		return nil, err
+	}
+	out = append(out, pids...)
+	if err := t("<turn|>"); err != nil {
+		return nil, err
+	}
+	nl, err := piece("\n")
+	if err != nil {
+		return nil, err
+	}
+	out = append(out, nl...)
+	if err := t("<|turn>"); err != nil {
+		return nil, err
+	}
+	m, err := piece("model\n")
+	if err != nil {
+		return nil, err
+	}
+	out = append(out, m...)
+	if forceThink {
+		// Reasoning datapath: the model's thinking turn opens with the
+		// reasoning channel "<|channel>thought\n" (special token 100 followed by
+		// the literal "thought\n", exactly as chat_template.jinja emits when
+		// thinking is DISABLED to CLOSE it) and closes it with "<channel|>"
+		// (101) before the final answer. Prefilling the opener makes the model
+		// reason deterministically instead of relying on the bf16 sampler to
+		// pick token 100 on its own; realGenerateCore then splits the emitted
+		// stream into reasoning (before 101) and answer (after 101).
+		if err := t("<|channel>"); err != nil {
+			return nil, err
+		}
+		th, err := piece("thought\n")
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, th...)
+	}
+	return out, nil
+}
 
 // RealGenerate loads the real checkpoint and decodes GreedyTokens tokens
 // autoregressively for the prompt, returning decoded text.  Returns an
 // error with a clear message when the shards are absent (synthetic fallback
 // should be used instead).
-func RealGenerate(modelDir string, dims Dims, prompt string, maxTokens int, vocab *BPEVocab) (string, []int, error) {
+func RealGenerate(modelDir string, dims Dims, prompt string, maxTokens int, vocab *BPEVocab, temp float32) (string, []int, error) {
 	if vocab == nil {
 		return "", nil, fmt.Errorf("real generate: nil vocab")
 	}
-	cfg, err := LoadModelConfig(modelDir)
+	g, err := loadRealGemmaModel(modelDir, vocab)
 	if err != nil {
 		return "", nil, err
 	}
-	idx, err := LoadSafetensorsIndex(modelDir)
-	if err != nil {
-		return "", nil, err
-	}
-	desc, err := ParseSafetensorsHeaders(modelDir, idx)
-	if err != nil {
-		return "", nil, err
-	}
-	rm := newRealModel(modelDir, desc)
-	// check the embed weights exist (the critical real-weight file)
-	if rm.tensorBytes("model.language_model.embed_tokens.weight") == nil {
-		return "", nil, fmt.Errorf("real weights missing (embed_tokens not found); use the synthetic client")
-	}
-	g := &gemmaModel{m: rm, cfg: cfg, hidden: cfg.TextConfig.HiddenSize, vocab: vocab}
 
-	ids, err := vocab.Encode(prompt)
+	ids, err := chatIDs(vocab, prompt, false)
 	if err != nil {
 		return "", nil, err
 	}
 	// prepend BOS
 	full := append([]int{g.vocab.BosID}, ids...)
 
+	answer, _, tokens, err := realGenerateCore(g, full, maxTokens, temp, nil, false, false)
+	return answer, tokens, err
+}
+
+// RealGenerateThinking is RealGenerate with the reasoning datapath enabled:
+// the "<|channel>thought\n" opener is prefilled, the generated stream is split
+// at the closing "<channel|>" token, and the reasoning trace is returned
+// separately from the final answer.
+func RealGenerateThinking(modelDir string, dims Dims, prompt string, maxTokens int, vocab *BPEVocab, temp float32) (answer, reasoning string, tokens []int, err error) {
+	if vocab == nil {
+		return "", "", nil, fmt.Errorf("real generate: nil vocab")
+	}
+	g, err := loadRealGemmaModel(modelDir, vocab)
+	if err != nil {
+		return "", "", nil, err
+	}
+	ids, err := chatIDs(vocab, prompt, true)
+	if err != nil {
+		return "", "", nil, err
+	}
+	full := append([]int{g.vocab.BosID}, ids...)
+	return realGenerateCore(g, full, maxTokens, temp, nil, false, true)
+}
+
+// loadRealGemmaModel opens the real checkpoint and returns a model handle.
+func loadRealGemmaModel(modelDir string, vocab *BPEVocab) (*gemmaModel, error) {
+	cfg, err := LoadModelConfig(modelDir)
+	if err != nil {
+		return nil, err
+	}
+	idx, err := LoadSafetensorsIndex(modelDir)
+	if err != nil {
+		return nil, err
+	}
+	desc, err := ParseSafetensorsHeaders(modelDir, idx)
+	if err != nil {
+		return nil, err
+	}
+	rm := newRealModel(modelDir, desc)
+	// check the embed weights exist (the critical real-weight file)
+	if rm.tensorBytes("model.language_model.embed_tokens.weight") == nil {
+		return nil, fmt.Errorf("real weights missing (embed_tokens not found); use the synthetic client")
+	}
+	return &gemmaModel{m: rm, cfg: cfg, hidden: cfg.TextConfig.HiddenSize, vocab: vocab}, nil
+}
+
+// realGenerateCore runs prefill + greedy/sampled decode over the real weights.
+// A non-nil gate supplies router logits for selected layers from the Gating
+// ASIC instead of the software router matVec.
+func realGenerateCore(g *gemmaModel, full []int, maxTokens int, temp float32, gate routerGate, prefillLast, forceThink bool) (answer, reasoning string, tokens []int, err error) {
+	// maxTokens <= 0 means "generate until the model emits a stop token
+	// (<turn|>/<eos>/...)" — bounded by a safety cap so a runaway model cannot
+	// loop forever.
+	if maxTokens <= 0 {
+		maxTokens = maxGenSafetyTokens
+	}
 	// embed tokens -> hidden sequence [T][H]
-	embed := g.m.mat("model.language_model.embed_tokens.weight", cfg.TextConfig.VocabSize, g.hidden)
+	embed := g.m.mat("model.language_model.embed_tokens.weight", g.cfg.TextConfig.VocabSize, g.hidden)
 	T := len(full)
 	seq := make([][]float32, T)
 	embScale := float32(math.Sqrt(float64(g.hidden)))
@@ -1142,24 +1286,45 @@ func RealGenerate(modelDir string, dims Dims, prompt string, maxTokens int, voca
 
 	// prefill: run the whole prompt with real multi-position attention
 	gf := newGF(g)
+	gf.gate = gate
+	gf.prefillLastGate = prefillLast
 	if err := gf.prefill(seq); err != nil {
-		return "", nil, err
+		return "", "", nil, err
 	}
-	hidden := make([]float32, g.hidden)
-	copy(hidden, seq[T-1])
 
 	// decode loop: greedy, one token at a time (re-run all layers on the
 	// single next-token position with the KV cache from prefill).
+	// First-token logits come straight from the prefill output (already
+	// layer-processed); feeding that back through forwardDecode would run
+	// the stack twice.
 	generated := []int{}
+	logits, err := g.finalLogits(seq[T-1])
+	if err != nil {
+		return "", "", nil, err
+	}
+	// Reasoning datapath state. The IT model emits "<|channel>" (100) to open
+	// its reasoning channel before "thought\n...", then "<channel|>" (101) to
+	// close it and answer. We always split the generated stream on those
+	// tokens; forceThink additionally pre-fills the opener (needed only for a
+	// model that does not open the channel on its own, e.g. the base model).
+	channelOpen, channelClose := -1, -1
+	if v, ok := g.vocab.TokenToID["<|channel>"]; ok {
+		channelOpen = v
+	}
+	if v, ok := g.vocab.TokenToID["<channel|>"]; ok {
+		channelClose = v
+	}
+	inReasoning := forceThink
+	var reasonToks, answerToks []int
+	hidden := make([]float32, g.hidden)
 	for t := 0; t < maxTokens; t++ {
-		logits, err := g.forwardDecode(gf, hidden)
-		if err != nil {
-			break
-		}
-		best := sampleToken(logits, 0.8) // temperature sampling
+		best := sampleToken(logits, temp) // temp<=0 = greedy
 		generated = append(generated, best)
 		if os.Getenv("PNM_DEBUG") != "" {
-			type lg struct{ id int; v float32 }
+			type lg struct {
+				id int
+				v  float32
+			}
 			var top [8]lg
 			for i, v := range logits {
 				for j := 0; j < 8; j++ {
@@ -1190,16 +1355,36 @@ func RealGenerate(modelDir string, dims Dims, prompt string, maxTokens int, voca
 			os.WriteFile("/tmp/pnm_step.txt", []byte(fmt.Sprintf("step %d hidRMS=%.2f top8: %s", t, hiddenRMS(hidden), sb.String())), 0644)
 		}
 		tok := g.vocab.IDToToken[best]
-		if tok == "<eos>" || tok == "<end_of_turn>" || tok == "<pad>" {
+		// stop on generation_config.json eos_token_id [1, 106, 50]
+		// (<eos>, <turn|>, <|tool_response>) plus legacy end markers
+		if tok == "<eos>" || tok == "<end_of_turn>" || tok == "<pad>" ||
+			tok == "<turn|>" || tok == "<|tool_response>" {
 			break
+		}
+		// reasoning/answer split: "<|channel>" opens, "<channel|>" closes; the
+		// structural tokens are kept out of both streams.
+		if best == channelOpen {
+			inReasoning = true
+		} else if best == channelClose {
+			inReasoning = false
+		} else if inReasoning {
+			reasonToks = append(reasonToks, best)
+		} else {
+			answerToks = append(answerToks, best)
 		}
 		// next hidden = embedded (scaled) token
 		for c := 0; c < g.hidden; c++ {
 			hidden[c] = embed[best][c] * embScale
 		}
+		logits, err = g.forwardDecode(gf, hidden)
+		if err != nil {
+			break
+		}
 	}
 
-	out := generated
-	text := vocab.Decode(out)
-	return strings.TrimSpace(text), out, nil
+	reasoning = strings.TrimSpace(g.vocab.Decode(reasonToks))
+	// the channel content is labelled with a leading "thought\n"
+	reasoning = strings.TrimSpace(strings.TrimPrefix(reasoning, "thought"))
+	answer = strings.TrimSpace(g.vocab.Decode(answerToks))
+	return answer, reasoning, generated, nil
 }

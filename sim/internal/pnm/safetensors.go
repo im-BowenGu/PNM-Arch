@@ -28,17 +28,17 @@ type ModelConfig struct {
 	TextConfig struct {
 		HiddenSize          int      `json:"hidden_size"`
 		IntermediateSize    int      `json:"intermediate_size"`
-		MoEIntermediateSize int     `json:"moe_intermediate_size"`
+		MoEIntermediateSize int      `json:"moe_intermediate_size"`
 		NumHiddenLayers     int      `json:"num_hidden_layers"`
 		NumAttentionHeads   int      `json:"num_attention_heads"`
-		NumKeyValueHeads    int     `json:"num_key_value_heads"`
-		NumGlobalKVHeads    int     `json:"num_global_key_value_heads"`
+		NumKeyValueHeads    int      `json:"num_key_value_heads"`
+		NumGlobalKVHeads    int      `json:"num_global_key_value_heads"`
 		VocabSize           int      `json:"vocab_size"`
-		NumExperts          int     `json:"num_experts"`
-		TopKExperts         int     `json:"top_k_experts"`
-		HeadDim             int     `json:"head_dim"`
-		GlobalHeadDim       int     `json:"global_head_dim"`
-		SlidingWindow       int     `json:"sliding_window"`
+		NumExperts          int      `json:"num_experts"`
+		TopKExperts         int      `json:"top_k_experts"`
+		HeadDim             int      `json:"head_dim"`
+		GlobalHeadDim       int      `json:"global_head_dim"`
+		SlidingWindow       int      `json:"sliding_window"`
 		LayerTypes          []string `json:"layer_types"`
 		TieWordEmbeddings   bool     `json:"tie_word_embeddings"`
 	} `json:"text_config"`
@@ -201,12 +201,12 @@ func ParseSafetensorsHeaders(dir string, idx *SafetensorsIndex) (map[string]*saf
 			for name, spec := range hdr.Tensors {
 				if want, ok := idx.WeightMap[name]; ok && want == shard {
 					desc[name] = &safetensorsTensorDescriptor{
-										ShardFile: shard,
-										Offset:    spec.Offset,
-										Size:      spec.Size,
-										DType:     spec.DType,
-										Shape:     spec.Shape,
-									}
+						ShardFile: shard,
+						Offset:    spec.Offset,
+						Size:      spec.Size,
+						DType:     spec.DType,
+						Shape:     spec.Shape,
+					}
 				}
 			}
 		}()

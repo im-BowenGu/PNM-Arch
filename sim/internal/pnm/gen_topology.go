@@ -33,11 +33,15 @@ import (
 // with groups > 1 to simulate layer groups in parallel vvp processes.
 // biases: {(layer, x, y): bias_add constant} for each node's MAC stub.
 // kvcache: when true, instantiate kv_cache_bank between NoB and xy_turn per layer.
+// memChannels: per-node memory channels (node_mem.v CHANNELS, one 192-bit
+// LPCAMM2 module each); <= 0 omits the memory subsystem.  The reference node
+// pairs two 64 GB modules (memChannels == ReferenceModules), giving 384 bits
+// and ~512 GB/s node-local.
 // GenTopology emits the fabric for one slice of layers.  kvcache inserts a
 // kv_cache_bank per column plus a kv_offload eviction controller (discard
 // mode) per layer; kvDepth is the bank's entry capacity (BANK_DEPTH), used
 // by the KV-flow scenario (0 = the default 1024).
-func GenTopology(layerIDs []int, bx, by int, biases map[NodeID]int, kvcache bool, kvDepth int) string {
+func GenTopology(layerIDs []int, bx, by int, biases map[NodeID]int, kvcache bool, kvDepth, memChannels int) string {
 	if biases == nil {
 		biases = map[NodeID]int{}
 	}
@@ -396,6 +400,25 @@ func GenTopology(layerIDs []int, bx, by int, biases map[NodeID]int, kvcache bool
 				a(fmt.Sprintf("        .tx_vc(txe_%d_%d_%d_vc),", l, x, y))
 				a(fmt.Sprintf("        .route_err(), .corrupt_out(node_corrupt_%d_%d_%d)", l, x, y))
 				a("    );")
+				if memChannels > 0 {
+					w := memChannels * 16
+					a(fmt.Sprintf("    // -- node (%d,%d,%d) memory: %d x 64 GB 192-bit LPCAMM2 (node_mem.v) ----", l, x, y, memChannels))
+					a(fmt.Sprintf("    wire [%d:0] mem_%d_%d_%d_rd_data;", w-1, l, x, y))
+					a(fmt.Sprintf("    wire        mem_%d_%d_%d_rd_valid;", l, x, y))
+					a(fmt.Sprintf("    wire        mem_%d_%d_%d_rd_last;", l, x, y))
+					a(fmt.Sprintf("    wire [15:0] mem_%d_%d_%d_rd_beat;", l, x, y))
+					a(fmt.Sprintf("    wire [15:0] mem_%d_%d_%d_rd_beats;", l, x, y))
+					a(fmt.Sprintf("    wire        mem_%d_%d_%d_req_ready;", l, x, y))
+					a(fmt.Sprintf("    wire        mem_%d_%d_%d_busy;", l, x, y))
+					a(fmt.Sprintf("    node_mem #(.CHANNELS(%d), .DEPTH(1024), .WIDTH(16), .CAS(2)) u_mem_%d_%d_%d (", memChannels, l, x, y))
+					a("        .clk(clk), .rst_n(rst_n),")
+					a("        .wr_en(1'b0), .wr_addr(16'h0000), .wr_data(16'h0000),")
+					a("        .req_valid(1'b0), .req_addr(16'h0000), .req_words(16'h0000),")
+					a(fmt.Sprintf("        .rd_data(mem_%d_%d_%d_rd_data), .rd_valid(mem_%d_%d_%d_rd_valid), .rd_last(mem_%d_%d_%d_rd_last),", l, x, y, l, x, y, l, x, y))
+					a(fmt.Sprintf("        .rd_beat(mem_%d_%d_%d_rd_beat), .rd_beats(mem_%d_%d_%d_rd_beats),", l, x, y, l, x, y))
+					a(fmt.Sprintf("        .req_ready(mem_%d_%d_%d_req_ready), .busy(mem_%d_%d_%d_busy)", l, x, y, l, x, y))
+					a("    );")
+				}
 			}
 		}
 

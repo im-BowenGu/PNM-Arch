@@ -49,6 +49,8 @@ func run(argv []string) int {
 		return runModel(rest)
 	case "inference", "infer":
 		return runInference(rest)
+	case "benchmark", "bench":
+		return runBenchmark(rest)
 	case "run":
 		return runAuto(rest)
 	case "help", "-h", "--help":
@@ -76,6 +78,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  program <path.pnm>      Compile and run a .pnm program")
 	fmt.Fprintln(os.Stderr, "  model <dir>             Compile a HuggingFace model onto the chassis")
 	fmt.Fprintln(os.Stderr, "  inference <dir> <prompt> Run LLM inference")
+	fmt.Fprintln(os.Stderr, "  benchmark               Fabric benchmark sweep + cost/TCO model (PNM vs HBM vs SRAM LPU)")
 	fmt.Fprintln(os.Stderr, "  run <path.pnm>          Auto-detect and run a program")
 	fmt.Fprintln(os.Stderr)
 	fmt.Fprintln(os.Stderr, "Global options (apply to all commands):")
@@ -153,6 +156,8 @@ func parseGlobal(argv []string) ([]string, *pnm.HostConfig) {
 			var t float64
 			fmt.Sscanf(val, "%f", &t)
 			cfg.Temperature = float32(t)
+		case "-think":
+			cfg.Think = true
 		case "-flits":
 			if val != "" {
 				var f int
@@ -217,6 +222,19 @@ func runWorkload(argv []string) int {
 	ok := hd.RunWorkload(wlName, frag)
 	hd.Log.Println(hd.Summary())
 
+	if !ok {
+		return 1
+	}
+	return 0
+}
+
+func runBenchmark(argv []string) int {
+	_, cfg := parseGlobal(argv)
+	hd := pnm.NewHostDriver(*cfg)
+	defer hd.WriteResults()
+
+	hd.Log.Printf("--- benchmark (fabric sweep + cost/TCO) ---\n")
+	ok := hd.RunBenchmark()
 	if !ok {
 		return 1
 	}

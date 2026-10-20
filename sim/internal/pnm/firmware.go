@@ -289,7 +289,7 @@ func (fw *Firmware) bootPOSTDiscovery() ([]WeightUploadCommand, error) {
 				fw.Inventory = append(fw.Inventory, NodeInventory{
 					Node:      nid,
 					ModuleID:  moduleID,
-					Bandwidth: 256, // LPDDR6 CAMM2: 256 GB/s per node
+					Bandwidth: 512, // LPDDR6 CAMM2: 2x64 GB 192-bit modules = 512 GB/s per node
 					Status:    1,
 				})
 				fw.NodeCount++

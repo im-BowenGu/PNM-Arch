@@ -286,7 +286,6 @@ func TestSelectTopExpertsSparsePopulation(t *testing.T) {
 	}
 }
 
-
 // TestR35SlidingWindowPhysicalMapping guards against ConfigureSlidingWindow
 // treating model-layer indices as physical-layer indices.  The historical code
 // indexed kc.Layers with the MODEL-layer index (ml) and broke out at

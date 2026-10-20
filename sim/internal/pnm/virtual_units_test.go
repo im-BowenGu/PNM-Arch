@@ -333,7 +333,7 @@ func TestNewVirtualUnit_UnknownKernel(t *testing.T) {
 
 func TestConsume_ValidPacket(t *testing.T) {
 	node := NodeID{L: 1, X: 2, Y: 3}
-_ownByte := byte((node.X << 4) | node.Y) // 0x23
+	_ownByte := byte((node.X << 4) | node.Y) // 0x23
 
 	// Build a valid packet for this node
 	payload := []byte{0x10, 0x20, 0x30}
@@ -380,7 +380,7 @@ func TestConsume_WrongDEST(t *testing.T) {
 
 func TestConsume_WrongLength(t *testing.T) {
 	node := NodeID{L: 1, X: 2, Y: 3}
-_ownByte := byte((node.X << 4) | node.Y)
+	_ownByte := byte((node.X << 4) | node.Y)
 
 	// Claim length=10 but only send 3 payload bytes
 	payload := []byte{0x10, 0x20, 0x30}
@@ -400,7 +400,7 @@ _ownByte := byte((node.X << 4) | node.Y)
 
 func TestConsume_CorruptCRC(t *testing.T) {
 	node := NodeID{L: 1, X: 2, Y: 3}
-_ownByte := byte((node.X << 4) | node.Y)
+	_ownByte := byte((node.X << 4) | node.Y)
 
 	payload := []byte{0x10, 0x20}
 	body := append([]byte{_ownByte, 0x40, byte(len(payload)), 0x00}, payload...)
@@ -421,7 +421,7 @@ _ownByte := byte((node.X << 4) | node.Y)
 
 func TestConsume_HwCorrupt(t *testing.T) {
 	node := NodeID{L: 1, X: 2, Y: 3}
-_ownByte := byte((node.X << 4) | node.Y)
+	_ownByte := byte((node.X << 4) | node.Y)
 
 	payload := []byte{0x10}
 	body := append([]byte{_ownByte, 0x40, byte(len(payload)), 0x00}, payload...)

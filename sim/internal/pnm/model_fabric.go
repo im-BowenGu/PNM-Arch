@@ -17,9 +17,9 @@
 package pnm
 
 import (
-	"path/filepath"
 	"fmt"
 	"os"
+	"path/filepath"
 	"runtime"
 	"sort"
 )

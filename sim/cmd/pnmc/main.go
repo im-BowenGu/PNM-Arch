@@ -273,7 +273,6 @@ func runCompileModel(argv []string) int {
 		fmt.Printf("Wrote vocab: %s\n", vocabPath)
 	}
 
-
 	programPath := filepath.Join(*outDir, filepath.Base(modelDir)+".pnm")
 	if err := os.WriteFile(programPath, []byte(mc.EmitProgram()), 0o644); err != nil {
 		fmt.Fprintf(os.Stderr, "writing program: %v\n", err)

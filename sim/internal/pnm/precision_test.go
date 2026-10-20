@@ -22,7 +22,7 @@ func encodeBF16(v float32) uint16 {
 	exp := int((u>>23)&0xFF) - 127 + 127
 	man := (u >> 13) & 0x7F
 	rem := (u >> 12) & 0x1
-	if rem != 0 && ((man & 0x1) != 0 || ((u>>11)&0x7FF) != 0) {
+	if rem != 0 && ((man&0x1) != 0 || ((u>>11)&0x7FF) != 0) {
 		man++
 		if man == 0x80 {
 			man = 0

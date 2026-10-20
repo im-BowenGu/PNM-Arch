@@ -14,12 +14,12 @@ import (
 // zero, precedence errors, and branch mishandling — all at once.
 
 type fp64SemCase struct {
-	name  string
-	src   string
-	args  []string   // R variables / Haskell params to seed
-	vals  []float64  // corresponding input values
-	out   string     // output variable whose register to read ("_", "x", ...)
-	want  float64
+	name string
+	src  string
+	args []string  // R variables / Haskell params to seed
+	vals []float64 // corresponding input values
+	out  string    // output variable whose register to read ("_", "x", ...)
+	want float64
 }
 
 // runFP64Case compiles an R or Haskell source program, seeds inputs by

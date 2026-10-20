@@ -13,14 +13,16 @@ import (
 type HaskellProgram struct {
 	*FP64Program
 	Funcs map[string]*HaskellFunc
+	Order []string // function names in source order (entry-point selection)
 }
 
 // HaskellFunc represents a compiled Haskell function.
 type HaskellFunc struct {
-	Name     string
-	Args     []string
-	ArgRegs  []string // definition-time register holding each argument
-	Body     []FP64IR
+	Name    string
+	Args    []string
+	ArgRegs []string // definition-time register holding each argument
+	Vars    map[string]int
+	Body    []FP64IR
 }
 
 func newHaskellProgram(name string) *HaskellProgram {
@@ -46,38 +48,17 @@ func (p *HaskellProgram) Emit() string {
 		fn := p.Funcs[name]
 		fmt.Fprintf(&b, "func %s(%s)\n", fn.Name, strings.Join(fn.Args, ", "))
 		for _, inst := range fn.Body {
-			emitFP64Inst(&b, inst)
+			emitFP64Inst(&b, inst, "  ")
 		}
 		fmt.Fprintf(&b, "end\n\n")
 	}
 	if len(p.Regs) > 0 {
 		fmt.Fprintf(&b, "# main body\n")
 		for _, inst := range p.Regs {
-			emitFP64Inst(&b, inst)
+			emitFP64Inst(&b, inst, "  ")
 		}
 	}
 	return b.String()
-}
-
-func emitFP64Inst(b *strings.Builder, inst FP64IR) {
-	switch inst.Op {
-	case FP64Const:
-		fmt.Fprintf(b, "  %-10s %s, %.17g\n", inst.Op, inst.Dest, inst.Imm)
-	case FP64Cmp:
-		fmt.Fprintf(b, "  %-10s %s, %s, %s, %s\n", inst.Op, inst.Dest, inst.Src[0], inst.Src[1], inst.Cond)
-	case FP64Store:
-		fmt.Fprintf(b, "  %-10s [%s], %s\n", inst.Op, inst.Dest, inst.Src[0])
-	case FP64Load:
-		fmt.Fprintf(b, "  %-10s %s, [%s]\n", inst.Op, inst.Dest, inst.Src[0])
-	case FP64Neg:
-		fmt.Fprintf(b, "  %-10s %s, %s\n", inst.Op, inst.Dest, inst.Src[0])
-	case FP64Sub:
-		fmt.Fprintf(b, "  %-10s %s, %s, %s\n", inst.Op, inst.Dest, inst.Src[0], inst.Src[1])
-	default:
-		parts := []string{inst.Dest}
-		parts = append(parts, inst.Src...)
-		fmt.Fprintf(b, "  %-10s %s\n", inst.Op, strings.Join(parts, ", "))
-	}
 }
 
 // CompileHaskell parses Haskell source code and emits FP64 IR.
@@ -190,7 +171,7 @@ func compileHaskellFunc(p *HaskellProgram, lines []string, start int) (int, erro
 		}
 	}
 
-	// Capture generated instructions
+	// Capture generated instructions.
 	fn := &HaskellFunc{
 		Name:    funcName,
 		Args:    args,
@@ -198,7 +179,18 @@ func compileHaskellFunc(p *HaskellProgram, lines []string, start int) (int, erro
 		Body:    make([]FP64IR, len(p.Regs)-regBase),
 	}
 	copy(fn.Body, p.Regs[regBase:])
+	// Instructions keep the Origin they were given while compiling the body:
+	// inlined callee math is tagged with the callee (see compileHaskellCall),
+	// and the containing frame's own arithmetic stays untagged ("" = the
+	// enclosing/main frame, which placement folds on the router SBC).  The
+	// entry function's body is therefore a faithful call graph, not a flat
+	// rename to the enclosing name.
+	fn.Vars = make(map[string]int, len(p.Vars))
+	for k, v := range p.Vars {
+		fn.Vars[k] = v
+	}
 	p.Funcs[funcName] = fn
+	p.Order = append(p.Order, funcName)
 
 	// Restore parent scope
 	p.Regs = savedRegs
@@ -516,6 +508,7 @@ func compileHaskellCall(p *HaskellProgram, dest, funcName, args string) error {
 			for j := range ni.Src {
 				ni.Src[j] = remap[ni.Src[j]]
 			}
+			ni.Origin = funcName // the inlined math belongs to the callee
 			p.Regs = append(p.Regs, ni)
 			resultReg = ni.Dest
 		}
@@ -528,42 +521,22 @@ func compileHaskellCall(p *HaskellProgram, dest, funcName, args string) error {
 }
 
 func compileHaskellAgg(p *HaskellProgram, dest, op string, args []string) error {
-	if len(args) == 0 {
-		return fmt.Errorf("empty argument list for %s", op)
-	}
-	src := resolveHaskellAtom(p, args[0])
+	var kind aggKind
 	switch op {
-	case "sum", "product":
-		acc := p.allocReg()
-		initVal := 0.0
-		if op == "product" {
-			initVal = 1.0
-		}
-		p.Regs = append(p.Regs, FP64IR{Op: FP64Const, Dest: acc, Imm: initVal})
-		binOp := FP64Add
-		if op == "product" {
-			binOp = FP64Mul
-		}
-		for _, a := range args {
-			v := resolveHaskellAtom(p, a)
-			p.Regs = append(p.Regs, FP64IR{Op: binOp, Dest: acc, Src: []string{acc, v}})
-		}
-		p.Regs = append(p.Regs, FP64IR{Op: FP64Mov, Dest: dest, Src: []string{acc}})
-	case "minimum", "maximum":
-		aggOp := FP64Min
-		if op == "maximum" {
-			aggOp = FP64Max
-		}
-		acc := p.allocReg()
-		p.Regs = append(p.Regs, FP64IR{Op: FP64Mov, Dest: acc, Src: []string{src}})
-		for i := 1; i < len(args); i++ {
-			v := resolveHaskellAtom(p, args[i])
-			p.Regs = append(p.Regs, FP64IR{Op: aggOp, Dest: acc, Src: []string{acc, v}})
-		}
-		p.Regs = append(p.Regs, FP64IR{Op: FP64Mov, Dest: dest, Src: []string{acc}})
+	case "sum":
+		kind = aggSum
+	case "product":
+		kind = aggProd
+	case "minimum":
+		kind = aggMin
+	case "maximum":
+		kind = aggMax
+	default:
+		return nil
 	}
-	_ = src
-	return nil
+	return emitFP64Agg(p.FP64Program, dest, kind, args, func(s string) (string, error) {
+		return resolveHaskellAtom(p, s), nil
+	})
 }
 
 func splitHaskellArgs(s string) []string {

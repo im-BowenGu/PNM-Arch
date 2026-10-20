@@ -32,12 +32,12 @@ func LowerToPNM(prog *FP64Program, dims Dims) string {
 	return lowerFP64ToPNM(prog.Regs, dims)
 }
 
-// LowerHaskellToPNM compiles a Haskell program (with function definitions)
-// into a .pnm program string.
-func LowerHaskellToPNM(prog *HaskellProgram, dims Dims) string {
+// haskellAllInsts collects a Haskell program's instructions in deterministic
+// order (function bodies sorted by function name, then the main body) and is
+// shared by the static .pnm lowering and the chained dataflow lowering so
+// both agree on the emitted instruction list.
+func haskellAllInsts(prog *HaskellProgram) []FP64IR {
 	var allInsts []FP64IR
-	// Iterate in sorted name order so the emitted .pnm program (and the
-	// round-robin node assignment) is deterministic across runs.
 	names := make([]string, 0, len(prog.Funcs))
 	for name := range prog.Funcs {
 		names = append(names, name)
@@ -47,13 +47,19 @@ func LowerHaskellToPNM(prog *HaskellProgram, dims Dims) string {
 		allInsts = append(allInsts, prog.Funcs[name].Body...)
 	}
 	allInsts = append(allInsts, prog.Regs...)
-	return lowerFP64ToPNM(allInsts, dims)
+	return allInsts
 }
 
-// LowerHLSLToPNM compiles an HLSL program into a .pnm program string.
-// HLSL uses FP32 ALU ops; values are packed as 8-byte payloads for the
-// f64_* kernels (zero-extended float32 → float64).
-func LowerHLSLToPNM(prog *HLSLProgram, dims Dims) string {
+// LowerHaskellToPNM compiles a Haskell program (with function definitions)
+// into a .pnm program string.
+func LowerHaskellToPNM(prog *HaskellProgram, dims Dims) string {
+	return lowerFP64ToPNM(haskellAllInsts(prog), dims)
+}
+
+// hlslToFP64IRs widens an HLSL FP32 ALU IR program into the FP64 dispatch IR
+// list, applying the same op mapping and filter as the static .pnm lowering.
+// Shared between LowerHLSLToPNM and the chained dataflow lowering.
+func hlslToFP64IRs(prog *HLSLProgram) []FP64IR {
 	var insts []FP64IR
 	for _, inst := range prog.Regs {
 		ir := FP64IR{
@@ -72,7 +78,14 @@ func LowerHLSLToPNM(prog *HLSLProgram, dims Dims) string {
 			insts = append(insts, ir)
 		}
 	}
-	return lowerFP64ToPNM(insts, dims)
+	return insts
+}
+
+// LowerHLSLToPNM compiles an HLSL program into a .pnm program string.
+// HLSL uses FP32 ALU ops; values are packed as 8-byte payloads for the
+// f64_* kernels (zero-extended float32 → float64).
+func LowerHLSLToPNM(prog *HLSLProgram, dims Dims) string {
+	return lowerFP64ToPNM(hlslToFP64IRs(prog), dims)
 }
 
 // hlslOpToFP64 maps an HLSL FP32 ALU opcode to the corresponding FP64 opcode.

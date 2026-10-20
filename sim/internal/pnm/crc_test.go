@@ -19,7 +19,7 @@ func TestCRC16_KnownVectors(t *testing.T) {
 		{
 			name:   "123456789",
 			input:  "313233343536373839", // ASCII "123456789"
-			expect: 0x29B1,              // well-known CRC-16/CCITT-FALSE result
+			expect: 0x29B1,               // well-known CRC-16/CCITT-FALSE result
 		},
 	}
 

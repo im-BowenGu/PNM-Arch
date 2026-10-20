@@ -10,8 +10,8 @@ import (
 // ModelCompiler is the populated schema: a ModelIR placed onto a concrete
 // chassis (node assignments, budgets, per-node compute units).
 type ModelCompiler struct {
-	Config *ModelConfig
-	Index  *SafetensorsIndex
+	Config  *ModelConfig
+	Index   *SafetensorsIndex
 	Tensors map[string]*TensorMeta
 	Dims    Dims
 	IR      *ModelIR
@@ -26,9 +26,9 @@ type ModelCompiler struct {
 // NodeAssignment describes what a single node holds.
 type NodeAssignment struct {
 	Node       NodeID
-	Layers     []int           // model layer indices assigned here
-	Kernels    map[int]string  // model_layer -> kernel type
-	Tensors    []TensorRef     // tensors resident on this node
+	Layers     []int          // model layer indices assigned here
+	Kernels    map[int]string // model_layer -> kernel type
+	Tensors    []TensorRef    // tensors resident on this node
 	TotalBytes int64
 	Bias       int
 	// Available compute units on this node (populated by Partition)
@@ -39,22 +39,23 @@ type NodeAssignment struct {
 type ComputeUnitType int
 
 const (
-	CUTypeNone     ComputeUnitType = iota
-	CUTypeBF16FMA                  // bf16_fma: 16-bit BF16 Fused Multiply-Accumulate
-	CUTypeFP16FMA                  // fp16_fma: 16-bit IEEE FP16 FMA
-	CUTypeFP32FMA                  // fp32_fma: 32-bit FP FMA
-	CUTypeFP64FMA                  // fp64_fma: 64-bit FP FMA
-	CUTypeFP32ALU                  // fp32_alu: FP32 multi-function ALU (ADD/SUB/MUL/DIV/MIN/MAX/CMP)
-	CUTypeINT8MAC                  // int8_mac: INT8 Multiply-Accumulate
-	CUTypeBF16Array                // bf16_mac_array: BF16 systolic MAC array
-	CUTypeFP16Array                // fp16_mac_array: FP16 systolic MAC array
-	CUTypeFP64ALU                  // fp64_alu: FP64 multi-function ALU
-	CUTypeFP32Array                // fp32_mac_array: FP32 systolic MAC array
-	CUTypeINT8ALU                  // int8_alu: INT8 ALU (add/sub/shift)
-	CUTypeINT4MAC                  // int4_mac: INT4 Multiply-Accumulate (2x density vs INT8)
-	CUTypeINT4Array                // int4_mac_array: INT4 systolic MAC array (4x density vs BF16)
-	CUTypeFP4Array                 // fp4_mac_array: FP4 (E2M1) systolic MAC array (4x density vs BF16)
-	CUTypeMXFP4Array               // mxfp4_mac_array: MXFP4 (E2M1 + block scale) systolic MAC array
+	CUTypeNone       ComputeUnitType = iota
+	CUTypeBF16FMA                    // bf16_fma: 16-bit BF16 Fused Multiply-Accumulate
+	CUTypeFP16FMA                    // fp16_fma: 16-bit IEEE FP16 FMA
+	CUTypeFP32FMA                    // fp32_fma: 32-bit FP FMA
+	CUTypeFP64FMA                    // fp64_fma: 64-bit FP FMA
+	CUTypeFP32ALU                    // fp32_alu: FP32 multi-function ALU (ADD/SUB/MUL/DIV/MIN/MAX/CMP)
+	CUTypeINT8MAC                    // int8_mac: INT8 Multiply-Accumulate
+	CUTypeBF16Array                  // bf16_mac_array: BF16 systolic MAC array
+	CUTypeFP16Array                  // fp16_mac_array: FP16 systolic MAC array
+	CUTypeFP64ALU                    // fp64_alu: FP64 multi-function ALU
+	CUTypeFP32Array                  // fp32_mac_array: FP32 systolic MAC array
+	CUTypeINT8ALU                    // int8_alu: INT8 ALU (add/sub/shift)
+	CUTypeINT4MAC                    // int4_mac: INT4 Multiply-Accumulate (2x density vs INT8)
+	CUTypeINT4Array                  // int4_mac_array: INT4 systolic MAC array (4x density vs BF16)
+	CUTypeFP4Array                   // fp4_mac_array: FP4 (E2M1) systolic MAC array (4x density vs BF16)
+	CUTypeMXFP4Array                 // mxfp4_mac_array: MXFP4 (E2M1 + block scale) systolic MAC array
+	CUTypeTernaryAcc                 // ternary_acc: BitNet b1.58 {-1,0,+1} weight x INT8 activation, select-add accumulator
 )
 
 // String returns the human-readable name of the compute unit type.
@@ -90,6 +91,8 @@ func (t ComputeUnitType) String() string {
 		return "fp4_mac_array"
 	case CUTypeMXFP4Array:
 		return "mxfp4_mac_array"
+	case CUTypeTernaryAcc:
+		return "ternary_acc"
 	default:
 		return "none"
 	}
@@ -106,6 +109,8 @@ func (t ComputeUnitType) DTypeBytes() int {
 		return 1 // 4-bit values packed 2 per byte
 	case CUTypeFP4Array, CUTypeMXFP4Array:
 		return 1 // FP4 (E2M1) values packed 2 per byte
+	case CUTypeTernaryAcc:
+		return 1 // ternary {-1,0,+1} weight codes packed 4 per byte (2 bits each)
 	case CUTypeFP32FMA, CUTypeFP32ALU, CUTypeFP32Array:
 		return 4
 	case CUTypeFP64FMA, CUTypeFP64ALU:
@@ -117,13 +122,13 @@ func (t ComputeUnitType) DTypeBytes() int {
 
 // TensorRef is a reference to a tensor with its role and compute unit type.
 type TensorRef struct {
-	Name      string
-	Role      string          // "expert_gate_up", "expert_down", "attention_q", etc.
+	Name       string
+	Role       string // "expert_gate_up", "expert_down", "attention_q", etc.
 	ModelLayer int
-	ExpertIdx  int            // -1 if not expert-specific
+	ExpertIdx  int // -1 if not expert-specific
 	SizeBytes  int64
 	CUType     ComputeUnitType // hardware unit that processes this tensor
-	DType      string         // "BF16", "FP16", "FP32", "INT8"
+	DType      string          // "BF16", "FP16", "FP32", "INT8"
 }
 
 // CompileModel performs the full AOT compilation pipeline: lower the model to

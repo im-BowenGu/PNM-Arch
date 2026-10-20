@@ -30,8 +30,6 @@ func TestHaskellEmitAndLowerDeterminism(t *testing.T) {
 	}
 }
 
-
-
 // fp64IRHasDest reports whether a set of instructions assigns the given dest
 // register as the result of the given opcode (not as an uninitialized zero).
 func fp64IRHasDest(regs []FP64IR, dest string, op FP64Op) bool {

@@ -58,9 +58,10 @@ func run(argv []string) int {
 	fs.IntVar(&by, "y", 2, "Y rows per board")
 	fs.IntVar(&by, "board-y", 2, "Y rows per board")
 	outPath := fs.String("o", "", "output .pnm path (default: <input>.pnm)")
-	runSim := fs.Bool("run", false, "run co-simulation after emitting the program")
+	runSim := fs.Bool("run", false, "run the chained dataflow on the simulated chassis after emitting the program")
 	irOnly := fs.Bool("ir", false, "print FP64 IR and exit (no PNM emission)")
 	groups := fs.Int("groups", 0, "parallel vvp slices (default: min(layers, cpu))")
+	inputVals := fs.String("inputs", "", "values for free inputs, e.g. x=4,y=7")
 
 	if err := fs.Parse(rest); err != nil {
 		return 2
@@ -125,7 +126,68 @@ func run(argv []string) int {
 		return 0
 	}
 
-	fmt.Printf("\n=== Running on %dx%dx%d chassis ===\n\n", dims.Layers, dims.Bx, dims.By)
-	code := pnm.RunCompiler(*outPath, layers, bx, by, *groups, 0xC0FFEE)
-	return code
+	fmt.Printf("\n=== Chained dataflow on %dx%dx%d chassis ===\n\n", dims.Layers, dims.Bx, dims.By)
+	df, err := pnm.LowerRDataFlow(prog, dims)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "dataflow lowering error: %v\n", err)
+		return 1
+	}
+	inputs := parseInputs(*inputVals)
+	res, err := pnm.RunDataFlow(df, inputs, *groups)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "dataflow run error: %v\n", err)
+		return 1
+	}
+	printDataFlow(df, res)
+	return 0
+}
+
+// parseInputs parses "name=val,name2=val2" into a map.
+func parseInputs(s string) map[string]float64 {
+	inputs := make(map[string]float64)
+	if s == "" {
+		return inputs
+	}
+	for _, pair := range strings.Split(s, ",") {
+		kv := strings.SplitN(strings.TrimSpace(pair), "=", 2)
+		if len(kv) != 2 {
+			continue
+		}
+		var v float64
+		if _, err := fmt.Sscanf(strings.TrimSpace(kv[1]), "%g", &v); err == nil {
+			inputs[strings.TrimSpace(kv[0])] = v
+		}
+	}
+	return inputs
+}
+
+// printDataFlow prints each executed step and the program answer.
+func printDataFlow(df *pnm.DataFlowProgram, res *pnm.DataFlowResult) {
+	for i, t := range res.Traces {
+		switch {
+		case t.Host:
+			fmt.Printf("  [%d] %-7s %s @ router-SBC               ->  %.8g   %s\n",
+				i, t.Kernel, t.Dest, t.Result, passMark(t.Pass))
+		case t.Fabric:
+			fmt.Printf("  [%d] %-7s %s @ (%d,%d,%d)  args=%v  ->  %.8g   %s\n",
+				i, t.Kernel, t.Dest, t.Node.L, t.Node.X, t.Node.Y, t.Args, t.Result, passMark(t.Pass))
+		default:
+			fmt.Printf("  [%d] %-7s %s                            ->  %.8g   %s\n",
+				i, t.Op, t.Dest, t.Result, passMark(t.Pass))
+		}
+	}
+	fmt.Printf("\n  result (%s) = %.8g   %d fabric dispatches across %d node(s), %d router-SBC fold(s)\n",
+		res.Final, res.FinalV, res.Dispatches, res.Nodes, res.HostSteps)
+	if len(df.FreeNames) > 0 {
+		fmt.Printf("  inputs bound: %s\n", strings.Join(df.FreeNames, ", "))
+	}
+	fmt.Printf("\n  Note: chained dispatch verified byte-exact by the fabric; the static\n")
+	fmt.Printf("  .pnm token payloads are name-hash placeholders (value-accurate run above).\n")
+}
+
+func passMark(pass bool) string {
+	if pass {
+		return "[PASS]"
+	}
+	return "[FAIL]"
 }

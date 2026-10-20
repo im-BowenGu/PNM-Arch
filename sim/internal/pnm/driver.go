@@ -24,11 +24,11 @@ import (
 
 // Driver is the host-side interface to a PNM chassis.
 type Driver struct {
-	Dims    Dims
-	MC      *ModelCompiler
-	Config  *ModelConfig
-	Index   *SafetensorsIndex
-	Tensors map[string]*TensorMeta
+	Dims     Dims
+	MC       *ModelCompiler
+	Config   *ModelConfig
+	Index    *SafetensorsIndex
+	Tensors  map[string]*TensorMeta
 	ModelDir string // directory the index/config were loaded from (real shards live here)
 
 	// Routing tables (pre-computed by AOT, loaded into orchestrator chip SRAM)
@@ -118,16 +118,17 @@ func NewDriver(dc DriverConfig) (*Driver, error) {
 
 // computeRouteBitmaps generates the 11-bit routing bitmap for every node.
 // Bitmap format (pnm_defs.vh):
-//   [10:7] LAYER (4b, 1-based), [6] AXIS (0=X), [5] SIGN (0=+), [4:0] DIST
+//
+//	[10:7] LAYER (4b, 1-based), [6] AXIS (0=X), [5] SIGN (0=+), [4:0] DIST
 func (d *Driver) computeRouteBitmaps() map[NodeID]uint16 {
 	bitmaps := make(map[NodeID]uint16)
 	for nid := range d.MC.NodeAssignments {
 		if nid.L < 0 {
 			continue // skip orchestrator chip
 		}
-		layerBits := uint16(nid.L+1) << 7  // 1-based layer ID
-		distBits := uint16(nid.Y) & 0x1F   // Y distance from lxy_repeater
-		bitmaps[nid] = layerBits | (1 << 6) | distBits  // bit 6 = Y-axis
+		layerBits := uint16(nid.L+1) << 7              // 1-based layer ID
+		distBits := uint16(nid.Y) & 0x1F               // Y distance from lxy_repeater
+		bitmaps[nid] = layerBits | (1 << 6) | distBits // bit 6 = Y-axis
 	}
 	return bitmaps
 }
@@ -323,11 +324,11 @@ type RoutingTableSchema struct {
 
 // RoutingEntrySchema is one node's routing entry.
 type RoutingEntrySchema struct {
-	Layer   int    `json:"layer"`
-	X       int    `json:"x"`
-	Y       int    `json:"y"`
-	Bitmap  uint16 `json:"bitmap"`
-	Role    string `json:"role"`
+	Layer  int    `json:"layer"`
+	X      int    `json:"x"`
+	Y      int    `json:"y"`
+	Bitmap uint16 `json:"bitmap"`
+	Role   string `json:"role"`
 }
 
 // MoeMapSchema is the JSON-serializable MoE expert map.
@@ -337,11 +338,11 @@ type MoeMapSchema struct {
 
 // MoeEntrySchema is one expert's mapping.
 type MoeEntrySchema struct {
-	ModelLayer   int `json:"model_layer"`
-	ExpertIdx    int `json:"expert_idx"`
+	ModelLayer    int `json:"model_layer"`
+	ExpertIdx     int `json:"expert_idx"`
 	PhysicalLayer int `json:"physical_layer"`
-	X            int `json:"x"`
-	Y            int `json:"y"`
+	X             int `json:"x"`
+	Y             int `json:"y"`
 }
 
 // WriteRoutingTable writes the routing table as JSON.

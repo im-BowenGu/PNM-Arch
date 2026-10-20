@@ -10,6 +10,32 @@ import (
 	"strings"
 )
 
+// WeightFormat selects the on-disk encoding the compiler lowers weight ops to.
+// WeightsBF16 is the reference; WeightsTernary is BitNet b1.58 (2-bit codes
+// {+1,0,-1} packed four per byte), lowered to CUTypeTernaryAcc ops so the node
+// streams ~1/10 the weight bytes (Paper §3.6).
+type WeightFormat int
+
+const (
+	WeightsBF16 WeightFormat = iota
+	WeightsTernary
+)
+
+// CompileOption customizes lowering.
+type CompileOption func(*compileSettings)
+
+type compileSettings struct {
+	weightFormat WeightFormat
+}
+
+// WithWeightFormat lowers weight ops to the given format (default BF16).
+func WithWeightFormat(f WeightFormat) CompileOption {
+	return func(s *compileSettings) { s.weightFormat = f }
+}
+
+// TernaryBytes is the packed size of n ternary weights (2 bits each, 4/byte).
+func TernaryBytes(n int64) int64 { return (n*2 + 7) / 8 }
+
 // ModelOp is one chassis-independent operation lowered from the model.
 type ModelOp struct {
 	ModelLayer int // model layer index, -1 for model-global ops
@@ -32,12 +58,26 @@ type ModelIR struct {
 
 // CompileModelIR ingests a model config + safetensors index and lowers it to
 // the chassis-independent ModelIR. No chassis dimensions are involved.
-func CompileModelIR(cfg *ModelConfig, idx *SafetensorsIndex) (*ModelIR, error) {
+func CompileModelIR(cfg *ModelConfig, idx *SafetensorsIndex, opts ...CompileOption) (*ModelIR, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("nil model config")
 	}
 	if idx == nil {
 		return nil, fmt.Errorf("nil safetensors index")
+	}
+	var settings compileSettings
+	for _, o := range opts {
+		o(&settings)
+	}
+	// weightOp lowers one weight-bearing op; ternary re-tags it to the select-add
+	// accumulator and 2-bit packing, norms/layernorms stay BF16 (never quantized).
+	weightOp := func(ml int, role string, exp int, cu ComputeUnitType, numel int64) ModelOp {
+		if settings.weightFormat == WeightsTernary {
+			return ModelOp{ModelLayer: ml, Role: role, ExpertIdx: exp,
+				CUType: CUTypeTernaryAcc, DType: "TERNARY", SizeBytes: TernaryBytes(numel)}
+		}
+		return ModelOp{ModelLayer: ml, Role: role, ExpertIdx: exp,
+			CUType: cu, DType: "BF16", SizeBytes: numel * 2}
 	}
 	tensors, totalBytes := CollectTensors(idx, cfg)
 	ir := &ModelIR{
@@ -55,27 +95,27 @@ func CompileModelIR(cfg *ModelConfig, idx *SafetensorsIndex) (*ModelIR, error) {
 
 	for ml := 0; ml < tc.NumHiddenLayers; ml++ {
 		ir.Ops = append(ir.Ops,
-			ModelOp{ModelLayer: ml, Role: "attn_q", ExpertIdx: -1, CUType: CUTypeBF16Array, DType: "BF16", SizeBytes: h * h * 2},
-			ModelOp{ModelLayer: ml, Role: "attn_k", ExpertIdx: -1, CUType: CUTypeBF16Array, DType: "BF16", SizeBytes: kvDim * h * 2},
-			ModelOp{ModelLayer: ml, Role: "attn_v", ExpertIdx: -1, CUType: CUTypeBF16Array, DType: "BF16", SizeBytes: kvDim * h * 2},
-			ModelOp{ModelLayer: ml, Role: "attn_o", ExpertIdx: -1, CUType: CUTypeBF16Array, DType: "BF16", SizeBytes: h * h * 2},
-			ModelOp{ModelLayer: ml, Role: "dense_gate", ExpertIdx: -1, CUType: CUTypeBF16FMA, DType: "BF16", SizeBytes: inter * h * 2},
-			ModelOp{ModelLayer: ml, Role: "dense_up", ExpertIdx: -1, CUType: CUTypeBF16FMA, DType: "BF16", SizeBytes: inter * h * 2},
-			ModelOp{ModelLayer: ml, Role: "dense_down", ExpertIdx: -1, CUType: CUTypeBF16FMA, DType: "BF16", SizeBytes: inter * h * 2},
+			weightOp(ml, "attn_q", -1, CUTypeBF16Array, h*h),
+			weightOp(ml, "attn_k", -1, CUTypeBF16Array, kvDim*h),
+			weightOp(ml, "attn_v", -1, CUTypeBF16Array, kvDim*h),
+			weightOp(ml, "attn_o", -1, CUTypeBF16Array, h*h),
+			weightOp(ml, "dense_gate", -1, CUTypeBF16FMA, inter*h),
+			weightOp(ml, "dense_up", -1, CUTypeBF16FMA, inter*h),
+			weightOp(ml, "dense_down", -1, CUTypeBF16FMA, inter*h),
 			ModelOp{ModelLayer: ml, Role: "input_layernorm", ExpertIdx: -1, CUType: CUTypeFP32ALU, DType: "BF16", SizeBytes: h * 2},
 			ModelOp{ModelLayer: ml, Role: "post_attention_layernorm", ExpertIdx: -1, CUType: CUTypeFP32ALU, DType: "BF16", SizeBytes: h * 2},
-			ModelOp{ModelLayer: ml, Role: "orchestrator_weights", ExpertIdx: -1, CUType: CUTypeBF16FMA, DType: "BF16", SizeBytes: int64(tc.NumExperts) * h * 2},
+			weightOp(ml, "orchestrator_weights", -1, CUTypeBF16FMA, int64(tc.NumExperts)*h),
 		)
 		for e := 0; e < tc.NumExperts; e++ {
 			ir.Ops = append(ir.Ops,
-				ModelOp{ModelLayer: ml, Role: "expert_gate_up", ExpertIdx: e, CUType: CUTypeBF16FMA, DType: "BF16", SizeBytes: 2 * moeInter * h * 2},
-				ModelOp{ModelLayer: ml, Role: "expert_down", ExpertIdx: e, CUType: CUTypeBF16FMA, DType: "BF16", SizeBytes: moeInter * h * 2},
+				weightOp(ml, "expert_gate_up", e, CUTypeBF16FMA, 2*moeInter*h),
+				weightOp(ml, "expert_down", e, CUTypeBF16FMA, moeInter*h),
 			)
 		}
 	}
 
 	ir.Ops = append(ir.Ops,
-		ModelOp{ModelLayer: -1, Role: "embedding", ExpertIdx: -1, CUType: CUTypeBF16FMA, DType: "BF16", SizeBytes: int64(tc.VocabSize) * h * 2},
+		weightOp(-1, "embedding", -1, CUTypeBF16FMA, int64(tc.VocabSize)*h),
 		ModelOp{ModelLayer: -1, Role: "final_norm", ExpertIdx: -1, CUType: CUTypeFP32ALU, DType: "BF16", SizeBytes: h * 2},
 	)
 
@@ -359,4 +399,3 @@ func (ir *ModelIR) PopulateSchema(dims Dims) (*ModelCompiler, error) {
 
 	return mc, nil
 }
-

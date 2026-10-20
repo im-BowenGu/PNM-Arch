@@ -52,9 +52,9 @@ func SimDir() string {
 }
 
 var FABRIC = []string{"flit_gate.v", "hfr.v", "lxy_repeater.v", "xy_turn.v",
-	"node_eject.v", "vc_merge.v", "core/crc16.v", "core/bf16_fma.v", "core/fma_core.v", "core/pe_tile_stub.v",
+	"node_eject.v", "vc_merge.v", "core/crc16.v", "core/arith_unit.v", "core/bf16_fma.v", "core/fma_core.v", "core/pe_tile_stub.v",
 	"core/weight_dequant.v", "core/int8_mac.v", "core/int4_mac.v", "core/int4_mac_array.v",
-	"core/fp4_mac.v", "core/fp4_mac_array.v", "core/mxfp4_mac_array.v", "kv_cache_bank.v", "kv_offload.v"}
+	"core/fp4_mac.v", "core/fp4_mac_array.v", "core/mxfp4_mac_array.v", "core/node_mem.v", "kv_cache_bank.v", "kv_offload.v"}
 
 // PE_PIPE_DELAY: the generated node MAC stub (pe_tile_stub.v,
 // MULT_LATENCY=2) adds two pipe cycles between the eject and the node DMA
@@ -376,16 +376,21 @@ type Program struct {
 	KVCache   bool // instantiate kv_cache_bank per column (ScenarioKV)
 	KV        *KVPlan
 	KVDepth   int // kv_cache_bank BANK_DEPTH (0 = default 1024; kvflow uses 4)
+	// MemChannels: node_mem.v CHANNELS per node (one 192-bit LPCAMM2 module
+	// each).  <= 0 omits the memory subsystem; the reference chassis pairs two
+	// 64 GB modules (ReferenceModules), giving 384 bits / ~512 GB/s per node.
+	MemChannels int
 }
 
 // NewProgram mirrors Program.__init__.
 func NewProgram(name string, nodes []NodeID, latency string) *Program {
 	p := &Program{
-		Name:     name,
-		Latency:  latency,
-		Manifest: make(map[NodeID]*ManifestNode),
-		GState:   make(map[NodeID]map[string]uint64),
-		BP:       make(map[NodeID]int),
+		Name:        name,
+		Latency:     latency,
+		Manifest:    make(map[NodeID]*ManifestNode),
+		GState:      make(map[NodeID]map[string]uint64),
+		BP:          make(map[NodeID]int),
+		MemChannels: ReferenceModules,
 	}
 	for _, n := range nodes {
 		p.Manifest[n] = &ManifestNode{Kernel: "dot", Weights: []int{}, Bias: 0, Packets: []*PacketEntry{}}
@@ -718,7 +723,6 @@ func randBytesInt(rng *PyRand, n int) []int {
 	}
 	return b
 }
-
 
 // =============================================================================
 // KV cache co-simulation scenario (Paper §2.6)
@@ -1698,7 +1702,7 @@ func RunOne(prog *Program, nodes []NodeID, dims Dims, groups, replays int) (*Sce
 		for _, n := range gnodes {
 			biases[n] = prog.Manifest[n].Bias
 		}
-		if err := os.WriteFile(filepath.Join(simDir, nm.Top), []byte(GenTopology(lids, bx, by, biases, prog.KVCache, prog.KVDepth)), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(simDir, nm.Top), []byte(GenTopology(lids, bx, by, biases, prog.KVCache, prog.KVDepth, prog.MemChannels)), 0o644); err != nil {
 			panic("GenTopology: " + err.Error())
 		}
 		if err := os.WriteFile(filepath.Join(simDir, nm.TB), []byte(GenTB(lids, bx, by, prog.BP, nbytes, nm.Stim, nm.Log)), 0o644); err != nil {

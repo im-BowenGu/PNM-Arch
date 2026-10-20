@@ -48,6 +48,7 @@ type HostConfig struct {
 	// Inference options
 	MaxTokens   int     // max tokens to generate
 	Temperature float32 // sampling temperature (0 = greedy)
+	Think       bool    // enable the reasoning datapath (<|channel>thought ... <channel|>)
 	DataType    string  // "fp16" or "bf16"
 }
 
@@ -241,6 +242,23 @@ func (hd *HostDriver) RunScenarios(names ...string) bool {
 		}
 	}
 	return allPass
+}
+
+// RunBenchmark runs the architecture benchmark: a controlled fabric sweep
+// (machine-checked transport metrics) plus the cost/TCO model. Exports
+// pnm_benchmark.{csv,json} when -output is set.
+func (hd *HostDriver) RunBenchmark() bool {
+	hd.Log.Printf("benchmark: sweeping chassis x payload, seed=%d\n", hd.Cfg.Seed)
+	bcfg := DefaultBenchmarkConfig()
+	bcfg.Seed = hd.Cfg.Seed
+	bcfg.Groups = hd.Cfg.Groups
+	bcfg.Replays = hd.Cfg.Replay
+	ok, out := RunBenchmark(bcfg, hd.Cfg.OutputDir)
+	hd.Log.Println(out)
+	if !ok {
+		hd.Result.Errors = append(hd.Result.Errors, "benchmark: a sweep point failed")
+	}
+	return ok
 }
 
 // RunWorkload runs an HPC workload (jacobi5, matvec, reduction, broadcast, nbody).
@@ -506,7 +524,18 @@ func (hd *HostDriver) RunInference(modelDir, prompt string) bool {
 	if len(drv.TensorData) > 0 {
 		vocab, verr := LoadBPEVocab(filepath.Join(modelDir, "tokenizer.json"))
 		if verr == nil {
-			text, tids, rerr := RealGenerate(modelDir, hd.Dims, prompt, hd.Cfg.MaxTokens, vocab)
+			var text string
+			var tids []int
+			var rerr error
+			if hd.Cfg.Think {
+				var reason string
+				text, reason, tids, rerr = RealGenerateThinking(modelDir, hd.Dims, prompt, hd.Cfg.MaxTokens, vocab, hd.Cfg.Temperature)
+				if rerr == nil {
+					hd.Log.Printf("reasoning: %q\n", reason)
+				}
+			} else {
+				text, tids, rerr = RealGenerate(modelDir, hd.Dims, prompt, hd.Cfg.MaxTokens, vocab, hd.Cfg.Temperature)
+			}
 			if rerr == nil {
 				hd.Log.Printf("real-weights forward: %q (engine: gemma4-bf16)\n", text)
 				hd.Result.Inferences = append(hd.Result.Inferences, InferenceResult{

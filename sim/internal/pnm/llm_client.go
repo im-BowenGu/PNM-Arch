@@ -607,11 +607,12 @@ func (c *LLMClient) collectStats(r DispatchRecord) {
 type QuantMode int
 
 const (
-	QuantNone  QuantMode = iota // no quantization, full BF16/FP16 weights
-	QuantInt8                   // INT8 weight-only quantization (2x compression)
-	QuantInt4                   // INT4 weight-only quantization (4x compression)
-	QuantFP4                    // FP4 (E2M1) weight-only quantization (4x compression)
-	QuantMXFP4                  // MXFP4 (E2M1 + block scale) weight-only quantization
+	QuantNone    QuantMode = iota // no quantization, full BF16/FP16 weights
+	QuantInt8                     // INT8 weight-only quantization (2x compression)
+	QuantInt4                     // INT4 weight-only quantization (4x compression)
+	QuantFP4                      // FP4 (E2M1) weight-only quantization (4x compression)
+	QuantMXFP4                    // MXFP4 (E2M1 + block scale) weight-only quantization
+	QuantTernary                  // BitNet b1.58 ternary weights {-1,0,+1} (~1.58 bits/weight)
 )
 
 // String returns the human-readable name of the quantization mode.
@@ -625,6 +626,8 @@ func (q QuantMode) String() string {
 		return "fp4"
 	case QuantMXFP4:
 		return "mxfp4"
+	case QuantTernary:
+		return "ternary"
 	default:
 		return "none"
 	}
@@ -690,6 +693,8 @@ func (c *LLMClient) QuantizedCU() ComputeUnitType {
 		return CUTypeFP4Array
 	case QuantMXFP4:
 		return CUTypeMXFP4Array
+	case QuantTernary:
+		return CUTypeTernaryAcc
 	default:
 		return c.Config.DataType
 	}
@@ -706,6 +711,8 @@ func (c *LLMClient) QuantWeightBytes() int {
 		return 1 // FP4 packed 2 per byte
 	case QuantMXFP4:
 		return 1 // FP4 payload + shared block-scale (charged as packed byte)
+	case QuantTernary:
+		return 1 // ternary codes packed 4 per byte (2 bits each)
 	default:
 		return c.Config.DataType.DTypeBytes()
 	}

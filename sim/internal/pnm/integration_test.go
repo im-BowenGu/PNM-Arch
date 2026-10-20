@@ -28,13 +28,14 @@ func TestIntegration_CompileAndRunModelCompiler(t *testing.T) {
 				return
 			}
 
-			// Run the model compiler
 			goBin := goPath()
 			if goBin == "" {
 				t.Skip("go not found in PATH")
 				return
 			}
 
+			// Run the model compiler: emits schema, program, and (when the
+			// model carries one) the BPE vocab listing.
 			cmd := exec.Command(goBin, "run", "./cmd/pnmc", "compile-model",
 				filepath.Join("examples", ex),
 				"-l", "4", "-x", "4", "-y", "4")
@@ -44,7 +45,28 @@ func TestIntegration_CompileAndRunModelCompiler(t *testing.T) {
 				t.Errorf("model compiler failed: %v\nOutput: %s", err, out)
 			}
 
-			// Verify output files were generated
+			// Verify outputs the compiler itself generates
+			for _, name := range []string{
+				ex + "_schema.txt", ex + ".pnm",
+			} {
+				path := filepath.Join(simDir, name)
+				if _, err := os.Stat(path); os.IsNotExist(err) {
+					t.Errorf("expected output file %s not generated", name)
+				}
+			}
+
+			// Run the driver: emits the dispatch plan, routing table, and
+			// MoE map that the load path verifies.
+			cmd = exec.Command(goBin, "run", "./cmd/pnmc", "run-driver",
+				filepath.Join("examples", ex),
+				"-l", "4", "-x", "4", "-y", "4")
+			cmd.Dir = simDir
+			out, err = cmd.CombinedOutput()
+			if err != nil {
+				t.Errorf("driver failed: %v\nOutput: %s", err, out)
+			}
+
+			// Verify driver output files were generated
 			for _, name := range []string{"dispatch_plan.txt", "routing_table.json", "moe_map.json"} {
 				path := filepath.Join(simDir, name)
 				if _, err := os.Stat(path); os.IsNotExist(err) {
@@ -253,8 +275,8 @@ func TestIntegration_HDLTestbench(t *testing.T) {
 	}
 
 	cases := []tbCase{
-		{"bf16_fma", []string{"core/bf16_fma.v", "core/fma_core.v", "core/tb_bf16_fma.v"}},
-		{"fp64_alu", []string{"core/fp64_alu.v", "core/fp64_fma.v", "core/fma_core.v", "core/tb_fp64_alu.v"}},
+		{"bf16_fma", []string{"core/arith_unit.v", "core/bf16_fma.v", "core/fma_core.v", "core/tb_bf16_fma.v"}},
+		{"fp64_alu", []string{"core/arith_unit.v", "core/fp64_alu.v", "core/fp64_fma.v", "core/fma_core.v", "core/tb_fp64_alu.v"}},
 		{"fabric", []string{"hfr.v", "flit_gate.v", "vc_merge.v", "lxy_repeater.v", "xy_turn.v", "node_eject.v", "tb_fabric.v"}},
 	}
 
