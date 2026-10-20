@@ -1,4 +1,4 @@
-# fw-linux — Linux tinyconfig + bare-metal init for orchestrator_sbc
+# fw/os/linux — Linux tinyconfig + bare-metal init for orchestrator_sbc
 
 Produces a minimal bootable Linux image for the `orchestrator_sbc` chip family.
 The trimmed kernel fits in the 16 MB on-chip SRAM window (`0x4000_0000`);
@@ -15,7 +15,7 @@ bulk data (model weights, KV cache) stays in LPDDR5 DRAM.
 
 ## Prerequisites
 
-- `riscv64-unknown-linux-musl-gcc` cross compiler (available in `flake.nix`)
+- `riscv32-unknown-linux-musl-gcc` cross compiler (available in `flake.nix`)
 - Linux source tree (6.6.x) at `linux/` or set `KERNEL_DIR`
 
 ## Usage

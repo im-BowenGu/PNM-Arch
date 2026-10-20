@@ -1,4 +1,4 @@
-# fw-sel4 — seL4 microkernel root task for orchestrator_sbc
+# fw/os/sel4 — seL4 microkernel root task for orchestrator_sbc
 
 Builds a minimal seL4 root task for the `orchestrator_sbc` chip family.
 seL4 is a formally-verified microkernel providing capability-based
@@ -68,6 +68,6 @@ Makefile           Top-level build orchestration
 
 ## Memory map
 
-Same as fw-linux — see that README for the full SoC memory map.
+Same as fw/os/linux — see that README for the full SoC memory map.
 seL4 manages its own page tables; the root task maps device frames
 through capability delegation, not direct physical access.

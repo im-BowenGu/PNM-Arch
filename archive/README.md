@@ -8,7 +8,7 @@ compiled, tested, or documented as current.
 |------|-------------|------------------------------|
 | `fw/pnm_lustre.{c,h}` | C Lustre OSS striping client | Unrelated to the processing-near-memory argument (a filesystem striping feature); no runtime callers. The Go twin is under `sim/` in `archive/`. |
 | `sim/nvme_lustre.{go,_test.go}` | Go Lustre client twin + alias/spacing tests | Same feature; the in-package half that the KV-cache overflow path actually needs (the `NVMeDev` block device) now lives in `sim/internal/pnm/nvme_device.go`. |
-| `toolchain/soc-linux/` | Full OS image builder (Redox-path) | Superseded by the seL4 microkernel story in `toolchain/fw-sel4/`/`toolchain/soc/`; orphaned (no build or doc references to the actual stack). |
+| `toolchain/soc-linux/` | Full OS image builder (Redox-path) | Superseded by the seL4 microkernel story in `fw/os/sel4/`/`toolchain/soc/`; orphaned (no build or doc references to the actual stack). |
 | `hdl/tb_expert_loop.v` | Monolithic integrated expert loop testbench (1361 lines) | Superseded by `HDL/core/node.v` + `tb_node.v` + `node_reference_test.py`; no build/test path ran it. |
 | `hdl/tb_integration.v` | Early fabric integration TB | Superseded by `tb_fabric.v` / `tb_load.v`; referenced by nothing. |
 | `hdl/tb_rv32_core.v`, `hdl/tb_rv32_core_load.v` | RV32 core + load TBs | Historical bring-up scaffolding; only `AGENTS.md` prose mentioned them. |

@@ -39,7 +39,7 @@
           outputs = [ "out" ];
         });
       # RISC-V cross toolchains for the firmware targets
-      # (toolchain/{mcu,soc,fw-linux,fw-sel4} Makefiles).
+      # (toolchain/{mcu,soc} and fw/os/{linux,sel4} Makefiles).
       # A plain derivation that symlinks only the bin dirs: the gcc-wrapper
       # setup hooks (which would otherwise hijack CC/CXX for the whole dev
       # shell and break host Go/cgo builds) are deliberately not merged in.

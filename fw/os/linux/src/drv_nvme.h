@@ -1,11 +1,11 @@
 /**
- * drv_nvme.h — NVMe driver re-exports for fw-linux bare-metal init.
+ * drv_nvme.h — NVMe driver re-exports for fw/os/linux bare-metal init.
  *
  * The actual NVMe driver lives in fw/pnm_nvme.c and is compiled
  * and linked by the Makefile. This header provides a thin wrapper that
  * sets the register base to 0xD000_0000 (NVMe@0xD0000000 on the
  * orchestrator_sbc memory map) and hides the pnm_fw.h dependency from
- * other fw-linux sources.
+ * other fw/os/linux sources.
  */
 
 #ifndef DRV_NVME_H

@@ -1,5 +1,5 @@
 /**
- * init.c — Bare-metal init for fw-linux on orchestrator_sbc.
+ * init.c — Bare-metal init for fw/os/linux on orchestrator_sbc.
  *
  * This is the first userspace-like code that runs after the Linux
  * tinyconfig kernel boots the initramfs.  In the NOMMU flat-binary
@@ -72,7 +72,7 @@ int main(void)
 
 static void banner(volatile uint32_t *uart)
 {
-    const char *msg = "fw-linux init for orchestrator_sbc\r\n";
+    const char *msg = "fw-os-linux init for orchestrator_sbc\r\n";
     while (*msg)
         uart_putc(uart, *msg++);
 }

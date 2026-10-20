@@ -294,7 +294,7 @@ Statically linked against musl-libc. Accesses PNM via `/dev/pnm` mmap.
 Minimal Linux image that fits in 16 MB SRAM.
 
 ```bash
-cd toolchain/fw-linux
+cd fw/os/linux
 make check      # compile-check drivers + init
 make image      # → build/Image (requires Linux source tree)
 make initrd     # → build/initrd.cpio
@@ -308,7 +308,7 @@ Everything else disabled.
 Formally-verified microkernel for hardened control plane.
 
 ```bash
-cd toolchain/fw-sel4
+cd fw/os/sel4
 make            # → seL4 kernel + root task ELF (requires seL4 source tree)
 ```
 

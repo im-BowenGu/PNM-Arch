@@ -1,5 +1,5 @@
 # =============================================================================
-# fw-sel4 — seL4 microkernel image for orchestrator_sbc
+# fw/os/sel4 — seL4 microkernel image for orchestrator_sbc
 #
 # Builds a minimal seL4 root task for the RV32IMA orchestrator_sbc chip.
 # The root task maps the UART and PNM register windows, prints a

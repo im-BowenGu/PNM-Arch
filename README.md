@@ -61,7 +61,8 @@ sim/                    ← Go co-simulation harness (stdlib only)
   examples/               test configs (gemma4_test_synthetic, mini_glm_moe)
 
 fw/                       C firmware port for MCU targets
-toolchain/                MCU, SoC, fw-linux, fw-sel4 toolchains
+toolchain/                MCU and SoC cross-build systems
+fw/os/                   router-chip OS images (Linux NOMMU, seL4)
 pi_host/                  Raspberry Pi Compute Module host drivers
 
 implementations/        ← Board netlist assembly + schema
@@ -79,7 +80,7 @@ as six sibling repositories so each component can be cloned on its own:
 | [`PNM-sim`](https://github.com/im-BowenGu/PNM-sim) | Go co-simulation harness, model compiler, inference client, source-language frontends |
 | [`PNM-fw`](https://github.com/im-BowenGu/PNM-fw) | C firmware twin for MCU/SoC targets |
 | [`PNM-PCB`](https://github.com/im-BowenGu/PNM-PCB) | LibrePCB board designs (interconnect, processor, gating ASIC, node) |
-| [`PNM-toolchain`](https://github.com/im-BowenGu/PNM-toolchain) | MCU / SoC / Linux / seL4 cross-compilation toolchains |
+| [`PNM-toolchain`](https://github.com/im-BowenGu/PNM-toolchain) | MCU / SoC cross-compilation build systems |
 | [`PNM-paper`](https://github.com/im-BowenGu/PNM-paper) | Manuscript (`Paper.MD`), build pipeline, submission artifacts |
 
 Re-sync them after changing the monorepo:
@@ -357,8 +358,8 @@ Four toolchains for the RISC-V orchestrator chip, from bare-metal to Linux:
 |-----------|--------|-----|--------|
 | `toolchain/mcu/` | Bare-metal MCU | RV32I | `firmware.bin` (8 KB ROM) |
 | `toolchain/soc/` | NOMMU Linux daemon | RV32IMA | `pnm_socd` (static musl) |
-| `toolchain/fw-linux/` | Linux tinyconfig | RV32I | `Image` + `initrd.cpio` (16 MB) |
-| `toolchain/fw-sel4/` | seL4 microkernel | RV32IMA | root task ELF |
+| `fw/os/linux/` | Linux tinyconfig | RV32I | `Image` + `initrd.cpio` (16 MB) |
+| `fw/os/sel4/` | seL4 microkernel | RV32IMA | root task ELF |
 
 Build any toolchain with `make` in its directory. See
 [`docs/usage_manual.md`](docs/usage_manual.md) for details.
@@ -384,7 +385,7 @@ Everything outside `paper/` is the production design:
 | `pcb/` | PCB assembly: interconnect board (SEARAY 12G spine taps; ≈2 TB/s aggregate across 128 parallel lanes per the paper's spine sizing rule), processor board (Pi Bridge / MCU / Custom SoC), gating ASIC (MoE + DRAM) | CERN-OHL-S v2 |
 | `sim/` | Go co-simulation, model compiler (HuggingFace → PNM), inference client, firmware (Go), source-language compilers (R/Haskell/HLSL) | AGPL-3.0 |
 | `fw/` | C firmware port for MCU targets (ARM Cortex-M/R, RISC-V) | AGPL-3.0 |
-| `toolchain/` | MCU/SoC/Linux/seL4 cross-compilation toolchains | AGPL-3.0 |
+| `toolchain/` | MCU/SoC cross-compilation build systems | AGPL-3.0 |
 | `pi_host/` | Raspberry Pi Compute Module host drivers (Python/Go/Rust/C) | AGPL-3.0 |
 | `implementations/` | Board netlist assembly, build scripts, schema | AGPL-3.0 |
 | `docs/` | Usage manual, profiling guide | AGPL-3.0 |

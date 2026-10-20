@@ -42,6 +42,15 @@ for arg in "$@"; do
 done
 
 # repo | "srcprefix:dstsubdir" pairs (comma separated) | kept per-repo files
+#
+# The split mirrors the software/hardware/toolchain separation:
+#   PNM-HDL        RTL + board assembly      (hardware)
+#   PNM-PCB        board designs             (hardware)
+#   PNM-sim        co-simulation harness      (software)
+#   PNM-fw         router-chip software: the C firmware twin and the OS
+#                  images (Linux NOMMU, seL4) that run on the orchestrator
+#   PNM-toolchain  cross-compilation build systems (no OS images)
+#   PNM-paper      manuscript
 LAYOUT=(
     "PNM-HDL|HDL:,implementations:implementations|README.md LICENSE .gitignore"
     "PNM-fw|fw:|README.md LICENSE .gitignore"
@@ -170,6 +179,10 @@ for entry in "${LAYOUT[@]}"; do
     done < <(git -C "$dst" ls-files)
 
     [ "$changed" = 0 ] && printf 'OK     %s (in sync)\n' "$repo"
+
+    # drop directories left empty by the prune (git does not track them, but a
+    # stale empty tree in the working copy is confusing)
+    find "$dst" -mindepth 1 -type d -empty -delete 2>/dev/null || true
     rm -f "$dest_list"
 done
 

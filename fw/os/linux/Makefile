@@ -1,4 +1,4 @@
-# fw-linux — Linux tinyconfig image + basic drivers for orchestrator_sbc
+# fw/os/linux — Linux tinyconfig image + basic drivers for orchestrator_sbc
 #
 # Produces:
 #   build/Image          — NOMMU RISC-V kernel (tinyconfig + PNM fragment)
@@ -8,11 +8,15 @@
 #
 # The trimmed kernel is sized to execute from the orchestrator_sbc on-chip
 # SRAM window (0x4000_0000, 16MB). DRAM (LPDDR5 stub) remains bulk data.
+#
+# This is the router chip's *software* (an OS image for the orchestrator SoC);
+# the cross-compilation toolchains live in toolchain/.
 
-CROSS_COMPILE ?= riscv64-unknown-linux-musl-
+CROSS_COMPILE ?= riscv32-unknown-linux-musl-
 KCFLAGS       := ARCH=riscv CROSS_COMPILE=$(CROSS_COMPILE)
 KERNEL_DIR    ?= $(PWD)/linux
 BUILD         := build
+FW_DIR        := ../..
 
 .PHONY: all clean image init initrd check
 
@@ -23,7 +27,7 @@ check: $(patsubst %.c,%,$(wildcard src/*.c))
 %: %.c src/drv_uart.h src/drv_pnm.h src/drv_nvme.h
 	mkdir -p $(BUILD)
 	$(CC) -Wall -Wextra -std=c11 -ffreestanding -nostdlib \
-	      -Isrc -I../fw -o $@ $< ../fw/pnm_nvme.c
+	      -Isrc -I$(FW_DIR) -o $@ $< $(FW_DIR)/pnm_nvme.c
 	@echo "  CC      $<"
 
 image: $(KERNEL_DIR)/Makefile configs/pnm_tiny.config
