@@ -15,15 +15,16 @@
 \newlabel{sec:abstract}{{}{1}{Abstract}{section*.1}{}}
 \citation{2}
 \citation{15}
+\citation{1}
 \citation{15}
 \citation{3}
 \citation{4}
+\newlabel{sec:introduction}{{}{2}{Introduction}{section*.2}{}}
+\newlabel{sec:1.1}{{}{2}{1.1 The physical bottleneck}{section*.3}{}}
 \citation{25}
 \citation{2}
 \citation{16}
 \citation{17}
-\newlabel{sec:introduction}{{}{2}{Introduction}{section*.2}{}}
-\newlabel{sec:1.1}{{}{2}{1.1 The physical bottleneck}{section*.3}{}}
 \citation{7}
 \citation{6}
 \citation{8}
@@ -34,77 +35,115 @@
 \citation{5}
 \citation{17}
 \citation{25}
+\newlabel{sec:1.3}{{}{4}{1.3 Manufacturing realities: DUV versus EUV}{section*.5}{}}
 \citation{10}
 \citation{12}
 \citation{13}
 \citation{14}
-\newlabel{sec:1.3}{{}{4}{1.3 Manufacturing realities: DUV versus EUV}{section*.5}{}}
-\citation{9}
+\citation{1}
+\citation{35}
+\citation{36}
 \newlabel{sec:1.4}{{}{5}{1.4 ASIC philosophy and historical precedents}{section*.6}{}}
-\newlabel{sec:methods}{{}{5}{Methods}{section*.7}{}}
-\newlabel{sec:2.1}{{}{5}{2.1 The Z-axis spine and repeater nodes}{section*.8}{}}
+\citation{31}
+\citation{37}
+\citation{32}
+\citation{33}
+\citation{34}
 \citation{13}
 \citation{14}
-\newlabel{sec:2.2}{{}{7}{2.2 The intra-layer fabric: dimension-order routing}{section*.9}{}}
+\citation{38}
+\citation{39}
+\citation{40}
+\citation{41}
+\newlabel{sec:1.5}{{}{6}{1.5 Related work}{section*.7}{}}
+\citation{28}
+\newlabel{sec:1.6}{{}{7}{1.6 Contributions}{section*.8}{}}
+\citation{9}
+\newlabel{sec:methods}{{}{8}{Methods}{section*.9}{}}
+\newlabel{sec:2.1}{{}{8}{2.1 The Z-axis spine and repeater nodes}{section*.10}{}}
+\citation{13}
+\citation{14}
+\@writefile{lof}{\contentsline {figure}{\numberline {1}{\ignorespaces The reference chassis: eight X/Y node boards of 64 nodes each, stacked on a single Z-axis spine. The router chip at the spine root owns POST discovery, routing tables, weight upload, and token dispatch; every other data-path element is a stateless repeater or a fixed-function node.}}{10}{figure.1}\protected@file@percent }
+\newlabel{fig:topology}{{1}{10}{The reference chassis: eight X/Y node boards of 64 nodes each, stacked on a single Z-axis spine. The router chip at the spine root owns POST discovery, routing tables, weight upload, and token dispatch; every other data-path element is a stateless repeater or a fixed-function node}{figure.1}{}}
+\newlabel{sec:2.2}{{}{10}{2.2 The intra-layer fabric: dimension-order routing}{section*.11}{}}
+\newlabel{sec:2.3}{{}{12}{2.3 The motherboard and isothermal manifold}{section*.12}{}}
 \citation{16}
 \citation{17}
-\newlabel{sec:2.3}{{}{8}{2.3 The motherboard and isothermal manifold}{section*.10}{}}
-\newlabel{sec:2.4}{{}{8}{2.4 CAMM2 integration, packaging, and sideband signaling}{section*.11}{}}
+\newlabel{sec:2.4}{{}{13}{2.4 CAMM2 integration, packaging, and sideband signaling}{section*.13}{}}
 \citation{16}
-\newlabel{sec:2.5}{{}{11}{2.5 Initialization and the POST Discovery Sequence}{section*.12}{}}
-\newlabel{sec:2.6}{{}{14}{2.6 Software Stack and Execution Model}{section*.13}{}}
-\newlabel{sec:2.7}{{}{16}{2.7 The compilation pipeline}{section*.14}{}}
-\newlabel{sec:2.8}{{}{23}{2.8 Coordinate routing and dispatch}{section*.15}{}}
-\newlabel{sec:2.9}{{}{24}{2.9 The doorbell mechanism}{section*.16}{}}
-\newlabel{sec:2.10}{{}{26}{2.10 Reliability and determinism}{section*.17}{}}
-\newlabel{sec:2.11}{{}{27}{2.11 Target Workloads}{section*.18}{}}
-\newlabel{sec:2.11.1}{{}{27}{2.11.1 Workload simulation suite}{section*.19}{}}
-\newlabel{sec:2.11.2}{{}{28}{2.11.2 Routing designs by use case}{section*.20}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {1}{\ignorespaces Board-level pin and trace outline (per node; first-order estimates).}}{15}{table.1}\protected@file@percent }
+\newlabel{tab:1}{{1}{15}{Board-level pin and trace outline (per node; first-order estimates)}{table.1}{}}
+\newlabel{sec:2.5}{{}{16}{2.5 Initialization and the POST discovery sequence}{section*.14}{}}
+\citation{18}
+\newlabel{sec:2.6}{{}{19}{2.6 Software stack and execution model}{section*.15}{}}
+\newlabel{sec:2.7}{{}{21}{2.7 The compilation pipeline}{section*.16}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {2}{\ignorespaces The five-stage ahead-of-time pipeline lowers a safetensors archive and config.json into a static coordinate assignment, routing table, and dispatch schedule; emit, load, and execute complete the path from model file to doorbells firing.}}{26}{figure.2}\protected@file@percent }
+\newlabel{fig:pipeline}{{2}{26}{The five-stage ahead-of-time pipeline lowers a safetensors archive and config.json into a static coordinate assignment, routing table, and dispatch schedule; emit, load, and execute complete the path from model file to doorbells firing}{figure.2}{}}
+\newlabel{sec:2.8}{{}{28}{2.8 Coordinate routing and dispatch}{section*.17}{}}
+\newlabel{sec:2.9}{{}{29}{2.9 The doorbell mechanism}{section*.18}{}}
+\newlabel{sec:2.10}{{}{31}{2.10 Reliability and determinism}{section*.19}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {3}{\ignorespaces The wire format and the three-condition doorbell. The CRC covers [MODULE\_ID, CTRL, LEN, payload] --- everything except LAYER\_ID and the CRC bytes --- so the destination field is inside CRC coverage; only a complete, valid, correctly addressed message fires DOORBELL\_TRIG and DOORBELL\_ACK.}}{32}{figure.3}\protected@file@percent }
+\newlabel{fig:doorbell}{{3}{32}{The wire format and the three-condition doorbell. The CRC covers [MODULE\_ID, CTRL, LEN, payload] --- everything except LAYER\_ID and the CRC bytes --- so the destination field is inside CRC coverage; only a complete, valid, correctly addressed message fires DOORBELL\_TRIG and DOORBELL\_ACK}{figure.3}{}}
+\newlabel{sec:2.11}{{}{33}{2.11 Target workloads}{section*.20}{}}
+\newlabel{sec:2.11.1}{{}{33}{2.11.1 Workload simulation suite}{section*.21}{}}
 \citation{3}
 \citation{4}
-\newlabel{sec:2.12}{{}{29}{2.12 Mixture-of-Experts transformers}{section*.21}{}}
+\newlabel{sec:2.12}{{}{34}{2.12 Mixture-of-Experts transformers}{section*.22}{}}
 \citation{19}
 \citation{5}
+\newlabel{sec:2.13}{{}{36}{2.13 Scientific HPC stencil workflows}{section*.23}{}}
 \citation{6}
 \citation{11}
 \citation{28}
-\newlabel{sec:2.13}{{}{32}{2.13 Scientific HPC stencil workflows}{section*.22}{}}
-\newlabel{sec:2.14}{{}{32}{2.14 Functional data-based workflows}{section*.23}{}}
-\newlabel{sec:2.15}{{}{32}{2.15 Verification methodology: machine-checking the transport claims}{section*.24}{}}
-\newlabel{sec:2.16}{{}{35}{2.16 The LPDDR6 memory controller}{section*.25}{}}
+\newlabel{sec:2.14}{{}{37}{2.14 Functional data-based workflows}{section*.24}{}}
+\newlabel{sec:2.15}{{}{37}{2.15 Verification methodology: machine-checking the transport claims}{section*.25}{}}
+\newlabel{sec:2.16}{{}{40}{2.16 The LPDDR6 memory controller}{section*.26}{}}
 \citation{29}
-\newlabel{sec:2.17}{{}{38}{2.17 The BMC/Router chip: a RISC-V SoC for chassis management}{section*.26}{}}
-\newlabel{sec:2.17.1}{{}{38}{2.17.1 Main thread placement: the router chip hosts transpiler orchestration}{section*.27}{}}
-\newlabel{sec:2.18}{{}{42}{2.18 PCB interconnect models}{section*.28}{}}
-\newlabel{sec:2.19}{{}{43}{2.19 Inter-chassis optical links}{section*.29}{}}
+\newlabel{sec:2.17}{{}{43}{2.17 The BMC/router chip: a RISC-V SoC for chassis management}{section*.27}{}}
+\newlabel{sec:2.18}{{}{47}{2.18 PCB interconnect models}{section*.28}{}}
+\newlabel{sec:2.19}{{}{48}{2.19 Inter-chassis optical links}{section*.29}{}}
+\newlabel{sec:2.20}{{}{49}{2.20 The compute node and the gating ASIC}{section*.30}{}}
 \citation{25}
-\newlabel{sec:results}{{}{44}{Results}{section*.30}{}}
-\newlabel{sec:3.1}{{}{45}{3.1 Reference chassis}{section*.31}{}}
+\newlabel{sec:results}{{}{51}{Results}{section*.31}{}}
+\newlabel{sec:3.1}{{}{51}{3.1 Reference chassis}{section*.32}{}}
 \citation{27}
-\newlabel{sec:3.1.1}{{}{46}{3.1.1 The reference chassis as a dedicated capacity-serving appliance}{section*.32}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {2}{\ignorespaces Reference chassis configuration (first-order estimates).}}{52}{table.2}\protected@file@percent }
+\newlabel{tab:2}{{2}{52}{Reference chassis configuration (first-order estimates)}{table.2}{}}
+\newlabel{sec:3.1.1}{{}{52}{3.1.1 The reference chassis as a dedicated capacity-serving appliance}{section*.33}{}}
 \citation{5}
+\newlabel{sec:3.2}{{}{53}{3.2 Roofline: why mature nodes suffice}{section*.34}{}}
 \citation{2}
 \citation{25}
-\newlabel{sec:3.2}{{}{47}{3.2 Roofline: why mature nodes suffice}{section*.33}{}}
-\newlabel{sec:3.3}{{}{47}{3.3 Cost and capacity model}{section*.34}{}}
-\newlabel{sec:3.4}{{}{48}{3.4 Thermal and latency budgets}{section*.35}{}}
-\newlabel{sec:3.5}{{}{48}{3.5 Co-simulation verification results}{section*.36}{}}
-\newlabel{sec:3.6}{{}{51}{3.6 The DUV MAC ASIC: detailed specifications}{section*.37}{}}
-\newlabel{sec:3.7}{{}{54}{3.7 Configuration spectrum: SODIMM deskside units to spatial supercomputers}{section*.38}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {4}{\ignorespaces Roofline for the reference node. Both flagship workload intensities fall below all three machine-balance ridges (FP64 1.5, FP16 3.0, INT8 6.0 FLOP/byte), so LPDDR6 bandwidth --- and even the DDR5 baseline --- binds before the MAC array does.}}{54}{figure.4}\protected@file@percent }
+\newlabel{fig:roofline}{{4}{54}{Roofline for the reference node. Both flagship workload intensities fall below all three machine-balance ridges (FP64 1.5, FP16 3.0, INT8 6.0 FLOP/byte), so LPDDR6 bandwidth --- and even the DDR5 baseline --- binds before the MAC array does}{figure.4}{}}
+\newlabel{sec:3.3}{{}{54}{3.3 Cost and capacity model}{section*.35}{}}
+\newlabel{sec:3.4}{{}{55}{3.4 Thermal and latency budgets}{section*.36}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {3}{\ignorespaces Co-simulation verification results (48-node chassis, 3$\times $4$\times $4, seed 1, three parallel slices).}}{56}{table.3}\protected@file@percent }
+\newlabel{tab:3}{{3}{56}{Co-simulation verification results (48-node chassis, 3$\times $4$\times $4, seed 1, three parallel slices)}{table.3}{}}
+\newlabel{sec:3.5}{{}{56}{3.5 Co-simulation verification results}{section*.37}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5}{\ignorespaces Per-scenario latency distributions from the 48-node co-simulation (Table 3, seed 1). Sweep hits the closed form exactly; the hotspot and stress tails are sink backpressure, and no scenario drops a byte.}}{57}{figure.5}\protected@file@percent }
+\newlabel{fig:latency}{{5}{57}{Per-scenario latency distributions from the 48-node co-simulation (Table 3, seed 1). Sweep hits the closed form exactly; the hotspot and stress tails are sink backpressure, and no scenario drops a byte}{figure.5}{}}
+\newlabel{sec:3.6}{{}{59}{3.6 The DUV MAC ASIC: detailed specifications}{section*.38}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {4}{\ignorespaces DUV MAC ASIC specifications (reference node; first-order estimates).}}{60}{table.4}\protected@file@percent }
+\newlabel{tab:4}{{4}{60}{DUV MAC ASIC specifications (reference node; first-order estimates)}{table.4}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {5}{\ignorespaces Compute unit taxonomy (per-node; reference configuration).}}{61}{table.5}\protected@file@percent }
+\newlabel{tab:5}{{5}{61}{Compute unit taxonomy (per-node; reference configuration)}{table.5}{}}
+\citation{42}
+\newlabel{sec:3.7}{{}{63}{3.7 Configuration spectrum: SODIMM deskside units to spatial supercomputers}{section*.39}{}}
 \citation{16}
 \citation{17}
 \citation{30}
-\newlabel{sec:discussion}{{}{56}{Discussion}{section*.39}{}}
-\newlabel{sec:4.1}{{}{56}{4.1 Failure Model and Recovery}{section*.40}{}}
+\newlabel{sec:discussion}{{}{65}{Discussion}{section*.40}{}}
+\newlabel{sec:4.1}{{}{65}{4.1 Failure model and recovery}{section*.41}{}}
 \citation{13}
 \citation{14}
-\newlabel{sec:4.2}{{}{57}{4.2 Host Interface and I/O}{section*.41}{}}
-\newlabel{sec:4.3}{{}{57}{4.3 Verification and Formal Properties}{section*.42}{}}
+\newlabel{sec:4.2}{{}{66}{4.2 Host interface and I/O}{section*.42}{}}
+\newlabel{sec:4.3}{{}{66}{4.3 Verification and formal properties}{section*.43}{}}
 \citation{17}
 \citation{16}
 \citation{17}
 \citation{9}
-\newlabel{sec:4.4}{{}{59}{4.4 Limitations and Future Work}{section*.43}{}}
+\newlabel{sec:4.4}{{}{67}{4.4 Limitations and future work}{section*.44}{}}
 \citation{21}
 \citation{22}
 \citation{23}
@@ -116,8 +155,9 @@
 \citation{26}
 \citation{27}
 \citation{5}
-\newlabel{sec:4.5}{{}{62}{4.5 Impacts: capacity-bound workloads at commodity economics}{section*.44}{}}
+\newlabel{sec:4.5}{{}{72}{4.5 Impacts: capacity-bound workloads at commodity economics}{section*.45}{}}
 \citation{24}
+\citation{42}
 \citation{21}
 \citation{22}
 \citation{23}
@@ -127,15 +167,15 @@
 \citation{24}
 \citation{25}
 \citation{9}
-\newlabel{sec:4.6}{{}{64}{4.6 Security posture, design-for-test, and manufacturing readiness}{section*.45}{}}
+\newlabel{sec:4.6}{{}{75}{4.6 Security posture, design-for-test, and manufacturing readiness}{section*.46}{}}
 \citation{16}
 \citation{17}
 \citation{13}
 \citation{14}
+\newlabel{sec:conclusion}{{}{76}{Conclusion}{section*.47}{}}
 \citation{3}
 \citation{4}
 \citation{5}
-\newlabel{sec:conclusion}{{}{65}{Conclusion}{section*.46}{}}
 \citation{20}
 \bibcite{1}{1}
 \bibcite{2}{2}
@@ -145,7 +185,7 @@
 \bibcite{6}{6}
 \bibcite{7}{7}
 \bibcite{8}{8}
-\newlabel{sec:acknowledgments}{{}{67}{Acknowledgments}{section*.47}{}}
+\newlabel{sec:acknowledgments}{{}{78}{Acknowledgments}{section*.48}{}}
 \bibcite{9}{9}
 \bibcite{10}{10}
 \bibcite{11}{11}
@@ -168,4 +208,16 @@
 \bibcite{28}{28}
 \bibcite{29}{29}
 \bibcite{30}{30}
-\gdef \@abspage@last{70}
+\bibcite{31}{31}
+\bibcite{32}{32}
+\bibcite{33}{33}
+\bibcite{34}{34}
+\bibcite{35}{35}
+\bibcite{36}{36}
+\bibcite{37}{37}
+\bibcite{38}{38}
+\bibcite{39}{39}
+\bibcite{40}{40}
+\bibcite{41}{41}
+\bibcite{42}{42}
+\gdef \@abspage@last{82}
