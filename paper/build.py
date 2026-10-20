@@ -175,6 +175,13 @@ PDF_KEYWORDS = (
     "RISC-V; BMC; High-Performance Computing"
 )
 
+# Review copy defaults: a working copy for annotation, not a submission
+# artifact. Double spacing and 2-inch margins leave room to write between the
+# lines and in the margin; the line numbers give the reviewer something to
+# cite ("see line 412").
+REVIEW_SPACING = 2.0
+REVIEW_MARGIN = "2.0in"
+
 
 def stage_figures() -> None:
     """Copy manuscript figures next to the generated .tex.
@@ -191,32 +198,37 @@ def stage_figures() -> None:
         shutil.copy2(png, dst / png.name)
 
 
-def latex_source(text: str, review: bool) -> str:
+def latex_source(text: str, review: bool, spacing: float = REVIEW_SPACING,
+                 margin: str = REVIEW_MARGIN) -> str:
     """Wrap the manuscript body in a LaTeX document.
 
-    Default: 10pt, two-column submission copy. Review: 11pt, single column,
-    wide margins, ~1.5 line spacing for annotating.
+    Default: 10pt, two-column submission copy. Review: 12pt, single column,
+    wide margins, double line spacing and line numbers in the margin — a
+    working copy for annotation, not a submission artifact.
     """
     bib = "\n".join(f"\\bibitem{{{i+1}}} {r}" for i, r in enumerate(REFS))
 
     if review:
-        docclass = "11pt,onecolumn"
-        geometry = "margin=1.5in"
-        spacing = "\\setstretch{1.5}"
-        date = "October 18, 2026 (review copy)"
+        docclass = "12pt,onecolumn"
+        geometry = f"margin={margin}"
+        spacing = f"\\setstretch{{{spacing}}}"
+        date = "October 20, 2026 (review copy — double spaced for annotation)"
         head = r"""
 \usepackage{fancyhdr}
+\usepackage{lineno}
 \pagestyle{fancy}
 \fancyhf{}
 \fancyhead[L]{\footnotesize Review copy}
 \fancyhead[R]{\footnotesize Breaking the HBM wall}
 \fancyfoot[C]{\footnotesize\thepage}
+\renewcommand{\headrulewidth}{0pt}
+\linenumbers
 """
     else:
         docclass = "10pt,twocolumn"
         geometry = "margin=0.85in"
         spacing = "\\singlespacing"
-        date = "October 18, 2026"
+        date = "October 20, 2026"
         head = ""
 
     return rf"""\documentclass[{docclass}]{{article}}
@@ -357,6 +369,13 @@ def stage_arxiv_bundle() -> None:
 
 def main():
     review = "--review" in sys.argv
+    spacing = REVIEW_SPACING
+    margin = REVIEW_MARGIN
+    for arg in sys.argv[1:]:
+        if arg.startswith("--spacing="):
+            spacing = float(arg.split("=", 1)[1])
+        elif arg.startswith("--margin="):
+            margin = arg.split("=", 1)[1]
     sync_hdl()  # paper/HDL is generated, not tracked
     fig_script = ROOT / "figures" / "make_figures.py"
     if fig_script.is_file():
@@ -389,7 +408,7 @@ def main():
     text = label_headings(text)
     text = convert_tables(text)
 
-    latex = latex_source(text, review)
+    latex = latex_source(text, review, spacing, margin)
 
     tex_path = ROOT / "submission" / ("paper_review.tex" if review else "paper.tex")
     tex_path.parent.mkdir(parents=True, exist_ok=True)

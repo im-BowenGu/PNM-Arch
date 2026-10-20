@@ -1,8 +1,8 @@
-\documentclass[11pt,onecolumn]{article}
-\usepackage[margin=1.5in]{geometry}
+\documentclass[12pt,onecolumn]{article}
+\usepackage[margin=2.0in]{geometry}
 \usepackage{times}
 \usepackage{setspace}
-\setstretch{1.5}
+\setstretch{2.0}
 \usepackage{amsmath,amssymb}
 \usepackage{array}
 \usepackage{booktabs}
@@ -18,18 +18,21 @@
 \usepackage{microtype}
 
 \usepackage{fancyhdr}
+\usepackage{lineno}
 \pagestyle{fancy}
 \fancyhf{}
 \fancyhead[L]{\footnotesize Review copy}
 \fancyhead[R]{\footnotesize Breaking the HBM wall}
 \fancyfoot[C]{\footnotesize\thepage}
+\renewcommand{\headrulewidth}{0pt}
+\linenumbers
 
 \setlength{\parskip}{0.3em}
 \setlength{\parindent}{0em}
 
 \title{Breaking the HBM wall: A Distributed Spatial Processing-Near-Memory Architecture using DUV ASICs and Deterministic Routing}
 \author{Bowen Gu}
-\date{October 18, 2026 (review copy)}
+\date{October 20, 2026 (review copy — double spaced for annotation)}
 
 \begin{document}
 \maketitle
@@ -426,7 +429,7 @@ The PE interface of Section \hyperref[sec:2.9]{2.9} is a contract, and the repos
 
 The gating network runs on its own ASIC beside the node. moe\_gating.v computes the router logits (hidden $\times$ router weights, again with fused-FMA accumulation) and selects the top-K experts; gating\_asic.v wraps it in a register bus that exposes the weight- and hidden-SRAM write ports, the start/done handshake, and a logit-peek window that returns any of the 128 expert logits, so the host reads the full routing decision back over the register interface rather than re-deriving it in software.
 
-These datapaths are validated bit-exact, not merely sketched. A complete decoder block (HDL/core/gemma\_decoder\_block.v)---input and attention normalisation, Q/K/V projections with per-head QK and value norms, rotary position embedding, causal attention over a KV cache, the output projection with its residual, the dense feed-forward pass, and the top-2 MoE branch with router softmax and per-expert scaling---is instantiated from a real layer-0 slice of the Gemma-4-26B-A4B checkpoint and reproduces the reference BF16 forward pass word for word in gate-level simulation. At the system level the three stages compose into one datapath: the gating ASIC's selected expert is dispatched as a single fabric flit (delivered byte-exact through the node-network co-simulation of Section \hyperref[sec:2.15]{2.15}), the destination compute node runs that expert on its selectable ASIC, and the node's output matches an independent software BF16 twin on every word. Closing the loop, feeding the RTL router's logits into the engine in place of the software matvec reproduces the software-only inference token for token---so the hardware gating decision changes no output. All of these checks run on real checkpoint weights and are part of the co-simulation suite of Section \hyperref[sec:3.5]{3.5}, which closes the gap between the transport properties the paper machine-checks and the computation those transports carry.
+These datapaths are validated bit-exact, not merely sketched. A complete decoder block (HDL/core/gemma\_decoder\_block.v)---input and attention normalisation, Q/K/V projections with per-head QK and value norms, rotary position embedding, causal attention over a KV cache, the output projection with its residual, the dense feed-forward pass, and the top-2 MoE branch with router softmax and per-expert scaling---is instantiated from a real layer-0 slice of the Gemma-4-26B-A4B checkpoint and reproduces the reference BF16 forward pass word for word in gate-level simulation. At the system level the three stages compose into one datapath: the gating ASIC's selected expert is dispatched as a single fabric flit (delivered byte-exact through the node-network co-simulation of Section \hyperref[sec:2.15]{2.15}), the destination compute node runs that expert on its selectable ASIC, and the node's output matches an independent software BF16 twin on every word. The composition is chained rather than sampled: over model layers 0, 7, and 14, the router input of each layer is derived from the residual slice left by the previous layer's node, so the gating decision, the fabric dispatch, and the expert recomputation form a single data dependency across layers, and each layer's node output is again bit-exact against the software twin (the chain runs at a reduced 256-dimension slice, so the router sees the matching 256-column weight slice, to stay inside a cycle budget). Closing the loop, feeding the RTL router's logits into the engine in place of the software matvec reproduces the software-only inference token for token---so the hardware gating decision changes no output. All of these checks run on real checkpoint weights and are part of the co-simulation suite of Section \hyperref[sec:3.5]{3.5}, which closes the gap between the transport properties the paper machine-checks and the computation those transports carry.
 
 \section*{Results}\label{sec:results}
 
