@@ -532,8 +532,9 @@ if result != nil {
 
 ## Haskell-to-PNM compilation
 
-The `haskell_pnm`, `r_pnm`, and `hlsl_pnm` tools compile a subset of
-Haskell, R, or HLSL to dispatch instructions on the PNM chassis.
+The `pnmsrc` front end compiles a subset of Haskell, R, or HLSL to
+dispatch instructions on the PNM chassis; `haskell_pnm`, `r_pnm` and
+`hlsl_pnm` are per-language wrappers over the same implementation.
 Haskell and R compile through an FP64 IR; HLSL compiles through an
 FP32 ALU IR (`alu.*` ops targeting `fp32_alu.v`) that is then lowered
 to the same `f64_*` PNM kernels for chassis dispatch.
@@ -659,16 +660,18 @@ Haskell-only.
 ```bash
 cd sim
 
-# Haskell
-go run ./cmd/haskell_pnm examples/hello.hs -l 2 -x 2 -y 2
+# the unified front end (the language comes from the extension)
+go run ./cmd/pnmsrc examples/hello.hs -l 2 -x 2 -y 2
+go run ./cmd/pnmsrc examples/hello.hs -l 2 -x 2 -y 2 -run -inputs x=4,y=7
+go run ./cmd/pnmsrc examples/hello.R -l 2 -x 2 -y 2 -run -inputs x=4,y=7
+go run ./cmd/pnmsrc examples/hello.hlsl -l 2 -x 2 -y 2 -run -inputs x=4,y=7
+
+# ... or name the language explicitly
+go run ./cmd/pnmsrc -lang haskell examples/hello.hs -run -inputs x=4,y=7
+
+# the per-language wrappers (same implementation)
 go run ./cmd/haskell_pnm examples/hello.hs -l 2 -x 2 -y 2 -run -inputs x=4,y=7
-
-# R
-go run ./cmd/r_pnm examples/hello.R -l 2 -x 2 -y 2
 go run ./cmd/r_pnm examples/hello.R -l 2 -x 2 -y 2 -run -inputs x=4,y=7
-
-# HLSL
-go run ./cmd/hlsl_pnm examples/hello.hlsl -l 2 -x 2 -y 2
 go run ./cmd/hlsl_pnm examples/hello.hlsl -l 2 -x 2 -y 2 -run -inputs x=4,y=7
 ```
 

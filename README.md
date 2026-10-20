@@ -54,6 +54,7 @@ sim/                    ← Go co-simulation harness (stdlib only)
   cmd/pnmc/               program compiler + model compiler + driver CLI
   cmd/pnmhost/            unified host driver (all workloads)
   cmd/pnmgate/            hardware-gated inference (real router on the Gating ASIC, vvp)
+  cmd/pnmsrc/             source-language front end (R / Haskell / HLSL)
   cmd/haskell_pnm/        Haskell → PNM compiler + co-simulation runner
   cmd/r_pnm/              R → PNM compiler + co-simulation runner
   cmd/hlsl_pnm/           HLSL → PNM compiler + co-simulation runner
@@ -241,12 +242,18 @@ A subset of Haskell, R, and HLSL compiles to PNM dispatch instructions
 on the chassis: Haskell and R through an FP64 IR, HLSL through an FP32
 ALU IR that is lowered to the same `f64_*` kernels for dispatch.
 
+`pnmsrc` is the client-side front end for all three languages (the
+language comes from `-lang` or the file extension):
+
 ```bash
 cd sim
-go run ./cmd/haskell_pnm examples/hello.hs -l 2 -x 2 -y 2 -run
-go run ./cmd/r_pnm examples/hello.R -l 2 -x 2 -y 2 -run
-go run ./cmd/hlsl_pnm examples/hello.hlsl -l 2 -x 2 -y 2 -run
+go run ./cmd/pnmsrc examples/hello.hs -l 2 -x 2 -y 2 -run -inputs x=4,y=7
+go run ./cmd/pnmsrc examples/hello.R -l 2 -x 2 -y 2 -run -inputs x=4,y=7
+go run ./cmd/pnmsrc examples/hello.hlsl -l 2 -x 2 -y 2 -run -inputs x=4,y=7
 ```
+
+The per-language binaries `haskell_pnm`, `r_pnm` and `hlsl_pnm` are thin
+wrappers over the same front end, so the three languages cannot drift apart.
 
 Each operation (add, mul, fma, ...) maps to a node running an `f64_*`
 kernel, with operands packed in the FP64 payload format in token

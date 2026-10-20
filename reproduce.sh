@@ -164,6 +164,15 @@ echo "--- pnmc: run-driver mini_glm_moe (4x4x4) ---"
 run "run-driver mini_glm_moe" $GO run ./cmd/pnmc run-driver examples/mini_glm_moe -l 4 -x 4 -y 4
 
 echo ""
+echo "=== source-language front end (R / Haskell / HLSL) ==="
+if skip_tool "pnmsrc" $GO; then
+    for ex in hello.R hello.hs hello.hlsl; do
+        run "pnmsrc $ex (compile + chained fabric run)" bash -c \
+            "cd $SIM && $GO run ./cmd/pnmsrc examples/$ex -run -inputs x=4,y=7 2>&1 | grep -q 'result .* = 39'"
+    done
+fi
+
+echo ""
 echo "=== pnm co-sim (default 3x4x4, all scenarios) ==="
 run "pnm all scenarios" $GO run ./cmd/pnm
 

@@ -333,6 +333,7 @@ func (r *runner) goTests() {
 		{"run_flit", "TestFlit_"},
 		{"toolchain", "TestToolchain"},
 		{"dataflow", "TestFP64DataFlow"},
+		{"src_front_end", "TestSource"},
 		{"llm_client", "TestLLMClient"},
 		{"property_crc", "TestCRC16_(Incremental|Deterministic)"},
 	}
