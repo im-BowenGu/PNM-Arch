@@ -265,6 +265,12 @@ module tb_orchestrator_chip;
     endtask
 
     // =========================================================================
+    // Error counter (declared here: check_spine_flit increments it).
+    // =========================================================================
+    integer errors_local;
+    integer j;
+
+    // =========================================================================
     // CRC-16/CCITT-FALSE (init 0xFFFF, poly 0x1021, no final XOR, MSB-first)
     // Mirrors crc16.v / crc.go / the flit builder's crc16_next.
     // =========================================================================
@@ -364,8 +370,6 @@ module tb_orchestrator_chip;
     // =========================================================================
     // Test sequence
     // =========================================================================
-    integer errors_local;
-    integer j;
 
     // =========================================================================
     // Sample the spine output stream (runs continuously)

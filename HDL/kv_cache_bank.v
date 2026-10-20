@@ -159,28 +159,6 @@ module kv_cache_bank #(
     reg [7:0] kv_sram [0:BANK_DEPTH*ENTRY_BYTES-1];
 
     // =========================================================================
-    // CRC engine — delegated to core/crc16.v (the fabric-wide hardware twin
-    // of sim/internal/pnm/crc.go: init 0xFFFF, poly 0x1021, MSB-first, no
-    // final XOR).  Keeping the algorithm in one module means the wire-format
-    // sync rule (pnm_defs.vh / crc16.v / doorbell.v / crc.go) has no hidden
-    // in-module copies.
-    // =========================================================================
-    // init chains
-    wire [15:0] c_abs1, c_abs2;      // (MODULE, CTRL) for store/load heads
-    wire [15:0] c_ri1, c_ri2, c_ri3, c_ri4; // (dest, 0x80, LEN_LO, LEN_HI)
-    crc16 u_crc_abs1 (.crc_in(CRC_INIT), .data_in(pt_data),       .crc_out(c_abs1));
-    crc16 u_crc_abs2 (.crc_in(c_abs1),   .data_in(nob_in_data),   .crc_out(c_abs2));
-    crc16 u_crc_ri1  (.crc_in(CRC_INIT), .data_in(lq_dest),       .crc_out(c_ri1));
-    crc16 u_crc_ri2  (.crc_in(c_ri1),    .data_in(8'h80),         .crc_out(c_ri2));
-    crc16 u_crc_ri3  (.crc_in(c_ri2),    .data_in(ENTRY_BYTES[7:0]),  .crc_out(c_ri3));
-    crc16 u_crc_ri4  (.crc_in(c_ri3),    .data_in(ENTRY_BYTES[15:8]), .crc_out(c_ri4));
-    // running folds (one per accumulator; the data is always the input byte)
-    wire [15:0] ks_crc_nxt, lq_crc_nxt, ri_crc_nxt;
-    crc16 u_crc_ks (.crc_in(ks_crc), .data_in(nob_in_data),     .crc_out(ks_crc_nxt));
-    crc16 u_crc_lq (.crc_in(lq_crc), .data_in(nob_in_data),     .crc_out(lq_crc_nxt));
-    crc16 u_crc_ri (.crc_in(ri_crc), .data_in(kv_sram[ri_addr]), .crc_out(ri_crc_nxt));
-
-    // =========================================================================
     // Pass-through pipeline (two stages). Stage 2 is presented on nob_out.
     // A MODULE_ID (SOP) in stage 1 is held until its CTRL byte has been
     // inspected, so a KV command is absorbed whole before either byte could
@@ -198,22 +176,6 @@ module kv_cache_bank #(
     reg        pt2_eop;
     reg [7:0]  pt2_data;
     reg [1:0]  pt2_vc;
-
-    wire       absorb_ok = (ks_state == KS_IDLE) && (lq_state == LQ_IDLE) &&
-                           (ev_state == EV_IDLE) && !full_r;
-    // Head window: MODULE_ID in stage 1 with CTRL on the wire.  Stage 2 may
-    // hold the previous flit's tail byte (back-to-back injection): the bank
-    // absorbs only once that byte is being accepted downstream this cycle
-    // (pt2_eop && nob_out_ready), so the tail is never lost and every KV
-    // command is still caught even when flits stream without a bubble.
-    wire       col_match  = (LOCAL_X == 4'hF) || (pt_data[7:4] == LOCAL_X);
-    wire       head_window = col_match && pt_valid && pt_sop && !pt_eop &&
-                             nob_in_valid &&
-                             (!pt2_valid || (pt2_eop && nob_out_ready));
-    wire       is_kv_store = absorb_ok && head_window &&
-                             (nob_in_data[5:4] == `OP_KV_STORE);
-    wire       is_kv_load  = absorb_ok && head_window &&
-                             (nob_in_data[5:4] == `OP_KV_LOAD);
 
     // =========================================================================
     // KV store FSM (NoB-absorbed STORE command)
@@ -279,12 +241,51 @@ module kv_cache_bank #(
     localparam EV_DATA = 2'd1;
     localparam EV_TAIL = 2'd2;
 
-    reg [1:0]  ev_state;
+    reg [2:0]  ev_state;
     reg [15:0] ev_pos;
     reg [SRAM_AW-1:0] ev_addr;
     reg        ev_done_r;
     reg [7:0]  ev_data_r;
     reg        ev_valid_r;
+
+    wire       absorb_ok = (ks_state == KS_IDLE) && (lq_state == LQ_IDLE) &&
+                           (ev_state == EV_IDLE) && !full_r;
+    // Head window: MODULE_ID in stage 1 with CTRL on the wire.  Stage 2 may
+    // hold the previous flit's tail byte (back-to-back injection): the bank
+    // absorbs only once that byte is being accepted downstream this cycle
+    // (pt2_eop && nob_out_ready), so the tail is never lost and every KV
+    // command is still caught even when flits stream without a bubble.
+    wire       col_match  = (LOCAL_X == 4'hF) || (pt_data[7:4] == LOCAL_X);
+    wire       head_window = col_match && pt_valid && pt_sop && !pt_eop &&
+                             nob_in_valid &&
+                             (!pt2_valid || (pt2_eop && nob_out_ready));
+    wire       is_kv_store = absorb_ok && head_window &&
+                             (nob_in_data[5:4] == `OP_KV_STORE);
+    wire       is_kv_load  = absorb_ok && head_window &&
+                             (nob_in_data[5:4] == `OP_KV_LOAD);
+
+    // =========================================================================
+    // CRC engine — delegated to core/crc16.v (the fabric-wide hardware twin
+    // of sim/internal/pnm/crc.go: init 0xFFFF, poly 0x1021, MSB-first, no
+    // final XOR).  Keeping the algorithm in one module means the wire-format
+    // sync rule (pnm_defs.vh / crc16.v / doorbell.v / crc.go) has no hidden
+    // in-module copies.  Instantiated after the pipeline/FSM declarations
+    // because the folds read their accumulator registers directly.
+    // =========================================================================
+    // init chains
+    wire [15:0] c_abs1, c_abs2;      // (MODULE, CTRL) for store/load heads
+    wire [15:0] c_ri1, c_ri2, c_ri3, c_ri4; // (dest, 0x80, LEN_LO, LEN_HI)
+    crc16 u_crc_abs1 (.crc_in(CRC_INIT), .data_in(pt_data),       .crc_out(c_abs1));
+    crc16 u_crc_abs2 (.crc_in(c_abs1),   .data_in(nob_in_data),   .crc_out(c_abs2));
+    crc16 u_crc_ri1  (.crc_in(CRC_INIT), .data_in(lq_dest),       .crc_out(c_ri1));
+    crc16 u_crc_ri2  (.crc_in(c_ri1),    .data_in(8'h80),         .crc_out(c_ri2));
+    crc16 u_crc_ri3  (.crc_in(c_ri2),    .data_in(ENTRY_BYTES[7:0]),  .crc_out(c_ri3));
+    crc16 u_crc_ri4  (.crc_in(c_ri3),    .data_in(ENTRY_BYTES[15:8]), .crc_out(c_ri4));
+    // running folds (one per accumulator; the data is always the input byte)
+    wire [15:0] ks_crc_nxt, lq_crc_nxt, ri_crc_nxt;
+    crc16 u_crc_ks (.crc_in(ks_crc), .data_in(nob_in_data),     .crc_out(ks_crc_nxt));
+    crc16 u_crc_lq (.crc_in(lq_crc), .data_in(nob_in_data),     .crc_out(lq_crc_nxt));
+    crc16 u_crc_ri (.crc_in(ri_crc), .data_in(kv_sram[ri_addr]), .crc_out(ri_crc_nxt));
 
     assign evict_done  = ev_done_r;
     assign evict_data  = ev_data_r;

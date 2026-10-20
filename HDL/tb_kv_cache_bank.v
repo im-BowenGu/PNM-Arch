@@ -199,7 +199,8 @@ module tb_kv_cache_bank;
     task send_stream(input integer n);
         integer kk;
         begin
-            for (kk = 0; kk < n; ) begin
+            kk = 0;
+            while (kk < n) begin
                 @(negedge clk);
                 nob_in_data = tx_mem[kk];
                 nob_in_valid = 1;

@@ -89,7 +89,7 @@ module tb_orchestrator_mcu;
                 inject_log[inject_pos] <= spine_inject_data;
                 $display("[%0t] inject[%0d] = 0x%02h (state=%0d pos=%0d len=%0d)",
                          $time, inject_pos, spine_inject_data,
-                         u_dut.fb_state, u_dut.fb_pos, u_dut.fb_len);
+                         u_dut.u.g_mcu.fb_state, u_dut.u.g_mcu.fb_pos, u_dut.u.g_mcu.fb_len);
             end
             inject_pos <= inject_pos + 1;
             inject_count <= inject_count + 1;
@@ -123,20 +123,20 @@ module tb_orchestrator_mcu;
         inject_pos = 0;
 
         // Load test program into ROM
-        u_dut.rom[0] = lui_inst(5'd1, 20'hF0000);       // x1 = 0xF0000000
-        u_dut.rom[1] = addi_inst(5'd2, 5'd0, 12'h001);   // layer = 1
-        u_dut.rom[2] = sw_inst(5'd2, 5'd1, 12'h004);     // PNM_LAYER
-        u_dut.rom[3] = addi_inst(5'd2, 5'd0, 12'h005);   // module = 5
-        u_dut.rom[4] = sw_inst(5'd2, 5'd1, 12'h008);     // PNM_MODULE
-        u_dut.rom[5] = addi_inst(5'd2, 5'd0, 12'h002);   // len = 2
-        u_dut.rom[6] = sw_inst(5'd2, 5'd1, 12'h00C);     // PNM_LEN
-        u_dut.rom[7] = addi_inst(5'd2, 5'd0, 12'h0AA);   // 0xAA (sign-extends to 0xFFFFFFAA)
-        u_dut.rom[8] = sw_inst(5'd2, 5'd1, 12'h010);     // payload[0]
-        u_dut.rom[9] = addi_inst(5'd2, 5'd0, 12'h055);   // 0x55
-        u_dut.rom[10]= sw_inst(5'd2, 5'd1, 12'h010);     // payload[1]
-        u_dut.rom[11]= addi_inst(5'd2, 5'd0, 12'h001);   // trigger
-        u_dut.rom[12]= sw_inst(5'd2, 5'd1, 12'h000);     // PNM_CTRL
-        for (i = 13; i < 2048; i++) u_dut.rom[i] = jal_inst(5'd0, 21'd0);  // self-loop
+        u_dut.u.g_mcu.rom[0] = lui_inst(5'd1, 20'hF0000);       // x1 = 0xF0000000
+        u_dut.u.g_mcu.rom[1] = addi_inst(5'd2, 5'd0, 12'h001);   // layer = 1
+        u_dut.u.g_mcu.rom[2] = sw_inst(5'd2, 5'd1, 12'h004);     // PNM_LAYER
+        u_dut.u.g_mcu.rom[3] = addi_inst(5'd2, 5'd0, 12'h005);   // module = 5
+        u_dut.u.g_mcu.rom[4] = sw_inst(5'd2, 5'd1, 12'h008);     // PNM_MODULE
+        u_dut.u.g_mcu.rom[5] = addi_inst(5'd2, 5'd0, 12'h002);   // len = 2
+        u_dut.u.g_mcu.rom[6] = sw_inst(5'd2, 5'd1, 12'h00C);     // PNM_LEN
+        u_dut.u.g_mcu.rom[7] = addi_inst(5'd2, 5'd0, 12'h0AA);   // 0xAA (sign-extends to 0xFFFFFFAA)
+        u_dut.u.g_mcu.rom[8] = sw_inst(5'd2, 5'd1, 12'h010);     // payload[0]
+        u_dut.u.g_mcu.rom[9] = addi_inst(5'd2, 5'd0, 12'h055);   // 0x55
+        u_dut.u.g_mcu.rom[10]= sw_inst(5'd2, 5'd1, 12'h010);     // payload[1]
+        u_dut.u.g_mcu.rom[11]= addi_inst(5'd2, 5'd0, 12'h001);   // trigger
+        u_dut.u.g_mcu.rom[12]= sw_inst(5'd2, 5'd1, 12'h000);     // PNM_CTRL
+        for (i = 13; i < 2048; i++) u_dut.u.g_mcu.rom[i] = jal_inst(5'd0, 21'd0);  // self-loop
 
         repeat (4) @(posedge clk);
         rst_n = 1;

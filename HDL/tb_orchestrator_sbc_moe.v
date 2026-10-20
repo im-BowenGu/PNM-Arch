@@ -159,29 +159,29 @@ module tb_orchestrator_sbc_moe;
         //   Inject flit with layer=2, module=3, len=1, payload=0x42
         //   Signal boot_done
 
-        u_dut.rom[0]  = lui_inst(5'd1, 20'h40000);            // x1 = 0x40000000
-        u_dut.rom[1]  = lui_inst(5'd2, 20'h003C0);            // x2 = BF16 ~1.5
-        u_dut.rom[2]  = sw_inst(5'd2, 5'd1, 12'h000);         // gate_sram[0] = x2
+        u_dut.u.g_sbc_moe.rom[0]  = lui_inst(5'd1, 20'h40000);            // x1 = 0x40000000
+        u_dut.u.g_sbc_moe.rom[1]  = lui_inst(5'd2, 20'h003C0);            // x2 = BF16 ~1.5
+        u_dut.u.g_sbc_moe.rom[2]  = sw_inst(5'd2, 5'd1, 12'h000);         // gate_sram[0] = x2
 
-        u_dut.rom[3]  = lui_inst(5'd3, 20'hF0000);            // x3 = 0xF0000000
-        u_dut.rom[4]  = addi_inst(5'd4, 5'd0, 12'h100);       // hidden value (BF16 exp)
-        u_dut.rom[5]  = sw_inst(5'd4, 5'd3, 12'h030);         // HIDDEN_BASE[0]
-        u_dut.rom[6]  = addi_inst(5'd4, 5'd0, 12'h001);       // trigger=1
-        u_dut.rom[7]  = sw_inst(5'd4, 5'd3, 12'h034);         // GATING_START
+        u_dut.u.g_sbc_moe.rom[3]  = lui_inst(5'd3, 20'hF0000);            // x3 = 0xF0000000
+        u_dut.u.g_sbc_moe.rom[4]  = addi_inst(5'd4, 5'd0, 12'h100);       // hidden value (BF16 exp)
+        u_dut.u.g_sbc_moe.rom[5]  = sw_inst(5'd4, 5'd3, 12'h030);         // HIDDEN_BASE[0]
+        u_dut.u.g_sbc_moe.rom[6]  = addi_inst(5'd4, 5'd0, 12'h001);       // trigger=1
+        u_dut.u.g_sbc_moe.rom[7]  = sw_inst(5'd4, 5'd3, 12'h034);         // GATING_START
 
-        u_dut.rom[8]  = addi_inst(5'd4, 5'd0, 12'h002);       // layer=2
-        u_dut.rom[9]  = sw_inst(5'd4, 5'd3, 12'h004);         // PNM_LAYER
-        u_dut.rom[10] = addi_inst(5'd4, 5'd0, 12'h003);       // module=3
-        u_dut.rom[11] = sw_inst(5'd4, 5'd3, 12'h008);         // PNM_MODULE
-        u_dut.rom[12] = addi_inst(5'd4, 5'd0, 12'h001);       // len=1
-        u_dut.rom[13] = sw_inst(5'd4, 5'd3, 12'h00C);         // PNM_LEN
-        u_dut.rom[14] = addi_inst(5'd4, 5'd0, 12'h042);       // payload=0x42
-        u_dut.rom[15] = sw_inst(5'd4, 5'd3, 12'h010);         // PNM_DATA
+        u_dut.u.g_sbc_moe.rom[8]  = addi_inst(5'd4, 5'd0, 12'h002);       // layer=2
+        u_dut.u.g_sbc_moe.rom[9]  = sw_inst(5'd4, 5'd3, 12'h004);         // PNM_LAYER
+        u_dut.u.g_sbc_moe.rom[10] = addi_inst(5'd4, 5'd0, 12'h003);       // module=3
+        u_dut.u.g_sbc_moe.rom[11] = sw_inst(5'd4, 5'd3, 12'h008);         // PNM_MODULE
+        u_dut.u.g_sbc_moe.rom[12] = addi_inst(5'd4, 5'd0, 12'h001);       // len=1
+        u_dut.u.g_sbc_moe.rom[13] = sw_inst(5'd4, 5'd3, 12'h00C);         // PNM_LEN
+        u_dut.u.g_sbc_moe.rom[14] = addi_inst(5'd4, 5'd0, 12'h042);       // payload=0x42
+        u_dut.u.g_sbc_moe.rom[15] = sw_inst(5'd4, 5'd3, 12'h010);         // PNM_DATA
 
-        u_dut.rom[16] = addi_inst(5'd4, 5'd0, 12'h005);       // bits 0|2
-        u_dut.rom[17] = sw_inst(5'd4, 5'd3, 12'h000);         // PNM_CTRL
+        u_dut.u.g_sbc_moe.rom[16] = addi_inst(5'd4, 5'd0, 12'h005);       // bits 0|2
+        u_dut.u.g_sbc_moe.rom[17] = sw_inst(5'd4, 5'd3, 12'h000);         // PNM_CTRL
 
-        for (i = 18; i < 16384; i++) u_dut.rom[i] = jal_inst(5'd0, 21'd0);
+        for (i = 18; i < 16384; i++) u_dut.u.g_sbc_moe.rom[i] = jal_inst(5'd0, 21'd0);
 
         repeat (4) @(posedge clk);
         rst_n = 1;
@@ -197,10 +197,10 @@ module tb_orchestrator_sbc_moe;
         end
 
         // Check gating SRAM received the write (upper halfword lands in sram[1])
-        if (u_dut.gating_sram[1] === 16'h003C)
+        if (u_dut.u.g_sbc_moe.gating_sram[1] === 16'h003C)
             $display("  OK: gating_sram[1] = 0x003C");
         else begin
-            $display("FAIL: gating_sram[1] = 0x%04h", u_dut.gating_sram[1]);
+            $display("FAIL: gating_sram[1] = 0x%04h", u_dut.u.g_sbc_moe.gating_sram[1]);
             errors = errors + 1;
         end
 

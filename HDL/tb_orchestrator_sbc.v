@@ -137,26 +137,26 @@ module tb_orchestrator_sbc;
         //   self-loop
 
         // Store magic to DRAM
-        u_dut.rom[0]  = lui_inst(5'd1, 20'h80000);           // x1 = 0x80000000
-        u_dut.rom[1]  = lui_inst(5'd2, 20'h00DEA);           // x2 = 0xDEA00000
-        u_dut.rom[2]  = addi_inst(5'd2, 5'd2, 12'hDBE);      // x2 |= 0xDBE (low bits)
-        u_dut.rom[3]  = sw_inst(5'd2, 5'd1, 12'h000);        // DRAM[0] = x2
-        u_dut.rom[4]  = lw_inst(5'd3, 5'd1, 12'h000);        // x3 = DRAM[0]
+        u_dut.u.g_sbc.rom[0]  = lui_inst(5'd1, 20'h80000);           // x1 = 0x80000000
+        u_dut.u.g_sbc.rom[1]  = lui_inst(5'd2, 20'h00DEA);           // x2 = 0xDEA00000
+        u_dut.u.g_sbc.rom[2]  = addi_inst(5'd2, 5'd2, 12'hDBE);      // x2 |= 0xDBE (low bits)
+        u_dut.u.g_sbc.rom[3]  = sw_inst(5'd2, 5'd1, 12'h000);        // DRAM[0] = x2
+        u_dut.u.g_sbc.rom[4]  = lw_inst(5'd3, 5'd1, 12'h000);        // x3 = DRAM[0]
 
         // PNM registers
-        u_dut.rom[5]  = lui_inst(5'd4, 20'hF0000);           // x4 = 0xF0000000
-        u_dut.rom[6]  = addi_inst(5'd5, 5'd0, 12'h001);      // layer=1
-        u_dut.rom[7]  = sw_inst(5'd5, 5'd4, 12'h004);        // PNM_LAYER
-        u_dut.rom[8]  = sw_inst(5'd0, 5'd4, 12'h008);        // PNM_MODULE=0
-        u_dut.rom[9]  = addi_inst(5'd5, 5'd0, 12'h001);      // len=1
-        u_dut.rom[10] = sw_inst(5'd5, 5'd4, 12'h00C);        // PNM_LEN
-        u_dut.rom[11] = sw_inst(5'd3, 5'd4, 12'h010);        // PNM_DATA = x3 low byte
+        u_dut.u.g_sbc.rom[5]  = lui_inst(5'd4, 20'hF0000);           // x4 = 0xF0000000
+        u_dut.u.g_sbc.rom[6]  = addi_inst(5'd5, 5'd0, 12'h001);      // layer=1
+        u_dut.u.g_sbc.rom[7]  = sw_inst(5'd5, 5'd4, 12'h004);        // PNM_LAYER
+        u_dut.u.g_sbc.rom[8]  = sw_inst(5'd0, 5'd4, 12'h008);        // PNM_MODULE=0
+        u_dut.u.g_sbc.rom[9]  = addi_inst(5'd5, 5'd0, 12'h001);      // len=1
+        u_dut.u.g_sbc.rom[10] = sw_inst(5'd5, 5'd4, 12'h00C);        // PNM_LEN
+        u_dut.u.g_sbc.rom[11] = sw_inst(5'd3, 5'd4, 12'h010);        // PNM_DATA = x3 low byte
 
         // Trigger injection + boot_done
-        u_dut.rom[12] = addi_inst(5'd5, 5'd0, 12'h005);      // bits 0|2
-        u_dut.rom[13] = sw_inst(5'd5, 5'd4, 12'h000);        // PNM_CTRL
+        u_dut.u.g_sbc.rom[12] = addi_inst(5'd5, 5'd0, 12'h005);      // bits 0|2
+        u_dut.u.g_sbc.rom[13] = sw_inst(5'd5, 5'd4, 12'h000);        // PNM_CTRL
 
-        for (i = 14; i < 16384; i++) u_dut.rom[i] = jal_inst(5'd0, 21'd0);
+        for (i = 14; i < 16384; i++) u_dut.u.g_sbc.rom[i] = jal_inst(5'd0, 21'd0);
 
         repeat (4) @(posedge clk);
         rst_n = 1;
