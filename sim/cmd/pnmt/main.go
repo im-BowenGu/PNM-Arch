@@ -30,6 +30,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"pnm/sim/internal/pnm"
 )
 
 // ── Tool Discovery ──────────────────────────────────────────────────────────
@@ -193,7 +195,7 @@ func (r *runner) compileAndRun(cat, name, dir string, srcFiles []string, bin, de
 
 func (r *runner) hdlCore() {
 	cat := "hdl/core"
-	h := "../HDL"
+	h := pnm.SiblingRepo("HDL")
 	ext := ""
 	if runtime.GOOS == "windows" {
 		ext = ".exe"
@@ -244,7 +246,7 @@ func (r *runner) hdlCore() {
 
 func (r *runner) hdlFabric() {
 	cat := "hdl/fabric"
-	h := "../HDL"
+	h := pnm.SiblingRepo("HDL")
 	ext := ""
 	if runtime.GOOS == "windows" {
 		ext = ".exe"
@@ -276,7 +278,7 @@ func (r *runner) hdlFabric() {
 
 func (r *runner) hdlPhy() {
 	cat := "hdl/phy"
-	h := "../HDL"
+	h := pnm.SiblingRepo("HDL")
 	ext := ""
 	if runtime.GOOS == "windows" {
 		ext = ".exe"
@@ -356,14 +358,14 @@ func (r *runner) cTests() {
 		if r.t.gcc == "" {
 			return "", 1
 		}
-		return r.run(r.t.gcc, "../fw", "-Wall", "-Wextra", "-std=c11", "-c", "pnm_fw.c", "-o", "/dev/null")
+		return r.run(r.t.gcc, pnm.SiblingRepo("fw"), "-Wall", "-Wextra", "-std=c11", "-c", "pnm_fw.c", "-o", "/dev/null")
 	})
 
 	r.runTest(cat, "fw_compile_mcu", func() (string, int) {
 		if r.t.gcc == "" {
 			return "", 1
 		}
-		return r.run(r.t.gcc, "../fw", "-Wall", "-Wextra", "-std=c11", "-DPNM_MCU", "-c", "pnm_fw.c", "-o", "/dev/null")
+		return r.run(r.t.gcc, pnm.SiblingRepo("fw"), "-Wall", "-Wextra", "-std=c11", "-DPNM_MCU", "-c", "pnm_fw.c", "-o", "/dev/null")
 	})
 
 	// Source-language firmware ports (R / Haskell / HLSL) plus the NVMe twin:
@@ -382,7 +384,7 @@ func (r *runner) cTests() {
 			if r.t.gcc == "" {
 				return "", 1
 			}
-			return r.run(r.t.gcc, "../fw", "-Wall", "-Wextra", "-std=c11",
+			return r.run(r.t.gcc, pnm.SiblingRepo("fw"), "-Wall", "-Wextra", "-std=c11",
 				"-I.", "-c", s_, "-o", "/dev/null")
 		})
 	}
@@ -467,7 +469,7 @@ func (r *runner) lintTests() {
 
 	if r.t.verilator != "" {
 		r.runTest(cat, "verilator_fabric", func() (string, int) {
-			return r.run(r.t.verilator, "../HDL", "--lint-only",
+			return r.run(r.t.verilator, pnm.SiblingRepo("HDL"), "--lint-only",
 				"-Wno-MULTITOP", "-Wno-TIMESCALEMOD",
 				"hfr.v", "flit_gate.v", "vc_merge.v", "lxy_repeater.v", "xy_turn.v", "node_eject.v")
 		})

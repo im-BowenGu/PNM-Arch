@@ -71,19 +71,29 @@ func (c *gatingClient) Has(layer int) bool {
 	return ok
 }
 
-// findHDLDir locates HDL/core (env PNM_HDL_DIR, else search upward from cwd).
+// findHDLDir locates HDL/core (env PNM_HDL_DIR, else the sibling repo in
+// either the monorepo (HDL/) or the published split (PNM-HDL/) layout, else
+// an upward search from the working directory).
 func findHDLDir() (string, error) {
 	if d := os.Getenv("PNM_HDL_DIR"); d != "" {
 		return d, nil
+	}
+	if d := SiblingRepo("HDL"); d != "" {
+		cand := filepath.Join(d, "core", "tb_gating_server.v")
+		if _, err := os.Stat(cand); err == nil {
+			return filepath.Join(d, "core"), nil
+		}
 	}
 	dir, err := os.Getwd()
 	if err != nil {
 		return "", err
 	}
 	for {
-		cand := filepath.Join(dir, "HDL", "core", "tb_gating_server.v")
-		if _, err := os.Stat(cand); err == nil {
-			return filepath.Join(dir, "HDL", "core"), nil
+		for _, name := range []string{"HDL", "PNM-HDL"} {
+			cand := filepath.Join(dir, name, "core", "tb_gating_server.v")
+			if _, err := os.Stat(cand); err == nil {
+				return filepath.Join(dir, name, "core"), nil
+			}
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {

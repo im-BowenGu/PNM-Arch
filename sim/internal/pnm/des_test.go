@@ -29,7 +29,7 @@ import (
 func runRTLSlice(t *testing.T, prog *Program, lids []int, bx, by int) *Delivery {
 	t.Helper()
 	simDir := SimDir()
-	hdlDir, err := filepath.Abs(filepath.Join(simDir, "..", "HDL"))
+	hdlDir, err := filepath.Abs(SiblingRepo("HDL"))
 	if err != nil {
 		t.Fatalf("HDL path: %v", err)
 	}

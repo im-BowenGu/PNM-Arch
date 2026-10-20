@@ -1669,7 +1669,7 @@ func RunOne(prog *Program, nodes []NodeID, dims Dims, groups, replays int) (*Sce
 	layers, bx, by := dims.Layers, dims.Bx, dims.By
 	layerGroups := PartitionLayers(layers, groups)
 	simDir := SimDir()
-	hdlDir, err := filepath.Abs(filepath.Join(simDir, "..", "HDL"))
+	hdlDir, err := filepath.Abs(SiblingRepo("HDL"))
 	if err != nil {
 		fmt.Printf("  HDL path resolution failed: %v\n", err)
 		return nil, false

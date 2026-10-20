@@ -105,7 +105,7 @@ func TestIntegration_DriverBootAndDispatch(t *testing.T) {
 // TestIntegration_FirmwareCompile verifies the C firmware compiles
 // for both SoC and MCU targets.
 func TestIntegration_FirmwareCompile(t *testing.T) {
-	fwDir := filepath.Join(SimDir(), "..", "fw")
+	fwDir := SiblingRepo("fw")
 	if _, err := os.Stat(fwDir); os.IsNotExist(err) {
 		t.Skip("fw/ directory not found")
 	}
@@ -141,7 +141,7 @@ func TestIntegration_FirmwareCompile(t *testing.T) {
 // destructive-read bug where every load advanced read_ptr and decremented
 // occupancy, evicting entries on read). Compiles and runs fw/test_kv_load.c.
 func TestIntegration_CKVLoadNonDestructive(t *testing.T) {
-	fwDir := filepath.Join(SimDir(), "..", "fw")
+	fwDir := SiblingRepo("fw")
 	if _, err := os.Stat(filepath.Join(fwDir, "test_kv_load.c")); os.IsNotExist(err) {
 		t.Skip("fw/test_kv_load.c not found")
 	}
@@ -179,7 +179,7 @@ func TestIntegration_CKVLoadNonDestructive(t *testing.T) {
 // MoE gating (select_topk in pnm_fw.c) matches the Go reference selectTopExperts
 // bit-for-bit for several (token, layer) inputs.
 func TestIntegration_CMoeGating(t *testing.T) {
-	fwDir := filepath.Join(SimDir(), "..", "fw")
+	fwDir := SiblingRepo("fw")
 	if _, err := os.Stat(filepath.Join(fwDir, "test_moe_gating.c")); os.IsNotExist(err) {
 		t.Skip("fw/test_moe_gating.c not found")
 	}
@@ -268,7 +268,7 @@ func TestIntegration_HDLTestbench(t *testing.T) {
 		t.Skip("iverilog/vvp not found in PATH")
 	}
 
-	hdlDir := filepath.Join(SimDir(), "..", "HDL")
+	hdlDir := SiblingRepo("HDL")
 	type tbCase struct {
 		name string
 		src  []string
