@@ -1,4 +1,4 @@
-This is pdfTeX, Version 3.141592653-2.6-1.40.26 (TeX Live 2024/nixos.org) (preloaded format=pdflatex 1980.1.1)  20 OCT 2026 11:57
+This is pdfTeX, Version 3.141592653-2.6-1.40.26 (TeX Live 2024/nixos.org) (preloaded format=pdflatex 1980.1.1)  20 OCT 2026 22:37
 entering extended mode
  restricted \write18 enabled.
  %&-line parsing enabled.
@@ -1098,41 +1098,35 @@ Underfull \vbox (badness 10000) has occurred while \output is active []
 
 
 [29]
-
-
-Underfull \hbox (badness 3713) in paragraph at lines 667--668
+Underfull \hbox (badness 3713) in paragraph at lines 666--667
 []\OT1/ptm/m/n/10 (+20) The full repos-i-tory, in-clud-ing Ver-ilog HDL sources
 ,
  []
 
 
-Underfull \hbox (badness 6559) in paragraph at lines 667--668
+Underfull \hbox (badness 6559) in paragraph at lines 666--667
 \OT1/ptm/m/n/10 (+20) build scripts, and this manuscript, is avail-able at
  []
 
 
 
+
+
 [30]
-Underfull \hbox (badness 1199) in paragraph at lines 691--692
+Underfull \hbox (badness 1199) in paragraph at lines 690--691
 []\OT1/ptm/m/n/10 (+20) JEDEC Solid State Tech-nol-ogy As-so-ci-a-tion. Low
  []
 
 
-
-
-Underfull \hbox (badness 4726) in paragraph at lines 703--704
+Underfull \hbox (badness 4726) in paragraph at lines 702--703
 \OT1/ptm/m/n/10 (+20) ture doc-u-men-ta-tion: NOMMU (no-MMU) sup-
  []
 
 
 
-[31]
 
 
-
-[32
-
-] (./paper.aux)
+[31] (./paper.aux)
  ***********
 LaTeX2e <2024-11-01> patch level 2
 L3 programming layer <2025-01-18>
@@ -1141,11 +1135,11 @@ Package rerunfilecheck Info: File `paper.out' has not changed.
 (rerunfilecheck)             Checksum: D41D8CD98F00B204E9800998ECF8427E;0.
  ) 
 Here is how much of TeX's memory you used:
- 13091 strings out of 474315
- 209821 string characters out of 5718334
- 662277 words of memory out of 5000000
+ 13087 strings out of 474315
+ 209790 string characters out of 5718334
+ 662258 words of memory out of 5000000
  35582 multiletter control sequences out of 15000+600000
- 592004 words of font info for 264 fonts, out of 8000000 for 9000
+ 591888 words of font info for 262 fonts, out of 8000000 for 9000
  430 hyphenation exceptions out of 8191
  75i,11n,79p,3751b,572s stack positions out of 10000i,1000n,20000p,200000b,200000s
 </nix/store/4l3m65sl104swdhl3hrpnqmachm98qgx-texlive-combined-medium-2024-fin
@@ -1168,10 +1162,10 @@ e/4l3m65sl104swdhl3hrpnqmachm98qgx-texlive-combined-medium-2024-final-texmfdist
 texlive-combined-medium-2024-final-texmfdist/fonts/type1/urw/times/utmr8a.pfb><
 /nix/store/4l3m65sl104swdhl3hrpnqmachm98qgx-texlive-combined-medium-2024-final-
 texmfdist/fonts/type1/urw/times/utmri8a.pfb>
-Output written on paper.pdf (32 pages, 631401 bytes).
+Output written on paper.pdf (31 pages, 629352 bytes).
 PDF statistics:
- 752 PDF objects out of 1000 (max. 8388607)
- 669 compressed objects within 7 object streams
- 134 named destinations out of 1000 (max. 500000)
+ 743 PDF objects out of 1000 (max. 8388607)
+ 661 compressed objects within 7 object streams
+ 133 named destinations out of 1000 (max. 500000)
  45594 words of extra memory for PDF output out of 51595 (max. 10000000)
 
