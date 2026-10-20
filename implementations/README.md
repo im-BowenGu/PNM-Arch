@@ -71,6 +71,27 @@ traces around a MAC stub whose clock passes through a `clk_gate` cell and
 whose reset crosses domains through `rst_sync` — i.e., the DFT discipline
 of Paper §4.6 expressed as ordinary wiring.
 
+## Node compute variants
+
+`HDL/core/node.v` is the compute node of the node network (one MoE expert
+pass). Its `CU_TYPE` parameter selects the embedded numeric ASIC behind a
+shared accumulate interface and FSM, so the same node source builds as
+different products:
+
+| Board | `CU_TYPE` / `WIDTH` | Engine |
+|-------|---------------------|--------|
+| `boards/node_bf16.json` | 0 / 16 | BF16 expert (gate/up → swiglu → down) |
+| `boards/node_fp32.json` | 2 / 32 | FP32 MAC (identity activation) |
+| `boards/node_int8.json` | 4 / 8 | INT8 MAC, INT32 accumulate |
+| `boards/node_ternary.json` | 8 / 8 | BitNet b1.58 ternary {-1,0,+1} x INT8 MAC |
+| `boards/node_fp4.json`  | 6 / 8 | FP4 (E2M1) MAC, INT32 accumulate |
+| `boards/node_dual_mem.json` | 0 / 16 | Reference node: BF16 expert + dual-module memory (`node_mem.v`, CHANNELS=2 = 2 x 64 GB 192-bit LPCAMM2, 384-bit, ~512 GB/s) |
+
+Each instantiates `rst_sync` + `clk_gate` + `node` and builds/lints/sims
+clean. The BF16 (`CU_TYPE 0`) and INT8 (`CU_TYPE 4`) expert passes are
+bit-exact validated by `HDL/core/node_reference_test.py` (see `--cu`); the
+other formats are validated by their unit testbenches.
+
 ## Adding an assembly
 
 1. Copy `boards/node_board.json` and change `name`.

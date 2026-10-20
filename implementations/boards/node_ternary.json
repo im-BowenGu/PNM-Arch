@@ -1,0 +1,46 @@
+{
+  "schema": "pnm-assembly/v1",
+  "name": "node_ternary",
+  "description": "One compute node variant: BitNet b1.58 ternary select-add accumulator ASIC (CU_TYPE 8) with a gated clock + synced reset. Ternary {-1,0,+1} weights x INT8 activations, INT32 accumulate, identity activation; ~1.58 bits/weight. No multiplier: the weight selects +act, -act, or 0.",
+
+  "clock": { "period_ns": 10 },
+  "reset_cycles": 4,
+  "run_cycles": 2000,
+
+  "external": [
+    { "name": "clk",       "dir": "input",  "width": 1 },
+    { "name": "rst_n",     "dir": "input",  "width": 1 },
+    { "name": "scan_en",   "dir": "input",  "width": 1 },
+    { "name": "done",      "dir": "output", "width": 1 },
+    { "name": "out_val",   "dir": "output", "width": 8 }
+  ],
+
+  "components": [
+    { "instance": "u_rst_sync", "module": "rst_sync", "params": { "STAGES": 2 } },
+    { "instance": "u_cg",       "module": "clk_gate" },
+    { "instance": "u_node",     "module": "node",
+      "params": { "N": 16, "EFF": 8, "CU_TYPE": 8, "WIDTH": 8 } }
+  ],
+
+  "connections": [
+    { "from": "ext.clk",           "to": ["u_rst_sync.clk", "u_cg.clk"] },
+    { "from": "ext.rst_n",         "to": ["u_rst_sync.rst_n_async"] },
+    { "from": "ext.scan_en",       "to": ["u_cg.scan_en"] },
+    { "from": "u_rst_sync.rst_n_sync", "to": ["u_cg.enable", "u_node.rst_n"] },
+    { "from": "u_cg.gclk",         "to": ["u_node.clk"] },
+    { "from": "u_node.done",       "to": ["ext.done"] },
+    { "from": "u_node.out_val",    "to": ["ext.out_val"] }
+  ],
+
+  "tieoffs": [
+    { "to": "u_node.start",        "value": "1'b0" },
+    { "to": "u_node.hidden_valid", "value": "1'b0" },
+    { "to": "u_node.hidden_data",  "value": "8'h00" },
+    { "to": "u_node.weight_load",  "value": "1'b0" },
+    { "to": "u_node.weight_sel",   "value": "1'b0" },
+    { "to": "u_node.weight_addr",  "value": "16'h0000" },
+    { "to": "u_node.weight_data",  "value": "8'h00" },
+    { "to": "u_node.out_addr",     "value": "8'h00" },
+    { "to": "u_node.dbg_addr",     "value": "8'h00" }
+  ]
+}

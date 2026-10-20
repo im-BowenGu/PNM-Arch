@@ -26,6 +26,11 @@ SCHEMA_VERSION = "pnm-assembly/v1"
 REPO_ROOT = Path(__file__).resolve().parent.parent
 HDL_DIR = REPO_ROOT / "HDL"
 
+# Include search dirs: HDL/ plus every directory under it that holds a .vh
+# header (e.g. HDL/core for bf16_fp.vh). iverilog does not search the
+# including file's own directory, so these must be passed explicitly.
+INCLUDE_DIRS = sorted({HDL_DIR} | {p.parent for p in HDL_DIR.glob("**/*.vh")})
+
 
 class Port:
     def __init__(self, direction, width_expr, name):
@@ -194,6 +199,20 @@ def port_width_text(port, inst_params):
     return abs(msb - lsb) + 1, f" [{max(msb, lsb)}:{min(msb, lsb)}]"
 
 
+def effective_params(mod, inst_params):
+    """Module parameter defaults overridden by the instance's params.
+
+    Lets port-width expressions that reference a defaulted parameter (e.g.
+    node.v's `[MEM_CHAN*WIDTH-1:0]` hidden_data when a board omits MEM_CHAN)
+    resolve instead of collapsing to an unknown width."""
+    merged = {}
+    for name, default in mod.params:
+        v = _eval_index(default, {})
+        merged[name] = v if v is not None else default
+    merged.update(inst_params or {})
+    return merged
+
+
 class AsmError(Exception):
     pass
 
@@ -320,7 +339,7 @@ def main():
         else:
             comp = comps[head]
             mod = modules[comp["module"]]
-            width = next((port_width_text(p, comp.get("params", {}))[0]
+            width = next((port_width_text(p, effective_params(mod, comp.get("params", {})))[0]
                           for p in mod.ports if p.name == port), None)
             drv_net = alloc_net(drv_ep, width)
             inst_conns[head].append((port, drv_net))
@@ -335,8 +354,9 @@ def main():
 
     for t in tieoffs:
         head, port = split_endpoint(t["to"])
-        width = next((port_width_text(p, comps[head].get("params", {}))[0]
-                      for p in modules[comps[head]["module"]].ports if p.name == port), None)
+        tmod = modules[comps[head]["module"]]
+        width = next((port_width_text(p, effective_params(tmod, comps[head].get("params", {})))[0]
+                      for p in tmod.ports if p.name == port), None)
         net = alloc_net(f"tie_{t['to']}", width)
         nets[net]["driver"] = t["value"]
         const_assigns.append((net, t["value"]))
@@ -360,7 +380,12 @@ def main():
         if info["driver"] == "EXT_IN":
             continue
         w = info["width"]
-        rng = "" if w == 1 else f" [{max(w,1)-1}:0]"
+        if w is None:
+            raise SystemExit(
+                f"error: cannot resolve width of net {netname} (driver "
+                f"{info.get('driver')}); pass the parameter explicitly in the "
+                "board's component params")
+        rng = "" if w == 1 else f" [{w-1}:0]"
         lines.append(f"    wire{rng} {netname};")
 
     lines.append("")
@@ -435,9 +460,10 @@ def main():
         "\n".join(str(f) for f in used_files) + "\n")
 
     if args.lint:
-        cmd = (["verilator", "--lint-only", "-Wno-MULTITOP",
-                "--top-module", f"{name}_top", "-I", str(HDL_DIR),
-                str(top_path)] + [str(f) for f in used_files])
+        cmd = (["verilator", "--lint-only", "-Wno-MULTITOP", "-Wno-fatal",
+                "--top-module", f"{name}_top"]
+               + [f"-I{d}" for d in INCLUDE_DIRS]
+               + [str(top_path)] + [str(f) for f in used_files])
         print("+", " ".join(cmd))
         subprocess.run(cmd, check=True)
         print(f"LINT OK: {top_path}")
@@ -450,9 +476,10 @@ def main():
         print(f"  flist: {outdir / 'filelist.f'}")
         return 0
 
-    cmd = (["iverilog", "-g2005", "-I", str(HDL_DIR),
-            "-o", str(outdir / f"{name}_top.out"),
-            str(top_path), str(outdir / f"tb_{name}.v")]
+    cmd = (["iverilog", "-g2005"]
+           + sum([["-I", str(d)] for d in INCLUDE_DIRS], [])
+           + ["-o", str(outdir / f"{name}_top.out"),
+              str(top_path), str(outdir / f"tb_{name}.v")]
            + [str(f) for f in used_files])
     print("+", " ".join(cmd))
     subprocess.run(cmd, check=True)

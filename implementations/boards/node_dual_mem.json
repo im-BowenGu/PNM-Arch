@@ -1,0 +1,55 @@
+{
+  "schema": "pnm-assembly/v1",
+  "name": "node_dual_mem",
+  "description": "One compute node: BF16 MoE-expert MAC ASIC (CU_TYPE 0) with a gated clock + synced reset, paired with the node's multi-channel memory (node_mem.v, CHANNELS=2 = two 64 GB 192-bit LPCAMM2 modules -> 384-bit, ~512 GB/s). The reference 128 GB / 64 TB node packaging.",
+
+  "clock": { "period_ns": 10 },
+  "reset_cycles": 4,
+  "run_cycles": 2000,
+
+  "external": [
+    { "name": "clk",       "dir": "input",  "width": 1 },
+    { "name": "rst_n",     "dir": "input",  "width": 1 },
+    { "name": "scan_en",   "dir": "input",  "width": 1 },
+    { "name": "done",      "dir": "output", "width": 1 },
+    { "name": "out_val",   "dir": "output", "width": 16 }
+  ],
+
+  "components": [
+    { "instance": "u_rst_sync", "module": "rst_sync", "params": { "STAGES": 2 } },
+    { "instance": "u_cg",       "module": "clk_gate" },
+    { "instance": "u_node",     "module": "node",
+      "params": { "N": 16, "EFF": 8, "CU_TYPE": 0, "WIDTH": 16, "MEM_CHAN": 2 } },
+    { "instance": "u_mem",      "module": "node_mem",
+      "params": { "CHANNELS": 2, "DEPTH": 1024, "WIDTH": 16, "CAS": 2, "ADDRW": 16 } }
+  ],
+
+  "connections": [
+    { "from": "ext.clk",           "to": ["u_rst_sync.clk", "u_cg.clk"] },
+    { "from": "ext.rst_n",         "to": ["u_rst_sync.rst_n_async"] },
+    { "from": "ext.scan_en",       "to": ["u_cg.scan_en"] },
+    { "from": "u_rst_sync.rst_n_sync", "to": ["u_cg.enable", "u_node.rst_n", "u_mem.rst_n"] },
+    { "from": "u_cg.gclk",         "to": ["u_node.clk", "u_mem.clk"] },
+    { "from": "u_node.done",       "to": ["ext.done"] },
+    { "from": "u_node.out_val",    "to": ["ext.out_val"] }
+  ],
+
+  "tieoffs": [
+    { "to": "u_node.start",        "value": "1'b0" },
+    { "to": "u_node.hidden_valid", "value": "1'b0" },
+    { "to": "u_node.hidden_data",  "value": "32'h0000_0000" },
+    { "to": "u_node.weight_load",  "value": "1'b0" },
+    { "to": "u_node.weight_sel",   "value": "1'b0" },
+    { "to": "u_node.weight_addr",  "value": "16'h0000" },
+    { "to": "u_node.weight_data",  "value": "16'h0000" },
+    { "to": "u_node.out_addr",     "value": "8'h00" },
+    { "to": "u_node.dbg_addr",     "value": "8'h00" },
+
+    { "to": "u_mem.wr_en",         "value": "1'b0" },
+    { "to": "u_mem.wr_addr",       "value": "16'h0000" },
+    { "to": "u_mem.wr_data",       "value": "16'h0000" },
+    { "to": "u_mem.req_valid",     "value": "1'b0" },
+    { "to": "u_mem.req_addr",      "value": "16'h0000" },
+    { "to": "u_mem.req_words",     "value": "16'h0000" }
+  ]
+}
