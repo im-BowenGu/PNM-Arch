@@ -68,6 +68,33 @@ implementations/        ← Board netlist assembly + schema
 docs/                   ← Usage manual, profiling guide
 ```
 
+### Published split repositories
+
+This monorepo is the working source of truth. The same content is published
+as six sibling repositories so each component can be cloned on its own:
+
+| Repo | Contents |
+|------|----------|
+| [`PNM-HDL`](https://github.com/im-BowenGu/PNM-HDL) | Routing fabric + compute-unit RTL, the compute node, the RISC-V orchestrator family, `implementations/` board tooling |
+| [`PNM-sim`](https://github.com/im-BowenGu/PNM-sim) | Go co-simulation harness, model compiler, inference client, source-language frontends |
+| [`PNM-fw`](https://github.com/im-BowenGu/PNM-fw) | C firmware twin for MCU/SoC targets |
+| [`PNM-PCB`](https://github.com/im-BowenGu/PNM-PCB) | LibrePCB board designs (interconnect, processor, gating ASIC, node) |
+| [`PNM-toolchain`](https://github.com/im-BowenGu/PNM-toolchain) | MCU / SoC / Linux / seL4 cross-compilation toolchains |
+| [`PNM-paper`](https://github.com/im-BowenGu/PNM-paper) | Manuscript (`Paper.MD`), build pipeline, submission artifacts |
+
+Re-sync them after changing the monorepo:
+
+```bash
+tools/split_sync.sh            # report what would change (dry run)
+tools/split_sync.sh --apply    # copy the git-tracked files + prune stale ones
+tools/split_sync.sh --apply --commit "message"   # ... and commit in each repo
+```
+
+Only files tracked by git are copied, so generated artifacts can never leak
+into a public repo; each split repo keeps its own `README.md`, `LICENSE` and
+`.gitignore`. The harness resolves its siblings in both layouts, so a
+split checkout runs its own suite: `cd PNM-sim && go run ./cmd/pnmt`.
+
 ## Getting started
 
 Requires [Nix](https://nixos.org) with flake support (`nix develop`).
