@@ -95,7 +95,10 @@ module node #(
     reg [63:0] act      [0:EFF-1];     // activation
     reg [63:0] out      [0:N-1];       // expert output = WD x act
 
-    assign out_val  = (out_addr < N[7:0]) ? out[out_addr][WIDTH-1:0] : {WIDTH{1'b0}};
+    // The output-window guard must be width-safe: N can be 256 or more, so a
+    // truncated N[7:0] comparison would read 0 and blank the whole window.
+    localparam [31:0] N_OUT = N;
+    assign out_val  = (out_addr < N_OUT) ? out[out_addr][WIDTH-1:0] : {WIDTH{1'b0}};
     assign gate_val = (dbg_addr < EFF)    ? gate[dbg_addr][WIDTH-1:0] : {WIDTH{1'b0}};
     assign up_val   = (dbg_addr < EFF)    ? up[dbg_addr][WIDTH-1:0]   : {WIDTH{1'b0}};
     assign act_val  = (dbg_addr < EFF)    ? act[dbg_addr][WIDTH-1:0]  : {WIDTH{1'b0}};
@@ -144,7 +147,7 @@ module node #(
     reg [4:0]   x_state;
     reg [11:0]  row_ptr;             // current output row being computed
     reg [11:0]  col_ptr;             // MAC column inside the row
-    reg [7:0]   in_ptr;              // hidden ingest pointer
+    reg [11:0]  in_ptr;              // hidden ingest pointer (N up to 4096)
     reg [63:0]  acc;                 // running accumulator
     wire        hidden_wr;
 

@@ -296,6 +296,15 @@ if [ "$REAL_WEIGHTS" = 1 ]; then
         tail -20 /tmp/pnm_node_ref_tern.log | sed 's/^/      /'
     fi
 
+    printf "  %-52s" "multi-layer composition (ASIC->fabric->node, 3 layers)"
+    if PNM_MODEL_DIR="$MODEL" bash -c "cd $SIM && $GO test ./internal/pnm/ -count=1 -run TestRouterFabricNodeCompositionMultiLayer -v" >/tmp/pnm_multilayer.log 2>&1; then
+        printf "PASS\n"; pass=$((pass + 1))
+        grep -E "multi-layer composition" /tmp/pnm_multilayer.log | tail -1 | sed 's/^ *//; s/^/      /'
+    else
+        printf "FAIL\n"; fail=$((fail + 1))
+        tail -20 /tmp/pnm_multilayer.log | sed 's/^/      /'
+    fi
+
     printf "  %-52s" "pnmgate hardware-gated inference (expects \"Berlin\")"
     set +e
     out=$(cd "$SIM" && $GO run ./cmd/pnmgate -model "$MODEL" -layers 0 -width 256 \
