@@ -70,6 +70,37 @@ implementations/        ← Board netlist assembly + schema
 docs/                   ← Usage manual, profiling guide
 ```
 
+### The router chip's software (and what actually runs on it)
+
+The router SoC ships two OS stacks, both **software** (so they live with the
+firmware, not with the cross-compilers):
+
+| Tree | What it is | Status |
+|------|------------|--------|
+| `fw/os/linux/` | Trimmed NOMMU Linux (RV32I, no MMU/FPU) + a freestanding init that prints a banner, reads the PNM status register, probes the NVMe window and idles | the kernel and the init image **build**; the init does **not yet boot** on the proof-of-concept core (see below) |
+| `fw/os/sel4/` | seL4 microkernel root task for the same chip | the build system is in place; the seL4 source tree is not vendored |
+
+```bash
+cd fw/os/linux
+make init.hex            # link the init image (needs the RISC-V cross compiler)
+```
+
+**What is machine-checked.** `HDL/tb_linux_init.v` executes that init binary
+on the chip's *own* `rv32_core.v` and `uart.v` and checks the boot banner, so
+the driver is verified against the chip's models rather than a host's. It is
+currently reported as a **skip** by `pnmt`, because it exposes a real gap in
+the proof-of-concept core: **the core does not implement the JAL/JALR link
+store**, so the return address is never written to `memory[sp-4]`, and no
+compiler-generated code (which always spills the link to the stack) can run
+on it. The fix is small, but the hand-written boot-ROM firmware in the
+orchestrator testbenches has to establish a stack pointer first.
+
+**How the test suite decides.** `iverilog`'s `$finish(1)` exits with status
+0 (the argument is the diagnostic level, not the exit code), so the test
+runner now decides on the *output*: a `FAILED` marker in a testbench's
+output fails the test. Without that, a broken testbench was reported as a
+pass.
+
 ### Published split repositories
 
 This monorepo is the working source of truth. The same content is published
