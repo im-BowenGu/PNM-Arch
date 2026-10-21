@@ -122,7 +122,7 @@ through this window.
 
 | Region | Address | Size | Description |
 |--------|---------|------|-------------|
-| SRAM | `0x8000_0000` | 64 KB | Scratch / staging for the host's DMA path |
+| SRAM | `0x8000_0000` | 64 KB | Scratch / staging |
 | PCIe | `0xC000_0000` | 256 MB | Gen5 x16 PHY registers |
 | NVMe | `0xD000_0000` | 64 B | AXI-Lite register window |
 | PNM | `0xF000_0000` | 64 B | Router chip registers |

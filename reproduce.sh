@@ -60,6 +60,7 @@ if [ "$SELF_CHECK" = 1 ]; then
         "$HDL/lxy_repeater.v" "$HDL/xy_turn.v" "$HDL/node_eject.v" \
         "$HDL/tb_fabric.v" "$HDL/tb_load.v" \
         "$HDL/pnm_host_bridge.v" "$HDL/tb_pnm_host_bridge.v" \
+        "$HDL/pnm_host_top.v" "$HDL/tb_host_path_e2e.v" \
         "$HDL/core/bf16_fp.vh" "$HDL/core/fma_core.v" \
         "$HDL/core/arith_unit.v" \
         "$HDL/core/gemma_decoder_block.v" "$HDL/core/node.v" \

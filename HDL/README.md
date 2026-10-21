@@ -50,6 +50,7 @@ Verilog-2005 model of the **routing fabric**, **compute units**, and **co-simula
 | `tb_bf16_mac_array.v` | BF16 MAC array testbench |
 | `tb_int8_mac.v` | INT8 MAC testbench |
 | `tb_pnm_host_bridge.v` | Host bridge testbench — the TB plays the host and checks the emitted flit and the counters |
+| `tb_host_path_e2e.v` | The whole host path — SPI adapter, arbiter, and bridge composed, over the real SPI frame protocol |
 | `tb_gating_modes.v` | The two gating managers — the same weights and the same hidden state programmed through the embedded node's bus and through the fabric, requiring the same top-K decision |
 | `tb_moe_gating.v` | MoE gating testbench |
 | `tb_node.v` | Compute-node testbench — boots expert weights, streams the hidden vector, dumps gate/up/act/out (`node_reference_test.py` drives it; BF16 + INT8 bit-exact) |
@@ -388,6 +389,31 @@ loops, branches, or dynamic allocation. Supported constructs:
 All three compilers produce **straight-line code**: the IR is a linear sequence
 of instructions with no control flow. This is sufficient for inference
 workloads (forward pass only) but not for training or iterative algorithms.
+
+### The host path, end to end (`pnm_host_top.v`)
+
+`pnm_host_top.v` is the host bridge board's top level: it composes
+`pi_bridge` (the SPI adapter) -> `pnm_arb` (the round-robin arbiter) ->
+`pnm_host_bridge` (the router engine) and owns the address map, so the
+arbiter's 8-bit byte offset and the bridge's 32-bit window are reconciled in
+one place.
+
+This module existed because the host path was never simulated.  Every
+host-path testbench drove a *model* of the chip: `tb_host_bmc.v` and
+`tb_dma_lpddr6.v` drove the SPI adapter and the arbiter into register files
+they defined inside the testbench, and `tb_pnm_host_bridge.v` drove the
+bridge alone.  The composition was not checked, and it did not work: the
+arbiter's byte offset never selected a slave in the bridge, and the
+bridge's registered read data was sampled by the arbiter one cycle before it
+was updated, so every register read returned zero.  `tb_host_path_e2e.v`
+(now the regression for both) drives the real chain over SPI with the same
+48-bit frame the Raspberry Pi drivers speak, and checks a register
+read-back, a byte-exact wormhole flit with an independently computed CRC-16,
+the fabric's acceptance of that flit, and the result path.
+
+The bridge's PNM read path is combinational for the same reason the 16550
+and the gating ASIC present theirs: a registered read would be sampled one
+cycle early by the arbiter.
 
 ### The host bridge (`pnm_host_bridge.v`)
 

@@ -281,6 +281,7 @@ func (r *runner) hdlFabric() {
 		{"fabric", []string{"hfr.v", "flit_gate.v", "vc_merge.v", "lxy_repeater.v", "xy_turn.v", "node_eject.v", "tb_fabric.v"}},
 		{"load", []string{"hfr.v", "flit_gate.v", "vc_merge.v", "lxy_repeater.v", "xy_turn.v", "node_eject.v", "tb_load.v"}},
 		{"host_bridge", []string{"pnm_host_bridge.v", "tb_pnm_host_bridge.v"}},
+		{"host_path_e2e", []string{"pnm_host_top.v", "pnm_arb.v", "pnm_host_bridge.v", "pi_bridge.v", "flit_gate.v", "tb_host_path_e2e.v"}},
 		{"pi_bridge", []string{"pi_bridge.v", "tb_pi_bridge.v"}},
 		{"host_bmc", []string{"pi_bridge.v", "pnm_arb.v", "tb_host_bmc.v"}},
 		{"kv_cache_bank", []string{"kv_offload.v", "core/crc16.v", "kv_cache_bank.v", "tb_kv_cache_bank.v"}},

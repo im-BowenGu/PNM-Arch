@@ -1,4 +1,4 @@
-This is pdfTeX, Version 3.141592653-2.6-1.40.26 (TeX Live 2024/nixos.org) (preloaded format=pdflatex 1980.1.1)  21 OCT 2026 05:44
+This is pdfTeX, Version 3.141592653-2.6-1.40.26 (TeX Live 2024/nixos.org) (preloaded format=pdflatex 1980.1.1)  21 OCT 2026 07:18
 entering extended mode
  restricted \write18 enabled.
  %&-line parsing enabled.
@@ -566,13 +566,7 @@ Underfull \vbox (badness 10000) has occurred while \output is active []
 
 
 
-LaTeX Font Info:    Trying to load font information for TS1+ptm on input line 4
-9.
 
-(/nix/store/4l3m65sl104swdhl3hrpnqmachm98qgx-texlive-combined-medium-2024-final
--texmfdist/tex/latex/psnfss/ts1ptm.fd
-File: ts1ptm.fd 2001/06/04 font definitions for TS1/ptm.
-)
 
 [1{/nix/store/25d08fhkn9pzi5cjpd12r00irabg760m-texlive-combined-medium-2024-fin
 al/share/texmf-var/fonts/map/pdftex/updmap/pdftex.map}{/nix/store/4l3m65sl104sw
@@ -581,6 +575,13 @@ s/base/8r.enc}
 
 
 ]
+LaTeX Font Info:    Trying to load font information for TS1+ptm on input line 4
+9.
+
+(/nix/store/4l3m65sl104swdhl3hrpnqmachm98qgx-texlive-combined-medium-2024-final
+-texmfdist/tex/latex/psnfss/ts1ptm.fd
+File: ts1ptm.fd 2001/06/04 font definitions for TS1/ptm.
+)
 Underfull \hbox (badness 1259) in paragraph at lines 53--54
 \OT1/ptm/m/n/10 (+20) by Unix pipelines[[]], pure func-tional programming[[]],
  []
@@ -590,21 +591,12 @@ Underfull \hbox (badness 1259) in paragraph at lines 53--54
 
 
 [2]
-Underfull \vbox (badness 10000) has occurred while \output is active []
-
-
-
-
-Underfull \vbox (badness 10000) has occurred while \output is active []
 
 
 
 [3]
-Underfull \vbox (badness 1102) has occurred while \output is active []
 
-
-
-<figures/fig_topology.png, id=158, 406.1574pt x 210.3057pt>
+<figures/fig_topology.png, id=159, 406.1574pt x 210.3057pt>
 File: figures/fig_topology.png Graphic file (type png)
 <use figures/fig_topology.png>
 Package pdftex.def Info: figures/fig_topology.png  used on input line 93.
@@ -760,15 +752,15 @@ Underfull \hbox (badness 10000) in paragraph at lines 206--207
  []
 
 
+Underfull \vbox (badness 10000) has occurred while \output is active []
+
+
+
+
 Underfull \hbox (badness 2547) in paragraph at lines 210--211
 \OMS/cmsy/m/n/10 d[]\OML/cmm/m/it/10 =[]\OMS/cmsy/m/n/10 e$\OT1/ptm/m/n/10 (+20
 ) . For a 30-layer
  []
-
-
-Underfull \vbox (badness 10000) has occurred while \output is active []
-
-
 
 
 Underfull \vbox (badness 10000) has occurred while \output is active []
@@ -785,7 +777,7 @@ Underfull \vbox (badness 10000) has occurred while \output is active []
 
 
 
-<figures/fig_pipeline.png, id=260, 428.19975pt x 153.57375pt>
+<figures/fig_pipeline.png, id=264, 428.19975pt x 153.57375pt>
 File: figures/fig_pipeline.png Graphic file (type png)
 <use figures/fig_pipeline.png>
 Package pdftex.def Info: figures/fig_pipeline.png  used on input line 238.
@@ -804,7 +796,7 @@ Underfull \vbox (badness 1895) has occurred while \output is active []
 
 [11 <./figures/fig_pipeline.png>]
 
-<figures/fig_doorbell.png, id=287, 462.16666pt x 228.3732pt>
+<figures/fig_doorbell.png, id=292, 462.16666pt x 228.3732pt>
 File: figures/fig_doorbell.png Graphic file (type png)
 <use figures/fig_doorbell.png>
 Package pdftex.def Info: figures/fig_doorbell.png  used on input line 288.
@@ -824,6 +816,9 @@ Underfull \vbox (badness 10000) has occurred while \output is active []
 Underfull \hbox (badness 8151) in paragraph at lines 340--340
 [][]\OT1/ptm/b/n/12 (+20) 2.15 Ver-i-fi-ca-tion method-ol-ogy: machine-
  []
+
+
+Underfull \vbox (badness 10000) has occurred while \output is active []
 
 
 
@@ -891,11 +886,10 @@ Underfull \hbox (badness 1342) in paragraph at lines 422--423
  []
 
 
-Underfull \vbox (badness 10000) has occurred while \output is active []
 
 
 
-
+[19]
 Underfull \hbox (badness 10000) in paragraph at lines 449--449
 []|\OT1/ptm/m/n/8 (+20) Node mem-ory
  []
@@ -913,9 +907,7 @@ Underfull \hbox (badness 5077) in paragraph at lines 449--449
 
 
 
-[19]
-
-<figures/fig_roofline.png, id=435, 414.46844pt x 243.18855pt>
+<figures/fig_roofline.png, id=437, 414.46844pt x 243.18855pt>
 File: figures/fig_roofline.png Graphic file (type png)
 <use figures/fig_roofline.png>
 Package pdftex.def Info: figures/fig_roofline.png  used on input line 475.
@@ -923,6 +915,9 @@ Package pdftex.def Info: figures/fig_roofline.png  used on input line 475.
 
 
 [20]
+Underfull \vbox (badness 10000) has occurred while \output is active []
+
+
 
 
 Overfull \hbox (1.5824pt too wide) in paragraph at lines 514--515
@@ -930,24 +925,21 @@ Overfull \hbox (1.5824pt too wide) in paragraph at lines 514--515
 RC flits---
  []
 
-<figures/fig_latency.png, id=453, 407.24146pt x 209.22165pt>
+<figures/fig_latency.png, id=455, 407.24146pt x 209.22165pt>
 File: figures/fig_latency.png Graphic file (type png)
 <use figures/fig_latency.png>
 Package pdftex.def Info: figures/fig_latency.png  used on input line 518.
 (pdftex.def)             Requested size: 235.90218pt x 121.19539pt.
 
 
-[21 <./figures/fig_roofline.png> <./figures/fig_latency.png>]
-Underfull \vbox (badness 10000) has occurred while \output is active []
-
-
+[21 <./figures/fig_roofline.png>]
 
 
 Underfull \vbox (badness 10000) has occurred while \output is active []
 
 
 
-[22]
+[22 <./figures/fig_latency.png>]
 Underfull \hbox (badness 10000) in paragraph at lines 553--553
 []|\OT1/ptm/m/n/8 (+20) Memory
  []
@@ -1026,17 +1018,17 @@ Underfull \vbox (badness 10000) has occurred while \output is active []
 
 
 
+Underfull \vbox (badness 10000) has occurred while \output is active []
+
+
+
+[27]
 Overfull \hbox (1.63248pt too wide) in paragraph at lines 641--642
 \OT1/ptm/m/n/10 (-20) a sub-second dis-patch out-age. There is no live router f
 ailover---
  []
 
 
-Underfull \vbox (badness 10000) has occurred while \output is active []
-
-
-
-[27]
 
 
 Underfull \vbox (badness 10000) has occurred while \output is active []
@@ -1044,6 +1036,9 @@ Underfull \vbox (badness 10000) has occurred while \output is active []
 
 
 [28]
+Underfull \vbox (badness 10000) has occurred while \output is active []
+
+
 
 
 Underfull \hbox (badness 3713) in paragraph at lines 666--667
@@ -1055,6 +1050,9 @@ Underfull \hbox (badness 3713) in paragraph at lines 666--667
 Underfull \hbox (badness 6559) in paragraph at lines 666--667
 \OT1/ptm/m/n/10 (+20) build scripts, and this manuscript, is avail-able at
  []
+
+
+Underfull \vbox (badness 7273) has occurred while \output is active []
 
 
 
@@ -1076,9 +1074,7 @@ Underfull \hbox (badness 4726) in paragraph at lines 702--703
 
 
 
-[31
-
-] (./paper.aux)
+[31] (./paper.aux)
  ***********
 LaTeX2e <2024-11-01> patch level 2
 L3 programming layer <2025-01-18>
@@ -1089,11 +1085,11 @@ Package rerunfilecheck Info: File `paper.out' has not changed.
 Here is how much of TeX's memory you used:
  13092 strings out of 474315
  209837 string characters out of 5718334
- 665889 words of memory out of 5000000
+ 663251 words of memory out of 5000000
  35583 multiletter control sequences out of 15000+600000
  592004 words of font info for 264 fonts, out of 8000000 for 9000
  430 hyphenation exceptions out of 8191
- 75i,11n,79p,3751b,572s stack positions out of 10000i,1000n,20000p,200000b,200000s
+ 75i,11n,79p,4129b,572s stack positions out of 10000i,1000n,20000p,200000b,200000s
 </nix/store/4l3m65sl104swdhl3hrpnqmachm98qgx-texlive-combined-medium-2024-fin
 al-texmfdist/fonts/type1/public/amsfonts/cm/cmmi10.pfb></nix/store/4l3m65sl104s
 wdhl3hrpnqmachm98qgx-texlive-combined-medium-2024-final-texmfdist/fonts/type1/p
@@ -1114,10 +1110,10 @@ e/4l3m65sl104swdhl3hrpnqmachm98qgx-texlive-combined-medium-2024-final-texmfdist
 texlive-combined-medium-2024-final-texmfdist/fonts/type1/urw/times/utmr8a.pfb><
 /nix/store/4l3m65sl104swdhl3hrpnqmachm98qgx-texlive-combined-medium-2024-final-
 texmfdist/fonts/type1/urw/times/utmri8a.pfb>
-Output written on paper.pdf (31 pages, 626440 bytes).
+Output written on paper.pdf (31 pages, 626872 bytes).
 PDF statistics:
- 740 PDF objects out of 1000 (max. 8388607)
- 658 compressed objects within 7 object streams
+ 745 PDF objects out of 1000 (max. 8388607)
+ 663 compressed objects within 7 object streams
  134 named destinations out of 1000 (max. 500000)
  45594 words of extra memory for PDF output out of 51595 (max. 10000000)
 

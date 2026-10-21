@@ -85,6 +85,8 @@ module gating_asic #(
     //   0x20  RESULT_IDX0 / 0x22 RESULT_IDX1
     //   0x24  RESULT_LOGIT0 / 0x26 RESULT_LOGIT1
     //   0x30+ 2*e           LOGIT[e] (read-only, all NUM_EXPERTS logits)
+    //   0x200+ 2*k          result rank k's expert id      (k = 0..TOP_K-1)
+    //   0x280+ 2*k          result rank k's logit          (k = 0..TOP_K-1)
     localparam [15:0] REG_CTRL      = 16'h0000;
     localparam [15:0] REG_STATUS    = 16'h0002;
     localparam [15:0] REG_CYCLE_LO  = 16'h0004;
@@ -106,6 +108,23 @@ module gating_asic #(
     localparam [15:0] REG_RES_LOG0  = 16'h0024;
     localparam [15:0] REG_RES_LOG1  = 16'h0026;
     localparam [15:0] REG_LOGIT     = 16'h0030;
+    // Rank windows: REG_RANK_IDX + 2*k is expert k's id and
+    // REG_RANK_LOG + 2*k is its logit, for k = 0 .. TOP_K-1.  They sit above
+    // the logit peek window (which reaches REG_LOGIT + 2*NUM_EXPERTS) so a
+    // manager with top-k > 2 -- the reference router is top-8 -- can read the
+    // whole decision over the bus, not just the first two ranks.
+    localparam [15:0] REG_RANK_IDX  = 16'h0200;
+    localparam [15:0] REG_RANK_LOG  = 16'h0280;
+
+    // ---------------------------------------------------------------
+    // The effective register bus: the embedded management node in mode A,
+    // the chip's local bus in mode B (the legacy/bring-up path).
+    // ---------------------------------------------------------------
+    wire [15:0] eff_addr  = mgmt_sel ? mgmt_addr  : bus_addr;
+    wire [15:0] eff_wdata = mgmt_sel ? mgmt_wdata : bus_wdata;
+    wire        eff_we    = mgmt_sel ? mgmt_we    : bus_we;
+    wire        eff_valid = mgmt_sel ? mgmt_valid : bus_valid;
+    wire        eff_ready = mgmt_sel ? mgmt_ready : bus_ready;
 
     // ---------------------------------------------------------------
     // Control / status registers
@@ -209,26 +228,32 @@ module gating_asic #(
 
     // ---------------------------------------------------------------
     // Logit peek window: read logits[REG_LOGIT + 2*e]
+    //
+    // The index must come from the *effective* bus, not the chip's bus: in
+    // mode A the embedded management node is the active manager and the chip
+    // bus is idle, so decoding from bus_addr would pin the window to expert 0.
     // ---------------------------------------------------------------
-    wire [7:0]  logit_idx = (bus_addr >= REG_LOGIT) ?
-                            (bus_addr - REG_LOGIT) >> 1 : 8'd0;
+    wire [7:0]  logit_idx = (eff_addr >= REG_LOGIT) ?
+                            (eff_addr - REG_LOGIT) >> 1 : 8'd0;
     wire [15:0] logit_val;
+
+    // Rank decode for the result windows.  The rank is the half-word index
+    // inside the window; a rank beyond TOP_K reads back as 0xFFFF (no such
+    // expert) rather than an out-of-range slice.
+    wire [7:0]  res_rank = (eff_addr >= REG_RANK_LOG) ?
+                            ((eff_addr - REG_RANK_LOG) >> 1) :
+                            (eff_addr >= REG_RANK_IDX) ?
+                            ((eff_addr - REG_RANK_IDX) >> 1) : 8'd0;
+    wire [15:0] res_idx_val   = (res_rank < TOP_K) ?
+                            mg_idx[res_rank*8 +: 8] : 16'hFFFF;
+    wire [15:0] res_logit_val = (res_rank < TOP_K) ?
+                            mg_logit[res_rank*16 +: 16] : 16'h0000;
 
     // Read data is shared: whichever manager is active sees the same
     // register file (mode A reads it over mgmt_*, mode B over the fabric).
     reg [15:0] rd_data;
     assign bus_rdata  = rd_data;
     assign mgmt_rdata = rd_data;
-
-    // ---------------------------------------------------------------
-    // The effective register bus: the embedded management node in mode A,
-    // the chip's local bus in mode B (the legacy/bring-up path).
-    // ---------------------------------------------------------------
-    wire [15:0] eff_addr  = mgmt_sel ? mgmt_addr  : bus_addr;
-    wire [15:0] eff_wdata = mgmt_sel ? mgmt_wdata : bus_wdata;
-    wire        eff_we    = mgmt_sel ? mgmt_we    : bus_we;
-    wire        eff_valid = mgmt_sel ? mgmt_valid : bus_valid;
-    wire        eff_ready = mgmt_sel ? mgmt_ready : bus_ready;
 
 
     // ---------------------------------------------------------------
@@ -403,7 +428,13 @@ module gating_asic #(
                         REG_RES_LOG0:  rd_data   <= mg_logit[15:0];
                         REG_RES_LOG1:  rd_data   <= mg_logit[31:16];
                         default:
-                            if (bus_addr >= REG_LOGIT)
+                            if (eff_addr >= REG_RANK_IDX &&
+                                eff_addr <  REG_RANK_IDX + 2*TOP_K)
+                                rd_data   <= res_idx_val;
+                            else if (eff_addr >= REG_RANK_LOG &&
+                                eff_addr <  REG_RANK_LOG + 2*TOP_K)
+                                rd_data   <= res_logit_val;
+                            else if (eff_addr >= REG_LOGIT)
                                 rd_data   <= logit_val;
                             else
                                 rd_data   <= 16'd0;

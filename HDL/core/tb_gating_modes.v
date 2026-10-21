@@ -101,6 +101,28 @@ module tb_gating_modes;
     localparam [15:0] REG_COORD_M   = 16'h001A;
     localparam [15:0] REG_RES_IDX0  = 16'h0020;
     localparam [15:0] REG_RES_LOG0  = 16'h0024;
+    localparam [15:0] REG_RANK_IDX  = 16'h0200;
+    localparam [15:0] REG_RANK_LOG  = 16'h0280;
+    localparam [15:0] REG_LOGIT     = 16'h0030;
+
+    // BF16 "greater than", using the library's own comparator so the
+    // negative values (whose sign is the MSB) order correctly.
+    function bf16_gt;
+        input [15:0] a;
+        input [15:0] b;
+        begin
+            if (a[15] != b[15])
+                bf16_gt = ~a[15] & ((a[14:7] != 0) | (b[14:7] != 0));
+            else if (a[14:7] == 0)
+                bf16_gt = 1'b0;
+            else if (b[14:7] == 0)
+                bf16_gt = ~a[15];
+            else if (a[15])
+                bf16_gt = (a[14:0] < b[14:0]);
+            else
+                bf16_gt = (a[14:0] > b[14:0]);
+        end
+    endfunction
 
     // A small table of easy BF16 constants: 1, 2, 3, 4, 0.5, 0.25 and their
     // negatives.  The weights are distinct per expert so the top-k is not
@@ -124,6 +146,7 @@ module tb_gating_modes;
     endfunction
 
     integer e, h, i;
+    reg [15:0] rd_idx, rd_log, peek_max;
     reg [15:0] idx_a [0:TOP_K-1];
     reg [15:0] idx_b [0:TOP_K-1];
     reg [15:0] log_a [0:TOP_K-1];
@@ -142,11 +165,12 @@ module tb_gating_modes;
     task mgmt_xfer;
         input [15:0] addr;
         input [15:0] wdata;
+        input        we;
         begin
             #1;
             mgmt_addr  = addr;
             mgmt_wdata = wdata;
-            mgmt_we    = 1'b1;
+            mgmt_we    = we;
             mgmt_valid = 1'b1;
             @(posedge clk);
         end
@@ -183,13 +207,28 @@ module tb_gating_modes;
         end
     endtask
 
+    // A single read on the embedded management node's bus.  It needs the
+    // same priming as a write: ready is a registered copy of valid, so the
+    // first edge only arms the handshake and the second fires the
+    // transaction.
+    task mgmt_read;
+        input  [15:0] addr;
+        output [15:0] rdata;
+        begin
+            mgmt_prime;
+            mgmt_xfer(addr, 16'd0, 1'b0);
+            mgmt_idle;
+            rdata = mgmt_rdata;
+        end
+    endtask
+
     // A single write on the embedded management node's bus.
     task mgmt_write;
         input [15:0] addr;
         input [15:0] wdata;
         begin
             mgmt_prime;
-            mgmt_xfer(addr, wdata);
+            mgmt_xfer(addr, wdata, 1'b1);
             mgmt_idle;
         end
     endtask
@@ -255,15 +294,15 @@ module tb_gating_modes;
             mgmt_write(REG_COORD_M, 16'd5);
             mgmt_prime;
             for (e = 0; e < NUM_EXPERTS; e = e + 1) begin
-                mgmt_xfer(REG_WGHT_ADDR_LO, e * HIDDEN_DIM);
-                mgmt_xfer(REG_WGHT_ADDR_HI, 16'd0);
+                mgmt_xfer(REG_WGHT_ADDR_LO, e * HIDDEN_DIM, 1'b1);
+                mgmt_xfer(REG_WGHT_ADDR_HI, 16'd0, 1'b1);
                 for (h = 0; h < HIDDEN_DIM; h = h + 1)
-                    mgmt_xfer(REG_WGHT_DATA, pick(e * HIDDEN_DIM + h + 1));
+                    mgmt_xfer(REG_WGHT_DATA, pick(e * HIDDEN_DIM + h + 1), 1'b1);
             end
-            mgmt_xfer(REG_HID_ADDR_LO, 16'd0);
-            mgmt_xfer(REG_HID_ADDR_HI, 16'd0);
+            mgmt_xfer(REG_HID_ADDR_LO, 16'd0, 1'b1);
+            mgmt_xfer(REG_HID_ADDR_HI, 16'd0, 1'b1);
             for (h = 0; h < HIDDEN_DIM; h = h + 1)
-                mgmt_xfer(REG_HID_DATA, pick(h + 2));
+                mgmt_xfer(REG_HID_DATA, pick(h + 2), 1'b1);
             mgmt_idle;
         end
     endtask
@@ -301,6 +340,48 @@ module tb_gating_modes;
         end
         $display("mode A (embedded management node): top-%0d = %0d, %0d", TOP_K,
                  idx_a[0], idx_a[1]);
+
+        // The management node must be able to read the decision back over
+        // its own bus -- that is the whole point of mode A.  Check every
+        // rank through the rank window, and check the logit peek window
+        // too: the peek index has to follow the *effective* bus, or in mode A
+        // it would be stuck on expert 0.
+        for (i = 0; i < TOP_K; i = i + 1) begin
+            mgmt_read(REG_RANK_IDX + 2*i, rd_idx);
+            mgmt_read(REG_RANK_LOG + 2*i, rd_log);
+            if (rd_idx[7:0] !== idx_a[i]) begin
+                $display("FAIL: rank %0d id over the bus: %0d != %0d",
+                         i, rd_idx[7:0], idx_a[i]);
+                errors = errors + 1;
+            end
+            if (rd_log !== log_a[i]) begin
+                $display("FAIL: rank %0d logit over the bus: %h != %h",
+                         i, rd_log, log_a[i]);
+                errors = errors + 1;
+            end
+        end
+        // The logit peek window must address the expert the manager asked
+        // for.  The invariant that catches it: scanning the whole window,
+        // the largest logit must be the rank-0 logit the engine selected.
+        // If the peek index followed the chip's idle bus instead of the
+        // effective one, every read would return expert 0 and the maximum
+        // would not match.
+        peek_max = 16'hFF80;   // negative infinity: the minimum BF16
+        for (i = 0; i < NUM_EXPERTS; i = i + 1) begin
+            mgmt_read(REG_LOGIT + 2*i, rd_log);
+            if (rd_log === 16'hxxxx || rd_log === 16'hzzzz) begin
+                $display("FAIL: logit peek window is unreadable at expert %0d", i);
+                errors = errors + 1;
+                i = NUM_EXPERTS;   // one report is enough
+            end else if (bf16_gt(rd_log, peek_max)) begin
+                peek_max = rd_log;
+            end
+        end
+        if (bf16_gt(peek_max, log_a[0]) || bf16_gt(log_a[0], peek_max)) begin
+            $display("FAIL: the logit peek window's maximum %h is not the selected rank-0 logit %h",
+                     peek_max, log_a[0]);
+            errors = errors + 1;
+        end
 
         // ---------------- mode B: the host over the fabric ----------------
         mgmt_sel = 1'b0;

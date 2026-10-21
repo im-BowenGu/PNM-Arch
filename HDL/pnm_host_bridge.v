@@ -215,7 +215,6 @@ module pnm_host_bridge #(
             fb_out_valid_r     <= 1'b0;
             fb_out_sop_r       <= 1'b0;
             fb_out_eop_r       <= 1'b0;
-            pnm_rdata          <= 32'h0;
             boot_done_r        <= 1'b0;
         end else begin
             fb_out_valid_r <= 1'b0;
@@ -332,20 +331,34 @@ module pnm_host_bridge #(
             if (spine_extract_valid && spine_extract_eop)
                 route_dispatches <= route_dispatches + 1;
 
-            // CPU register reads
-            pnm_rdata <= 32'h0;
-            if (sel_pnm && host_valid && !host_we) begin
-                case (pnm_addr)
-                    8'h00: pnm_rdata <= {30'h0, 1'b0, pnm_busy};  // STATUS
-                    8'h14: pnm_rdata <= {30'h0, 1'b0, pnm_busy};
-                    8'h18: pnm_rdata <= spine_extract_data;
-                    8'h1C: pnm_rdata <= route_errors;
-                    8'h20: pnm_rdata <= route_dispatches;
-                    8'h24: pnm_rdata <= route_weight_flits;
-                    default: pnm_rdata <= 32'h0;
-                endcase
-            end
         end
+    end
+
+    // -------------------------------------------------------------------------
+    // PNM register reads
+    //
+    // These are combinational, like the SRAM read above.  A registered read
+    // would be sampled by the arbiter one cycle too early: the arbiter takes
+    // slv_rdata on the same edge it completes the transaction, so the value
+    // it would see is the *previous* access's -- every register read would
+    // return zero on the first access.  Combinational also matches how the
+    // 16550 and the gating ASIC present their read data.
+    // -------------------------------------------------------------------------
+    always @(*) begin
+        pnm_rdata = 32'h0;
+        case (pnm_addr)
+            8'h00: pnm_rdata = {30'h0, 1'b0, pnm_busy};     // STATUS
+            8'h04: pnm_rdata = {24'h0, route_layer};        // ROUTE_LAYER
+            8'h08: pnm_rdata = {24'h0, route_module};       // ROUTE_MODULE
+            8'h0C: pnm_rdata = {16'h0, route_len};          // ROUTE_LEN
+            8'h10: pnm_rdata = {24'h0, route_payload[route_wpos]}; // ROUTE_DATA
+            8'h14: pnm_rdata = {30'h0, 1'b0, pnm_busy};
+            8'h18: pnm_rdata = spine_extract_data;          // ROUTE_RESULT
+            8'h1C: pnm_rdata = route_errors;                // ROUTE_ERRORS
+            8'h20: pnm_rdata = route_dispatches;            // ROUTE_DISPATCH
+            8'h24: pnm_rdata = route_weight_flits;          // ROUTE_WEIGHT_FLITS
+            default: pnm_rdata = 32'h0;
+        endcase
     end
 
 endmodule
