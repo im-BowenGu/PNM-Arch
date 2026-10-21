@@ -86,14 +86,29 @@ make init.hex            # link the init image (needs the RISC-V cross compiler)
 ```
 
 **What is machine-checked.** `HDL/tb_linux_init.v` executes that init binary
-on the chip's *own* `rv32_core.v` and `uart.v` and checks the boot banner, so
-the driver is verified against the chip's models rather than a host's. It is
-currently reported as a **skip** by `pnmt`, because it exposes a real gap in
-the proof-of-concept core: **the core does not implement the JAL/JALR link
-store**, so the return address is never written to `memory[sp-4]`, and no
-compiler-generated code (which always spills the link to the stack) can run
-on it. The fix is small, but the hand-written boot-ROM firmware in the
-orchestrator testbenches has to establish a stack pointer first.
+on the chip's *own* `rv32_core.v` and `uart.v` and checks the boot banner, the
+PNM status read and the NVMe probe:
+
+```
+*** LINUX INIT TEST PASSED ***
+fw-os-linux init for orchestrator_sbc
+PNM STS=0x00000000
+NVME CAP=0x00000000 VS=0x00000000 RC=0x00000000
+```
+
+so the userspace image and its drivers are verified against the chip's own
+models, not a host's. Three RTL defects had to be fixed for that to work: the
+core did not implement the JAL/JALR link store, the UART's line status
+register had several procedural drivers (so a driver polling THRE saw `X`),
+and the SoC bus stalled the core on an unmapped access.
+
+**What is not yet checked.** The *kernel* image builds (a real NOMMU RV32I
+kernel — the config fragment used to be silently reverted by Kconfig, so a
+64-bit MMU kernel was being built instead) but booting it under a host
+emulator is still open: the guest faults before the console comes up, in the
+8250 probe. The chip's own UART is 32-bit aligned (`HDL/uart.v` decodes
+`addr[4:0]`) and the Linux 8250 driver agrees with that; a host machine's
+byte-aligned 16550 does not, which is where the remaining work is.
 
 **How the test suite decides.** `iverilog`'s `$finish(1)` exits with status
 0 (the argument is the diagnostic level, not the exit code), so the test
