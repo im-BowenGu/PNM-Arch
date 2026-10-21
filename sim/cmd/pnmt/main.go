@@ -390,6 +390,7 @@ func (r *runner) cTests() {
 	// compile checks keep that fix under guard). The Lustre twin
 	// (pnm_lustre.c) is quarantined under archive/ and is no longer built.
 	for _, port := range []struct{ name, src string }{
+		{"fw_compile_src", "src_fw.c"},
 		{"fw_compile_r", "pnm_fw_r.c"},
 		{"fw_compile_haskell", "pnm_fw_haskell.c"},
 		{"fw_compile_hlsl", "pnm_fw_hlsl.c"},

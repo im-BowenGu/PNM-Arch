@@ -175,6 +175,48 @@ func TestIntegration_CKVLoadNonDestructive(t *testing.T) {
 	}
 }
 
+// TestIntegration_CSourceFirmware exercises the R, Haskell and HLSL
+// dispatch ports.  They were three copies of the same planner that had
+// drifted from the canonical firmware, and nothing ran them -- they were
+// only compile-checked.  They are now one shared implementation
+// (fw/src_fw.c) with three thin wrappers, and this test runs all three:
+// the plan's shape, the verifier, the FLOP estimate, and the fact that the
+// three agree on which experts a token selects.
+func TestIntegration_CSourceFirmware(t *testing.T) {
+	fwDir := SiblingRepo("fw")
+	if _, err := os.Stat(filepath.Join(fwDir, "test_src_fw.c")); os.IsNotExist(err) {
+		t.Skip("fw/test_src_fw.c not found")
+	}
+	gcc := gccPath()
+	if gcc == "" {
+		t.Skip("gcc not found in PATH")
+	}
+
+	bin := filepath.Join(os.TempDir(), "test_src_fw_c")
+	if runtime.GOOS == "windows" {
+		bin += ".exe"
+	}
+
+	cmd := exec.Command(gcc, "-Wall", "-Wextra", "-std=c11",
+		"-o", bin, "test_src_fw.c", "src_fw.c", "pnm_fw.c",
+		"pnm_fw_r.c", "pnm_fw_haskell.c", "pnm_fw_hlsl.c")
+	cmd.Dir = fwDir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("test_src_fw.c compile failed: %v\nOutput: %s", err, out)
+	}
+
+	cmd = exec.Command(bin)
+	cmd.Dir = fwDir
+	out, err = cmd.CombinedOutput()
+	if err != nil {
+		t.Errorf("source firmware test failed: %v\nOutput: %s", err, out)
+	}
+	if !strings.Contains(string(out), "SOURCE FIRMWARE TEST PASSED") {
+		t.Errorf("source firmware test did not pass:\n%s", out)
+	}
+}
+
 // TestIntegration_CMoeGating verifies the C firmware's deterministic top-k
 // MoE gating (select_topk in pnm_fw.c) matches the Go reference selectTopExperts
 // bit-for-bit for several (token, layer) inputs.

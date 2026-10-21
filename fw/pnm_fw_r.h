@@ -1,9 +1,14 @@
 /**
- * pnm_fw_r.h — R-optimized firmware for the PNM router chip.
+ * pnm_fw_r.h -- R-optimized firmware for the PNM router chip.
  *
- * Specialized variant for R workloads that require FP64 precision.
- * Same precision profile as Haskell (FP64 throughout) but with
- * R-specific dispatch patterns (vectorized operations, no recursion).
+Specialized variant for R workloads that require FP64 precision.
+Same precision profile as Haskell (FP64 throughout) but with
+R-specific dispatch patterns (vectorized operations, no recursion).
+\
+ * The planner itself lives in src_fw.c, shared with the Haskell and
+ * HLSL ports: the three were three copies of the same code, and had
+ * already drifted from the canonical firmware.  This header keeps the
+ * public names; the implementation forwards to the shared planner.
  *
  * Hardware targets: ARM Cortex-M/R, RISC-V, or custom microcontroller.
  */
@@ -12,34 +17,26 @@
 #define PNM_FW_R_H
 
 #include "pnm_fw.h"
+#include "src_fw.h"
 
-/* ── R-specific constants ──────────────────────────────────────────── */
+/* -- r-specific constants ------------------------------------------- */
 
-#define R_CU_DENSE    CU_FP64_FMA    /* dense path: FP64 FMA            */
-#define R_CU_MOE      CU_FP64_FMA    /* MoE experts: FP64 FMA           */
-#define R_CU_NORM     CU_FP64_ALU    /* LayerNorm: FP64 ALU             */
-#define R_CU_GATE     CU_FP64_FMA    /* gating network: FP64 FMA        */
-#define R_DTYPE       "FP64"         /* native data type name            */
-#define R_DTYPE_BYTES 8              /* bytes per element                */
+#define R_CU_DENSE           CU_FP64_FMA      /* dense path: FP64 FMA */
+#define R_CU_MOE             CU_FP64_FMA      /* MoE experts: FP64 FMA */
+#define R_CU_NORM            CU_FP64_ALU      /* LayerNorm: FP64 ALU */
+#define R_CU_GATE            CU_FP64_FMA      /* gating network: FP64 FMA */
+#define R_DTYPE              "FP64"           /* native data type name */
+#define R_DTYPE_BYTES        8                /* bytes per element */
 
-/* ── R dispatch record (extends base) ─────────────────────────────── */
+/* -- The r dispatch record (a view of the shared record) ----------- */
 
-typedef struct {
-    dispatch_record_t base;
-    int       precision;     /* 64 for FP64                            */
-    int       vec_width;     /* SIMD vector width (1 for scalar)       */
-    int       is_vectorized; /* 1 if vectorized loop, 0 if scalar      */
-} r_dispatch_t;
+typedef src_dispatch_t r_dispatch_t;
 
-/* ── R firmware context ───────────────────────────────────────────── */
+/* -- The r firmware context (a view of the shared context) ---------- */
 
-typedef struct {
-    firmware_t base;         /* inherits all base firmware state        */
-    int        fp64_nodes;   /* count of nodes with fp64_fma            */
-    int        total_flops;  /* estimated FP64 FLOPs per token          */
-} r_fw_t;
+typedef src_fw_t r_fw_t;
 
-/* ── API ───────────────────────────────────────────────────────────── */
+/* -- API --------------------------------------------------------------- */
 
 void r_fw_init(r_fw_t *fw);
 
