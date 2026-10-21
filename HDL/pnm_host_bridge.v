@@ -100,6 +100,27 @@ module pnm_host_bridge #(
         else if (sel_pnm)  host_rdata = pnm_rdata;
     end
 
+    // =========================================================================
+    // SRAM (64KB, word-addressable, byte-enable write)
+    // Staging for the host's DMA path: the host pushes weights and stencil
+    // domains here and the chip reads them from its own window.
+    // =========================================================================
+    reg [31:0] sram [0:16383];
+    always @(*) begin
+        if (sel_sram)
+            sram_rdata = sram[host_addr[15:2]];
+        else
+            sram_rdata = 32'h0;
+    end
+    always @(posedge clk) begin
+        if (sel_sram && host_valid && host_we) begin
+            if (host_be[0]) sram[host_addr[15:2]][7:0]   <= host_wdata[7:0];
+            if (host_be[1]) sram[host_addr[15:2]][15:8]  <= host_wdata[15:8];
+            if (host_be[2]) sram[host_addr[15:2]][23:16] <= host_wdata[23:16];
+            if (host_be[3]) sram[host_addr[15:2]][31:24] <= host_wdata[31:24];
+        end
+    end
+
     // The host bus acknowledges every access: an unmapped read returns zero
     // and an unmapped write is dropped.
     assign host_ready = 1'b1;

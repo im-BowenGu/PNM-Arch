@@ -40,6 +40,6 @@ run_synth xy_turn        "$HDL/xy_turn.v $HDL/flit_gate.v"
 run_synth node_eject     "$HDL/node_eject.v $HDL/flit_gate.v"
 run_synth doorbell       "$HDL/core/doorbell.v $HDL/core/crc16.v"
 run_synth bf16_fma       "$HDL/core/arith_unit.v $HDL/core/bf16_fma.v $HDL/core/fma_core.v"
-run_synth rv32_core      "$HDL/rv32_core.v"
+run_synth pnm_host_bridge "$HDL/pnm_host_bridge.v"
 
 exit $FAIL
