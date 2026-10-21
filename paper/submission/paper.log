@@ -1,4 +1,4 @@
-This is pdfTeX, Version 3.141592653-2.6-1.40.26 (TeX Live 2024/nixos.org) (preloaded format=pdflatex 1980.1.1)  21 OCT 2026 03:54
+This is pdfTeX, Version 3.141592653-2.6-1.40.26 (TeX Live 2024/nixos.org) (preloaded format=pdflatex 1980.1.1)  21 OCT 2026 03:56
 entering extended mode
  restricted \write18 enabled.
  %&-line parsing enabled.
@@ -962,6 +962,12 @@ File: figures/fig_roofline.png Graphic file (type png)
 Package pdftex.def Info: figures/fig_roofline.png  used on input line 475.
 (pdftex.def)             Requested size: 235.90218pt x 138.41852pt.
 
+Underfull \vbox (badness 10000) has occurred while \output is active []
+
+
+
+
+Underfull \vbox (badness 10000) has occurred while \output is active []
 
 
 
@@ -979,6 +985,9 @@ Package pdftex.def Info: figures/fig_latency.png  used on input line 518.
 
 
 
+Underfull \vbox (badness 10000) has occurred while \output is active []
+
+
 
 [22 <./figures/fig_latency.png>]
 LaTeX Font Info:    Trying to load font information for OT1+pcr on input line 5
@@ -992,6 +1001,11 @@ Package microtype Info: Loading generic protrusion settings for font family
 (microtype)             `pcr' (encoding: OT1).
 (microtype)             For optimal results, create family-specific settings.
 (microtype)             See the microtype manual for details.
+
+Underfull \vbox (badness 10000) has occurred while \output is active []
+
+
+
 
 Underfull \hbox (badness 10000) in paragraph at lines 553--553
 []|\OT1/ptm/m/n/8 (+20) Memory
@@ -1013,9 +1027,7 @@ Underfull \hbox (badness 10000) in paragraph at lines 553--553
  []
 
 
-
-
-Underfull \vbox (badness 10000) has occurred while \output is active []
+Underfull \vbox (badness 2096) has occurred while \output is active []
 
 
 
@@ -1048,6 +1060,9 @@ Overfull \hbox (9.26494pt too wide) in paragraph at lines 586--586
 Underfull \vbox (badness 10000) has occurred while \output is active []
 
 
+
+
+Underfull \vbox (badness 10000) has occurred while \output is active []
 
 
 
@@ -1127,7 +1142,13 @@ Underfull \hbox (badness 4726) in paragraph at lines 702--703
 
 
 
-[31] (./paper.aux)
+[31]
+
+
+
+[32
+
+] (./paper.aux)
  ***********
 LaTeX2e <2024-11-01> patch level 2
 L3 programming layer <2025-01-18>
@@ -1136,13 +1157,13 @@ Package rerunfilecheck Info: File `paper.out' has not changed.
 (rerunfilecheck)             Checksum: D41D8CD98F00B204E9800998ECF8427E;0.
  ) 
 Here is how much of TeX's memory you used:
- 13087 strings out of 474315
- 209790 string characters out of 5718334
- 661878 words of memory out of 5000000
+ 13088 strings out of 474315
+ 209797 string characters out of 5718334
+ 661861 words of memory out of 5000000
  35582 multiletter control sequences out of 15000+600000
  591888 words of font info for 262 fonts, out of 8000000 for 9000
  430 hyphenation exceptions out of 8191
- 75i,11n,79p,3751b,570s stack positions out of 10000i,1000n,20000p,200000b,200000s
+ 75i,11n,79p,3751b,572s stack positions out of 10000i,1000n,20000p,200000b,200000s
 </nix/store/4l3m65sl104swdhl3hrpnqmachm98qgx-texlive-combined-medium-2024-fin
 al-texmfdist/fonts/type1/public/amsfonts/cm/cmmi10.pfb></nix/store/4l3m65sl104s
 wdhl3hrpnqmachm98qgx-texlive-combined-medium-2024-final-texmfdist/fonts/type1/p
@@ -1163,10 +1184,10 @@ e/4l3m65sl104swdhl3hrpnqmachm98qgx-texlive-combined-medium-2024-final-texmfdist
 texlive-combined-medium-2024-final-texmfdist/fonts/type1/urw/times/utmr8a.pfb><
 /nix/store/4l3m65sl104swdhl3hrpnqmachm98qgx-texlive-combined-medium-2024-final-
 texmfdist/fonts/type1/urw/times/utmri8a.pfb>
-Output written on paper.pdf (31 pages, 629720 bytes).
+Output written on paper.pdf (32 pages, 630144 bytes).
 PDF statistics:
- 743 PDF objects out of 1000 (max. 8388607)
- 661 compressed objects within 7 object streams
- 133 named destinations out of 1000 (max. 500000)
+ 747 PDF objects out of 1000 (max. 8388607)
+ 664 compressed objects within 7 object streams
+ 134 named destinations out of 1000 (max. 500000)
  45594 words of extra memory for PDF output out of 51595 (max. 10000000)
 

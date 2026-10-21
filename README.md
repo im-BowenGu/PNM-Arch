@@ -102,13 +102,23 @@ core did not implement the JAL/JALR link store, the UART's line status
 register had several procedural drivers (so a driver polling THRE saw `X`),
 and the SoC bus stalled the core on an unmapped access.
 
-**What is not yet checked.** The *kernel* image builds (a real NOMMU RV32I
-kernel — the config fragment used to be silently reverted by Kconfig, so a
-64-bit MMU kernel was being built instead) but booting it under a host
-emulator is still open: the guest faults before the console comes up, in the
-8250 probe. The chip's own UART is 32-bit aligned (`HDL/uart.v` decodes
-`addr[4:0]`) and the Linux 8250 driver agrees with that; a host machine's
-byte-aligned 16550 does not, which is where the remaining work is.
+**What is not yet checked, and why.** The *kernel* image builds (a real
+NOMMU RV32I kernel — the config fragment used to be silently reverted by
+Kconfig, so a 64-bit MMU kernel was being built instead). Booting it is
+blocked by an architectural gap, not by the image:
+
+> **The core's instruction fetch is a separate combinational port onto the
+> 64 KB boot ROM.** The SRAM (0x4000_0000) and DRAM (0x8000_0000) windows
+> are data-only: `sel_rom = (cpu_fetch_addr[31:16] == 16'h0000)` in
+> `HDL/bmc_orchestrator_top.v`, and the core's only fetch port is
+> `fetch_addr = pc`. A 1.8 MB kernel image in memory therefore cannot be
+> fetched at all, and neither can the init binary once it is loaded from an
+> initramfs. Unifying the fetch path with the data bus (or giving the core a
+> fetch port onto the SRAM window) is the piece of hardware work Linux and
+> seL4 need on this chip.
+
+Until that is done, the honest status is: *the userspace image runs on the
+chip's core; the kernel that would host it cannot be fetched yet.*
 
 **How the test suite decides.** `iverilog`'s `$finish(1)` exits with status
 0 (the argument is the diagnostic level, not the exit code), so the test
