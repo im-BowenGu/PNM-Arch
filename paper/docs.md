@@ -4,7 +4,7 @@
 
 ## Overview
 
-This repository contains the working artifacts behind the paper *Breaking the HBM wall: A Distributed Spatial Processing-Near-Memory Architecture using DUV ASICs and Deterministic Routing*. It includes the manuscript source, a Go-Verilog co-simulation harness, Verilog HDL for the routing fabric and compute units, a RISC-V BMC/orchestrator chip SoC, and a build pipeline that produces the DOCX submission.
+This repository contains the working artifacts behind the paper *Breaking the HBM wall: A Distributed Spatial Processing-Near-Memory Architecture using DUV ASICs and Deterministic Routing*. It includes the manuscript source, a Go-Verilog co-simulation harness, Verilog HDL for the routing fabric, the compute units, and a CPU-less router bridge, and a build pipeline that produces the DOCX submission.
 
 ## Repository Structure
 
@@ -67,31 +67,64 @@ The fabric is a byte-wide, Verilog-2005 model of the deterministic single-spine 
 | `crc16.v` | CRC-16 | CCITT-FALSE (init 0xFFFF, poly 0x1021) |
 | `pe_tile_stub.v` | PE Tile Stub | MAC stub with bias-add, CRC recompute, AXI-Stream interface |
 
-### Router Chip Family (RISC-V SoC)
+### The router bridge (CPU-less)
 
-The orchestrator chip family is implemented as RISC-V System-on-Chip designs for chassis management, topology discovery, MoE dispatch, and host PCIe. Three tiers target different deployment classes:
+The chassis's management silicon is a **bridge the host drives**: the PNM
+router engine, a staging SRAM, and a register window.  It has **no
+processor, no boot ROM, no timer and no console** — the host runs the boot
+sequence, the weight upload and the dispatch loop, so the same silicon serves
+a Raspberry Pi, a microcontroller, or a workstation.
 
-| Module | File | Class | Description |
-|--------|------|-------|-------------|
-| `rv32_core.v` | RV32IMA CPU | shared | Multi-cycle 5-stage FSM core: RV32I base + M extension + Zicsr |
-| `uart.v` | UART | shared | 16550-compatible, 8N1, configurable baud, interrupt output |
-| `clint.v` | CLINT | shared | Machine-mode timer (mtime/mtimecmp) + software interrupt (msip) |
-| `bmc_orchestrator_top.v` | BMC SoC | full | CPU + 64KB ROM + 64KB SRAM + UART + CLINT + PNM orchestrator engine |
-| `orchestrator_mcu.v` | MCU Orchestrator | minimal | RV32I + 8KB ROM + 4KB SRAM + UART only. No PCIe/MoE/FPU. For stencil/reduction/broadcast on small chassis |
-| `orchestrator_sbc_moe.v` | SBC+MoE Router | mid-tier | RV32IMA + LPDDR5 DRAM stub + 64KB MoE gating SRAM + moe_gating unit + PCIe Gen5 register stub. For MoE/dense LLM dispatch |
-| `orchestrator_sbc.v` | SBC Orchestrator | general | RV32IMA + 64KB ROM + on-chip SRAM (0x40000000, configurable 512KB default up to 32MB via SRAM_WORDS; fw-linux targets 16MB) + LPDDR5 DRAM stub (1GB window) + PCIe Gen5 x16 PHY + NVMe storage controller. Runs Linux/seL4 NOMMU + CPython userland. For transpiler orchestration and complex data workflows |
+| Module | File | Role |
+|--------|------|------|
+| `pnm_host_bridge.v` | the bridge | PNM router engine (flit builder, CRC-16/CCITT-FALSE, spine injection), 64 KB staging SRAM, host register window |
+| `pnm_host_top.v` | the board top level | pi_bridge + pnm_arb + pnm_host_bridge, and the address map that reconciles the arbiter's 8-bit byte offset with the bridge's 32-bit window |
+| `pi_bridge.v` | the SPI adapter | the host link for a Raspberry Pi: a 48-bit frame (header byte, 32-bit data, status byte) in both directions |
+| `pnm_arb.v` | the arbiter | round-robin merge of the two host masters onto the shared window |
 
-Memory maps:
-- **bmc_orchestrator_top**: ROM@0x00000000, UART@0x10000000, CLINT@0x20000000, SRAM@0x80000000, PNM@0xF0000000.
-- **orchestrator_mcu**: ROM@0x00000000 (8KB), UART@0x10000000, SRAM@0x80000000 (4KB), PNM@0xF0000000.
-- **orchestrator_sbc_moe**: ROM@0x00000000, UART@0x10000000, CLINT@0x20000000, GatingSRAM@0x40000000 (64KB BF16), DRAM@0x80000000 (512MB), PCIe@0xC0000000, PNM@0xF0000000.
-- **orchestrator_sbc**: ROM@0x00000000 (64KB), UART@0x10000000, CLINT@0x20000000, SRAM@0x40000000 (256MB window; 512KB default, configurable up to 32MB), DRAM@0x80000000 (1GB), PCIe@0xC0000000 (Gen5 x16 PHY), NVMe@0xD0000000, PNM@0xF0000000.
+**Memory map** (as the host sees it):
 
-**Why DRAM on SBC-class chips:** software stacks like CPython on Linux require hundreds of MB for kernel + interpreter + site-packages; on-chip SRAM cannot scale to that capacity at reasonable cost. The SBC variants model an external LPDDR5 controller with a behavioral array and programmable CAS latency (`DRAM_LATENCY`). Production silicon replaces this with a hard DDR PHY.
+| Region | Address | Size | Description |
+|--------|---------|------|-------------|
+| SRAM | `0x8000_0000` | 64 KB | staging for the host's weight and payload copies |
+| PCIe | `0xC000_0000` | 256 MB | PCIe config/status registers |
+| NVMe | `0xD000_0000` | 64 B | NVMe controller (weights, KV spill) |
+| PNM | `0xF000_0000` | 64 B | the router engine's registers |
 
-**Why an SoC, not an MCU (for the SBC/BMC tier):** (1) OS compatibility — NOMMU Linux/seL4 requires an RV32IMAFC-class core with sufficient system RAM; MCU silicon typically lacks both. (2) PCIe Gen5 endpoint termination requires dedicated PHY + controller blocks integrated into SoC silicon. (3) MoE gating evaluation at 10^8–10^9 tokens/s demands clock rates beyond typical MCU envelopes. (4) Source-routed routing tables for 512 nodes plus MoE expert maps exceed MCU on-chip SRAM. The current RTL implements RV32IMA as a proof of concept; production upgrades to RV32IMAFC for NOMMU Linux support.
+**Why no processor on the bridge:** the bridge's data path is fixed-function
+and needs no programmability — the flit builder and the CRC-16 are hardware,
+and the host writes their operands through a small register window.  What it
+needs is *sequencing*, and sequencing is what a host already has.  Keeping a
+processor off the bridge removes a whole class of silicon (the boot ROM, the
+timer, the console, the interrupt controller, and the memory-management
+assumptions an OS would impose) and makes the bridge attachable to whatever
+the deployment already has.
 
-For source-language transpilation (R/Haskell/HLSL), the main thread runs on the orchestrator chip's CPU: the host compiles source to typed IR and ships it over PCIe, and the orchestrator's firmware lowers it onto the chassis without round-tripping through the host.
+**What is verified.**  `tb_pnm_host_bridge.v` drives the bridge alone: the
+testbench plays the host, writes the routing and payload registers, and
+checks the byte-exact wormhole flit (header, payload, CRC-16 over the
+protected body, SOP/EOP framing) and the counters read back.
+`tb_host_path_e2e.v` drives the *whole* path — the SPI adapter, the arbiter
+and the bridge composed, over the real SPI frame protocol — and checks a
+register read-back, the emitted flit, the fabric's acceptance of it, and the
+result path.  (`tb_host_bmc.v` and `tb_dma_lpddr6.v` still drive the SPI and
+the arbiter against behavioural register-file and DMA models; the bridge
+itself is not in that path.)
+
+**The gating ASIC has two managers.**  The gating ASIC is a per-node device
+that holds the router weights and produces the expert decision for each
+token.  It can be managed from the node board (an MCU or a Raspberry Pi
+Compute Module on a mezzanine header, driving the gating ASIC's local
+management bus and reaching the node's memory over the NoB) or by the host
+(the programming arrives over the fabric and is decoded into the same
+register map).  A strapping pin picks the manager; the register map, the
+weight format, the top-K selection and the decision values are identical
+either way.  `tb_gating_modes.v` programs the same weights and the same
+hidden state through each path and requires the same decision.
+
+For source-language transpilation (R/Haskell/HLSL), the main thread runs on
+the **host**: the host compiles source to typed IR and lowers it onto the
+chassis over the host link, without a round trip through the chip.
 
 ### Memory and PCB interconnect models
 
@@ -236,7 +269,11 @@ data integrity with stall accounting, and DDR4-vs-DDR5 latency ordering.
   falsifiable PDN requirement; nominal params hold every rail above its
   90% UVLO threshold under worst-case simultaneous activity.
 
-Host↔BMC↔memory path verification: `tb_host_bmc.v` drives the SPI host through
+Host↔bridge↔memory path verification: `tb_host_path_e2e.v` drives the real
+chain — the SPI adapter, the arbiter and the bridge composed — over the SPI
+frame protocol, and checks a register read-back, a byte-exact wormhole flit
+against an independently computed CRC-16, the fabric's acceptance of that
+flit, and the result path.  `tb_host_bmc.v` drives the SPI host through
 `pi_bridge` + `pnm_arb` into the shared PNM register file and observes a flit
 injected onto the spine plus boot-done/dispatch-counter readback.
 `tb_dma_lpddr6.v` extends the register window with a DMA engine
@@ -290,9 +327,6 @@ Two toolchains target the chip family:
 
 - **MCU** (`toolchain/mcu/`): bare-metal static firmware. Cross-compiles to flat binary for ROM burn-in via riscv-none-elf-gcc. Linker script places .text/.rodata in ROM and .data/.bss in SRAM with startup copy/zero code. No libc, no malloc, no OS.
 - **SoC** (`toolchain/soc/`): NOMMU Linux/seL4 userspace daemon. Statically linked against musl-libc, accesses PNM registers via `/dev/pnm` mmap. Uses dynamic allocation (DRAM-backed heap). Entry point placed at DRAM offset 0x1000 by boot loader.
-- **SoC Linux** (`toolchain/soc-linux/`): full OS image builder for `orchestrator_sbc`. Downloads, configures, and compiles a stripped RV32IMA NOMMU Linux kernel (6.6.x, no MMU/FPU/modules, 16550 UART + NVMe stub only), clones and builds seL4 microkernel (CMake cross-compile for riscv32), cross-compiles the `rustd` access-control daemon (Rust, no dependencies, bare-metal + NOMMU dual entry points), and packs an initramfs rootfs. The Rust daemon provides SHA-256/HMAC/PBKDF2 authentication, 32-user role-based access control, 64-job workload management, and configurable KV cache eviction routing (discard / BMC DMA / NVMe). Outputs land in a gitignored `build/` directory: flat kernel `Image`, seL4 ELF, `rustd`, and `initramfs.cpio`. Boot flow: ROM → SPL → kernel at DRAM 0x80000000 → `/init` → `rustd` mmaps `/dev/pnm` (0xF0000000) and starts dispatch.
-- **fw/os/linux** (`fw/os/linux/`): Linux tinyconfig + bare-metal init for `orchestrator_sbc`. Kernel config fragment (NOMMU, RV32I, no FPU) trims the kernel to fit in the 16 MB SRAM window (`0x4000_0000`). Produces `Image`, `init` binary, and `initrd.cpio` initramfs. The init binary prints a boot banner over UART@`0x10000000` (115200 8N1), probes the NVMe controller at `0xD0000000` (reads CAP, VS, CSTS), and enters a `wfi` idle loop. UART/PNM drivers are local; the NVMe driver is shared from `fw/pnm_nvme.c`.
-- **fw/os/sel4** (`fw/os/sel4/`): seL4 microkernel root task for `orchestrator_sbc`. CMake-based build for RV32IMA generic platform. The root task maps UART@`0x10000000` and PNM@`0xF0000000` device frames via seL4 capabilities, prints a boot banner, reads PNM STATUS to confirm the orchestrator chip is alive, and enters a `seL4_Yield` idle loop. seL4 provides formal verification, capability-based access control, and temporal isolation — a hardened alternative to Linux for the orchestrator chip's control plane.
 - **Pi host** (`pi_host/`): Raspberry Pi Compute Module drivers that reach the orchestrator PNM register window from a Pi: through the `HDL/pi_bridge.v` SPI slave (CM0-CM4 GPIO SPI) or directly via PCIe BAR0 (CM5). The same 48-bit frame protocol is implemented five times for maximum compatibility — Python (`pnm_pi.py`, spidev), Go (`pnm_pi.go`, stdlib-only raw ioctl), Rust (`pnm_pi.rs`, zero crates), C (`pnm_pi_spi.c`, raw ioctl), and C-over-PCIe (`pnm_pi_cm5.c`, sysfs BAR0 mmap). Frame: header byte `{rw<<7|sel}`, 32-bit data, status byte (0x01 write-ack / 0x00 read-ok); sel 0-9 map to PNM offsets 0x00-0x24.
 
 ### NVMe storage
@@ -331,12 +365,10 @@ All testbenches are self-checking (scoreboard counters, `errors` integers, $disp
 | `tb_bf16_mac_array.v` | BF16 systolic array | `*** BF16 MAC ARRAY TEST PASSED ***` |
 | `tb_moe_gating.v` | MoE softmax top-k | `*** MoE GATING TEST PASSED ***` |
 | `tb_orchestrator_chip.v` | Router chip boot + dispatch | `*** ROUTER CHIP TEST PASSED ***` |
-| `tb_bmc_orchestrator.v` | BMC/Orchestrator SoC: UART, PNM regs, boot_done | `*** BMC ROUTER CHIP TEST PASSED ***` |
 | `tb_orchestrator_mcu.v` | MCU router: flit injection wire format | `*** MCU ROUTER CHIP TEST PASSED ***` |
-| `tb_orchestrator_sbc.v` | SBC router: SRAM read-back, DRAM stub, PCIe PHY probe, NVMe register read, flit injection, boot_done | `*** SBC ROUTER CHIP TEST PASSED ***` |
-| `tb_orchestrator_sbc_moe.v` | SBC+MoE router: gating SRAM write, flit injection | `*** SBC+MOE ROUTER CHIP TEST PASSED ***` |
 | `tb_pi_bridge.v` | SPI-to-PNM bridge: register writes, read-back, status bytes | `*** PI BRIDGE TEST PASSED ***` |
-| `tb_host_bmc.v` | Host↔BMC: SPI writes, flit injection, boot-done, dispatch readback | `*** HOST BMC COMM TEST PASSED ***` |
+| `tb_host_bmc.v` | Host↔arbiter: SPI writes, flit injection, boot-done, dispatch readback (against a behavioural register-file model) | `*** HOST BMC COMM TEST PASSED ***` |
+| `tb_host_path_e2e.v` | The whole host path composed: SPI adapter + arbiter + bridge, a register read-back, a byte-exact flit with an independent CRC, the fabric's acceptance, the result path | `*** HOST PATH E2E TEST PASSED ***` |
 | `tb_dma_lpddr6.v` | Host DMA to LPCAMM2/LPDDR6: FIFO load, write, verify, read back | `*** DMA LPDDR6 TEST PASSED ***` |
 | `tb_sodimm_lpddr.v` | Same DMA path across DDR4/DDR5 SODIMM + LPDDR6 CAMM2 timings | `*** SODIMM LPDDR TEST PASSED ***` |
 | `tb_pcb_link.v` | PCB links: passthrough, exact delay, 200-packet stream, triple-link counter | `*** PCB LINK TEST PASSED ***` |
