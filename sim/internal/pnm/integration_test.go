@@ -217,6 +217,45 @@ func TestIntegration_CSourceFirmware(t *testing.T) {
 	}
 }
 
+// TestIntegration_CMgmtGating exercises the embedded management node's
+// firmware: the mode-A manager of the gating ASIC.  It programs the router
+// weights, gates a token, reads the decision back through the rank window,
+// and emits the dispatch flits -- which are checked byte for byte, CRC-16
+// included, against an independent reference.
+func TestIntegration_CMgmtGating(t *testing.T) {
+	fwDir := SiblingRepo("fw")
+	if _, err := os.Stat(filepath.Join(fwDir, "test_mgmt_gating.c")); os.IsNotExist(err) {
+		t.Skip("fw/test_mgmt_gating.c not found")
+	}
+	gcc := gccPath()
+	if gcc == "" {
+		t.Skip("gcc not found in PATH")
+	}
+
+	bin := filepath.Join(os.TempDir(), "test_mgmt_gating_c")
+	if runtime.GOOS == "windows" {
+		bin += ".exe"
+	}
+
+	cmd := exec.Command(gcc, "-Wall", "-Wextra", "-std=c11",
+		"-o", bin, "test_mgmt_gating.c", "pnm_mgmt.c", "pnm_fw.c")
+	cmd.Dir = fwDir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("test_mgmt_gating.c compile failed: %v\nOutput: %s", err, out)
+	}
+
+	cmd = exec.Command(bin)
+	cmd.Dir = fwDir
+	out, err = cmd.CombinedOutput()
+	if err != nil {
+		t.Errorf("management node gating test failed: %v\nOutput: %s", err, out)
+	}
+	if !strings.Contains(string(out), "MGMT GATING TEST PASSED") {
+		t.Errorf("management node gating test did not pass:\n%s", out)
+	}
+}
+
 // TestIntegration_CMoeGating verifies the C firmware's deterministic top-k
 // MoE gating (select_topk in pnm_fw.c) matches the Go reference selectTopExperts
 // bit-for-bit for several (token, layer) inputs.

@@ -250,6 +250,7 @@ func (r *runner) hdlCore() {
 		{"mxfp4_mac_array", []string{"core/arith_unit.v", "core/quant_mac_array.v", "core/mxfp4_mac_array.v", "core/fp4_mac.v", "core/tb_mxfp4_mac_array.v"}},
 		{"moe_gating", []string{"core/arith_unit.v", "core/moe_gating.v", "core/bf16_fma.v", "core/fma_core.v", "core/tb_moe_gating.v"}},
 		{"gating_modes", []string{"core/arith_unit.v", "core/moe_gating.v", "core/bf16_fma.v", "core/fma_core.v", "core/gating_asic.v", "core/tb_gating_modes.v"}},
+		{"mgmt_bridge", []string{"core/arith_unit.v", "core/moe_gating.v", "core/bf16_fma.v", "core/fma_core.v", "core/gating_asic.v", "core/mgmt_bridge.v", "core/tb_mgmt_bridge.v"}},
 		{"rotary_engine", []string{"core/rotary_engine.v", "core/tb_rotary_engine.v"}},
 		{"weight_dequant", []string{"core/weight_dequant.v", "core/tb_weight_dequant.v"}},
 		{"kv_quant", []string{"core/kv_quant.v", "core/tb_kv_quant.v"}},

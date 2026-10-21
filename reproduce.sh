@@ -66,6 +66,7 @@ if [ "$SELF_CHECK" = 1 ]; then
         "$HDL/core/gemma_decoder_block.v" "$HDL/core/node.v" \
         "$HDL/core/moe_gating.v" "$HDL/core/gating_asic.v" \
         "$HDL/core/tb_gating_modes.v" "$HDL/core/tb_gating_server.v" \
+        "$HDL/core/mgmt_bridge.v" "$HDL/core/tb_mgmt_bridge.v" \
         "$HDL/core/bf16_fma.v" "$HDL/core/fp16_fma.v" \
         "$HDL/core/fp32_fma.v" "$HDL/core/fp64_fma.v" \
         "$HDL/core/fp32_alu.v" "$HDL/core/fp64_alu.v" "$HDL/core/int8_alu.v" \
