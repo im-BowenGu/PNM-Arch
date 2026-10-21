@@ -13,12 +13,22 @@
 
 #define UART_BASE       0x10000000u
 
-#define UART_THR        0x00
-#define UART_IER        0x04
-#define UART_FCR_IIR    0x08
-#define UART_LCR        0x0C
-#define UART_MCR        0x10
-#define UART_LSR        0x14
+/* Register shift. The chip's UART (HDL/uart.v) decodes cpu_addr[7:2], i.e.
+ * the 16550 registers are 32-bit aligned (shift 2). A host whose 16550 is
+ * byte aligned (QEMU's riscv virt machine, reg-shift 1) needs shift 1:
+ * build with -DPNM_UART_REG_SHIFT=1. */
+#ifndef PNM_UART_REG_SHIFT
+#define PNM_UART_REG_SHIFT 2
+#endif
+
+#define UART_REG(off)   ((off) << PNM_UART_REG_SHIFT)
+
+#define UART_THR        UART_REG(0x00)
+#define UART_IER        UART_REG(0x01)
+#define UART_FCR_IIR    UART_REG(0x02)
+#define UART_LCR        UART_REG(0x03)
+#define UART_MCR        UART_REG(0x04)
+#define UART_LSR        UART_REG(0x05)
 
 #define UART_LSR_DR     0x01u   /* data ready */
 #define UART_LSR_THRE   0x20u   /* TX holding register empty */

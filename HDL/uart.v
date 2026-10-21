@@ -167,7 +167,6 @@ module uart #(
     // Bus access
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            rdata        <= 32'h0;
             thr          <= 8'h0;
             thr_has_data <= 1'b0;
             ier          <= 8'h0;
@@ -175,18 +174,6 @@ module uart #(
             lcr          <= 8'h0;
             mcr          <= 8'h0;
         end else begin
-            rdata <= 32'h0;
-            if (valid && !we) begin
-                case (addr[4:0])
-                    5'h00: rdata <= {24'h0, rdr};     // RDR read
-                    5'h04: rdata <= {24'h0, ier};     // IER read
-                    5'h08: rdata <= {24'h0, lsr[7:6], 2'b00, 3'b000, lsr[0]};  // IIR
-                    5'h0C: rdata <= {24'h0, lcr};     // LCR read
-                    5'h10: rdata <= {24'h0, mcr};    // MCR read
-                    5'h14: rdata <= {24'h0, lsr};    // LSR read
-                    default: rdata <= 32'h0;
-                endcase
-            end
             if (valid && we) begin
                 case (addr[4:0])
                     5'h00: begin
@@ -208,6 +195,30 @@ module uart #(
             // Clear framing error when LSR is read
             if (valid && !we && addr[4:0] == 5'h14)
                 lsr[3] <= 1'b0;
+        end
+    end
+
+    // =========================================================================
+    // Read path (combinational)
+    //
+    // A 16550's registers are read asynchronously: the LSR/IIR/RBR read back
+    // the current value in the same cycle.  The core latches the read data in
+    // the bus handshake cycle, so a registered read path would hand it the
+    // *previous* access's value (a stale LSR, for instance, would make a
+    // driver spin on a transmitter that is already empty).
+    // =========================================================================
+    always @(*) begin
+        rdata = 32'h0;
+        if (valid && !we) begin
+            case (addr[4:0])
+                5'h00: rdata = {24'h0, rdr};     // RDR read
+                5'h04: rdata = {24'h0, ier};     // IER read
+                5'h08: rdata = {24'h0, lsr[7:6], 2'b00, 3'b000, lsr[0]};  // IIR
+                5'h0C: rdata = {24'h0, lcr};     // LCR read
+                5'h10: rdata = {24'h0, mcr};     // MCR read
+                5'h14: rdata = {24'h0, lsr};     // LSR read
+                default: rdata = 32'h0;
+            endcase
         end
     end
 

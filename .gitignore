@@ -88,3 +88,8 @@ toolchain/mcu/firmware.hex
 toolchain/mcu/firmware.map
 toolchain/soc/pnm_socd
 toolchain/soc/pnm_socd.map
+
+# Linux/seL4 OS image build artifacts (fw/os/linux)
+fw/os/linux/build/
+fw/os/linux/init.hex
+HDL/init.hex

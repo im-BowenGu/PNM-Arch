@@ -51,6 +51,12 @@ module rv32_core #(
     reg [2:0]  state;
     reg [31:0] pc;
     reg [31:0] pc_next;
+    // JAL/JALR write the return address to *both* rd and memory[sp-4]
+    // (RISC-V ISA). link_value holds that value; link_store marks the
+    // stack write in flight.
+    reg [31:0] link_value;
+    reg        link_store;
+
     reg        mem_addr_valid;  // set after address presented in MEMORY stage
     assign fetch_addr = pc;
 
@@ -62,6 +68,8 @@ module rv32_core #(
     // Register file (32 x 32-bit, x0 hardwired to 0)
     // =========================================================================
     reg [31:0] rf [0:31];
+    // x2 is the stack pointer; the JAL/JALR link store targets it.
+    wire [31:0] sp_val = rf[2];
 
     // =========================================================================
     // Pipeline registers
@@ -361,17 +369,24 @@ module rv32_core #(
                         end
 
                         OP_JAL: begin
-                            alu_result <= pc + 32'd4;
+                            // link: rd = pc+4 and memory[sp-4] = pc+4.
+                            // The link store always targets x2 (sp) — for
+                            // JAL, rs1 is x0 and must not be used here.
+                            link_value <= pc + 32'd4;
+                            link_store <= 1'b1;
+                            alu_result <= sp_val - 32'd4;   // store address
                             pc_next    <= pc + imm;
                             rd_we <= 1'b1;
-                            state <= S_WRITEBACK;
+                            state <= S_MEMORY;
                         end
 
                         OP_JALR: begin
-                            alu_result <= pc + 32'd4;
+                            link_value <= pc + 32'd4;
+                            link_store <= 1'b1;
+                            alu_result <= sp_val - 32'd4;   // store address
                             pc_next    <= (rs1_val + imm) & ~32'h1;
                             rd_we <= 1'b1;
-                            state <= S_WRITEBACK;
+                            state <= S_MEMORY;
                         end
 
                         OP_BRANCH: begin
@@ -495,11 +510,16 @@ module rv32_core #(
                     if (!mem_addr_valid) begin
                         // Cycle 1: present address with correct byte enables
                         bus_addr_r   <= alu_result;
-                        bus_we       <= (opcode == OP_STORE);
+                        bus_we       <= (opcode == OP_STORE) || link_store;
                         bus_valid    <= 1'b1;
                         mem_addr_valid <= 1'b1;
 
-                        // Sub-word store: shift data into correct byte lane
+                        // The link store of JAL/JALR is a plain word write;
+                        // otherwise shift the data into the correct byte lane.
+                        if (link_store) begin
+                            bus_wdata <= link_value;
+                            bus_be    <= 4'hF;
+                        end else
                         case (funct3)
                             3'b000: begin // SB
                                 bus_wdata <= {24'h0, rs2_val[7:0]} << (alu_result[1:0] * 8);
@@ -522,7 +542,7 @@ module rv32_core #(
                             bus_valid      <= 1'b0;
                             bus_we         <= 1'b0;
                             mem_addr_valid <= 1'b0;
-                            rd_we          <= (opcode == OP_LOAD);
+                            rd_we          <= (opcode == OP_LOAD) || link_store;
                             state          <= S_WRITEBACK;
                         end
                     end
@@ -571,9 +591,10 @@ module rv32_core #(
                                     default: rf[rd_addr] <= mem_result;
                                 endcase
                             end
-                            default: rf[rd_addr] <= alu_result;
+                            default: rf[rd_addr] <= (link_store ? link_value : alu_result);
                         endcase
                     end
+                    link_store <= 1'b0;
                     state <= S_FETCH;
                     if (opcode == OP_JAL || opcode == OP_JALR || opcode == OP_BRANCH)
                         pc <= pc_next;
