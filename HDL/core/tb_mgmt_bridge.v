@@ -70,6 +70,11 @@ module tb_mgmt_bridge;
     // -- the fabric --
     reg  [7:0] nob_in_data = 8'd0;
     reg        nob_in_valid = 1'b0;
+    wire [7:0] rx_data;
+    wire       rx_valid;
+    wire       rx_sop;
+    wire       rx_eop;
+    reg        rx_ready = 1'b0;
     reg        nob_in_sop = 1'b0;
     reg        nob_in_eop = 1'b0;
     wire       nob_in_ready;
@@ -122,6 +127,9 @@ module tb_mgmt_bridge;
         .tap_data(tap_data), .tap_valid(tap_valid), .tap_sop(tap_sop),
         .tap_eop(tap_eop), .tap_ready(tap_ready), .tap_empty(tap_empty),
         .tap_full(tap_full), .tap_vc(tap_vc),
+        .rx_data(rx_data), .rx_valid(rx_valid), .rx_sop(rx_sop),
+        .rx_eop(rx_eop), .rx_ready(rx_ready),
+        .fib_raddr(16'd0), .fib_rvalid(1'b0), .fib_rready(), .fib_rdata(),
         .inj_data(inj_data), .inj_valid(inj_valid), .inj_sop(inj_sop),
         .inj_eop(inj_eop), .inj_ready(inj_ready), .inj_vc(inj_vc),
         .nob_out_data(nob_out_data), .nob_out_valid(nob_out_valid),
@@ -145,6 +153,7 @@ module tb_mgmt_bridge;
         .mgmt_addr(mgr_addr), .mgmt_wdata(mgr_wdata), .mgmt_rdata(asic_rdata),
         .mgmt_we(mgr_we), .mgmt_valid(mgr_valid), .mgmt_ready(asic_ready),
         .prog_data(8'd0), .prog_valid(1'b0), .prog_sop(1'b0), .prog_eop(1'b0),
+        .prog_raddr(16'd0), .prog_rvalid(1'b0), .prog_rready(), .prog_rdata(),
         .expert_idx(expert_idx), .expert_logit(expert_logit),
         .expert_layer(expert_layer), .expert_module(expert_module),
         .result_valid(result_valid),
@@ -312,6 +321,10 @@ module tb_mgmt_bridge;
         nob_in_data  = 8'hCC;
         @(posedge clk);
         nob_in_data  = 8'hDD;
+        @(posedge clk);
+        nob_in_data  = 8'h12;      // CRC_HI
+        @(posedge clk);
+        nob_in_data  = 8'h34;      // CRC_LO
         nob_in_eop   = 1'b1;
         @(posedge clk);
         nob_in_valid = 1'b0;
@@ -336,6 +349,98 @@ module tb_mgmt_bridge;
             $display("FAIL: the tap captured %h %h %h %h, expected aa bb cc dd",
                      tapbuf[0], tapbuf[1], tapbuf[2], tapbuf[3]);
             errors = errors + 1;
+        end
+
+        // ------------------------------------------------------------------
+        // 2b. the host streams the router weights: a weight-upload flit takes
+        // the receive path, and the management node programs the ASIC from
+        // the bytes as they arrive
+        // ------------------------------------------------------------------
+        begin : receive_test
+            integer w;
+            integer got;
+            // the management node's receive: the board hands it the bytes
+            mgr_write(16'h18, 16'h0003);            // COORD_L
+            mgr_write(16'h1A, 16'h0025);            // COORD_M
+            mgr_write(16'h10, 16'h0000);            // WGHT_ADDR_LO
+            mgr_write(16'h11, 16'h0000);            // WGHT_ADDR_HI
+
+            // the weight-upload flit: DEST | CTRL=0x82 | LEN | payload | CRC
+            // the receive path is *not* drained while the frame arrives, so
+            // the bytes accumulate and can be inspected
+            rx_ready = 1'b0;
+            nob_in_data  = 8'h25;      // DEST
+            nob_in_sop   = 1'b1;
+            nob_in_valid = 1'b1;
+            @(posedge clk);
+            nob_in_sop   = 1'b0;
+            nob_in_data  = 8'h82;      // CTRL: a weight upload
+            @(posedge clk);
+            nob_in_data  = 8'h04;      // LEN_LO: four payload bytes
+            @(posedge clk);
+            nob_in_data  = 8'h00;      // LEN_HI
+            @(posedge clk);
+            got = 0;
+            for (w = 0; w < 4; w++) begin
+                nob_in_data = 8'h3C + w[7:0];   // the payload
+                @(posedge clk);
+                got = got + 1;
+            end
+            nob_in_data  = 8'h56;      // CRC_HI
+            @(posedge clk);
+            nob_in_data  = 8'h78;      // CRC_LO
+            nob_in_eop   = 1'b1;
+            @(posedge clk);
+            nob_in_valid = 1'b0;
+            nob_in_eop   = 1'b0;
+
+            // the receive path must hold exactly the payload bytes, and the
+            // tap must hold nothing (the frame was a weight upload, not a
+            // token).  The management node's programming of the ASIC from
+            // these bytes is covered by fw/test_mgmt_gating.c and by the
+            // trace replay (HDL/core/tb_mgmt_trace.v).
+            begin : drain_rx
+                integer n;
+                reg [7:0] b0, b1, b2, b3;
+                n = 0;
+                b0 = 8'h00; b1 = 8'h00; b2 = 8'h00; b3 = 8'h00;
+                guard = 0;
+                while (guard < 100) begin
+                    rx_ready = 1'b0;
+                    if (!rx_valid) begin
+                        @(posedge clk);
+                        guard = guard + 1;
+                    end else begin
+                        case (n)
+                            0: b0 = rx_data;
+                            1: b1 = rx_data;
+                            2: b2 = rx_data;
+                            3: b3 = rx_data;
+                            default: ;
+                        endcase
+                        n = n + 1;
+                        rx_ready = 1'b1;      // pop it
+                        @(posedge clk);
+                    end
+                end
+                rx_ready = 1'b0;
+                if (n != 4) begin
+                    $display("FAIL: the receive path delivered %0d payload bytes, expected 4", n);
+                    errors = errors + 1;
+                end
+                if (!(b0 == 8'h3C && b1 == 8'h3D && b2 == 8'h3E && b3 == 8'h3F)) begin
+                    $display("FAIL: the receive path delivered %h %h %h %h, expected 3c 3d 3e 3f",
+                             b0, b1, b2, b3);
+                    errors = errors + 1;
+                end
+                if (u_bridge.tap_count != 0) begin
+                    $display("FAIL: the weight-upload flit also reached the token tap (%0d bytes)",
+                             u_bridge.tap_count);
+                    errors = errors + 1;
+                end
+                if (n == 4 && b0 == 8'h3C)
+                    $display("ok: the host's weight-upload flit took the receive path, not the token tap");
+            end
         end
 
         // ------------------------------------------------------------------

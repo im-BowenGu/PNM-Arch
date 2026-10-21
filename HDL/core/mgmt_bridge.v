@@ -35,6 +35,9 @@ module mgmt_bridge #(
     // The token buffer's depth in bytes.  A token's payload is at most a
     // 32-byte flit plus the header, so 64 bytes holds one comfortably.
     parameter TAP_BYTES  = 64,
+    // The receive path's depth: the router weights for one layer are streamed
+    // through in chunks, so the buffer holds a chunk, not the whole router.
+    parameter RX_BYTES  = 64,
     // The injection's depth in bytes.
     parameter INJ_BYTES  = 64
 )(
@@ -56,6 +59,10 @@ module mgmt_bridge #(
     output wire        asic_we,
     output wire        asic_valid,
     input  wire        asic_ready,
+    // the gating ASIC's fabric-side read channel (forwarded)
+    output wire [15:0] asic_raddr,
+    output wire        asic_rvalid,
+    input  wire        asic_rready,
 
     // -- The node's incoming NoB (the repeater's delivery) ----------------
     input  wire [7:0]  nob_in_data,
@@ -75,6 +82,26 @@ module mgmt_bridge #(
     output wire        tap_full,
     output wire [1:0]  tap_vc,
 
+    // -- The management node's receive path: the router weights the host
+    // -- streams to this board during machine programming.  The bytes are the
+    // -- payload of a weight-upload flit, in order.
+    output wire [7:0]  rx_data,
+    output wire        rx_valid,
+    output wire        rx_sop,
+    output wire        rx_eop,
+    input  wire        rx_ready,
+
+    // -- The fabric-side read channel: a manager on the far side of the
+    // -- board's link reads the gating ASIC's registers -- the decision's
+    // -- rank window, the logit peek window, the status.  This is what a
+    // -- mode-B manager (the host) needs: without it, a manager that is not
+    // -- the management node could program the gating engine but never read
+    // -- its decision.
+    input  wire [15:0] fib_raddr,
+    input  wire        fib_rvalid,
+    output wire        fib_rready,
+    output wire [15:0] fib_rdata,
+
     // -- The management node's injection -----------------------------------
     input  wire [7:0]  inj_data,
     input  wire        inj_valid,
@@ -93,6 +120,13 @@ module mgmt_bridge #(
 );
 
     // =========================================================================
+    // The fabric-side read channel goes straight to the gating ASIC: the
+    // manager on the far side of the link reads the register file directly.
+    assign asic_raddr  = fib_raddr;
+    assign asic_rvalid = fib_rvalid;
+    assign fib_rready  = asic_rready;
+    assign fib_rdata   = asic_rdata;
+
     // The management node's bus goes straight to the gating ASIC.  The
     // gating ASIC's ready is a registered copy of its valid, so a transaction
     // completes on the second edge of a valid window; the board's bus driver
@@ -170,6 +204,36 @@ module mgmt_bridge #(
                          (TAP_BYTES <= 16)  ? 4 :
                          (TAP_BYTES <= 32)  ? 5 : 6;
 
+    // The node's DMA stream is DEST | CTRL | LEN_LO | LEN_HI | payload | CRC.
+    // The CTRL byte says what the flit is: a compute flit carries a token
+    // (the tap), a weight-upload flit carries router weights for this
+    // board's gating ASIC (the receive path).
+    localparam CTRL_COMPUTE = 8'h80;
+    localparam CTRL_WEIGHT  = 8'h82;
+
+    // The offset of the byte arriving now, counted from the frame's start:
+    // 0 = DEST, 1 = CTRL, 2 = LEN_LO, 3 = LEN_HI, 4..4+len-1 = the
+    // payload, 4+len..4+len+1 = the CRC.  Counting the *arriving* byte (not
+    // the next one) keeps the frame's interpretation and its wrap in step.
+    reg [15:0] nob_off;      // the arriving byte's offset in the frame
+    reg [15:0] nob_len;      // the payload's length
+    reg        nob_is_rx;    // this frame is a weight upload
+
+    // The receive path's buffer: the router weights the host streams to this
+    // board during machine programming.  The buffer holds a chunk, not the
+    // whole router -- the weights are programmed into the ASIC as they
+    // arrive, so the management node never has to hold them all.
+    localparam RX_AW = (RX_BYTES <= 2)   ? 1 :
+                       (RX_BYTES <= 4)   ? 2 :
+                       (RX_BYTES <= 8)   ? 3 :
+                       (RX_BYTES <= 16)  ? 4 :
+                       (RX_BYTES <= 32)  ? 5 : 6;
+    reg [7:0]  rx_mem [0:RX_BYTES-1];
+    reg [RX_AW-1:0] rx_rd;
+    reg [RX_AW-1:0] rx_wr;
+    reg [RX_AW:0]   rx_count;
+    reg        rx_first;
+
     reg [7:0] tap_mem [0:TAP_BYTES-1];
     reg [TAP_AW-1:0] tap_rd;
     reg [TAP_AW-1:0] tap_wr;
@@ -178,13 +242,48 @@ module mgmt_bridge #(
     // (HDL/pnm_defs.vh).  The tap presents the *payload* to the management
     // node, so the header is counted off here: the node gates the token's
     // hidden state, not the framing.
-    reg [2:0] tap_hdr;
 
     wire tap_has = (tap_count != 0);
     wire tap_space = (tap_count < TAP_BYTES);
 
     assign tap_empty = !tap_has;
     assign tap_full  = !tap_space;
+    // The receive path: the router weights the host streams to this board.
+    wire rx_has   = (rx_count != 0);
+    wire rx_space = (rx_count < RX_BYTES);
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            rx_rd    <= {RX_AW{1'b0}};
+            rx_wr    <= {RX_AW{1'b0}};
+            rx_count <= {(RX_AW+1){1'b0}};
+            rx_first <= 1'b1;
+        end else begin
+            if (rx_has && rx_ready) begin
+                rx_rd    <= rx_rd + 1'b1;
+                rx_first <= 1'b0;
+            end
+            if (nob_in_valid && nob_in_ready && nob_is_rx &&
+                (nob_off >= 16'd4) && ((nob_off - 16'd4) < nob_len))
+                rx_wr <= rx_wr + 1'b1;
+            // The count is netted: a pop and a push in the same cycle must
+            // cancel, or the count drifts and the read pointer runs past the
+            // data.
+            case ({nob_in_valid && nob_in_ready && nob_is_rx &&
+                   (nob_off >= 16'd4) && ((nob_off - 16'd4) < nob_len),
+                   rx_has && rx_ready})
+                2'b10: rx_count <= rx_count + 1'b1;
+                2'b01: rx_count <= rx_count - 1'b1;
+                default: rx_count <= rx_count;
+            endcase
+        end
+    end
+
+    assign rx_data  = rx_mem[rx_rd[RX_AW-1:0]];
+    assign rx_valid = rx_has;
+    assign rx_sop   = rx_first;
+    assign rx_eop   = 1'b0;
+
     assign tap_data  = tap_mem[tap_rd[TAP_AW-1:0]];
     assign tap_valid = tap_has;
     assign tap_sop   = (tap_count == 1) ? 1'b1 : 1'b0;   // the first byte out
@@ -202,24 +301,49 @@ module mgmt_bridge #(
             tap_rd    <= {TAP_AW{1'b0}};
             tap_wr    <= {TAP_AW{1'b0}};
             tap_count <= {(TAP_AW+1){1'b0}};
-            tap_hdr   <= 3'd0;
+            nob_off   <= 16'd0;
+            nob_len   <= 16'd0;
+            nob_is_rx <= 1'b0;
         end else begin
+            // the frame's offset: the frame is four header bytes, then the
+            // payload, then the two CRC bytes, then it is done
+            if (nob_in_valid && nob_in_ready) begin
+                if ((nob_off + 16'd1) >= (16'd6 + nob_len))
+                    nob_off <= 16'd0;
+                else
+                    nob_off <= nob_off + 16'd1;
+            end
             // pop
             if (tap_has && tap_ready)
                 tap_rd <= tap_rd + 1'b1;
-            // push: the first four bytes of the frame are the header
+            // push: the frame's header is consumed here, and only the
+            // payload reaches the tap or the receive path
             if (nob_in_valid && nob_in_ready) begin
-                if (tap_hdr != 3'd4) begin
-                    tap_hdr <= tap_hdr + 1'b1;
-                end else begin
-                    tap_mem[tap_wr[TAP_AW-1:0]] <= nob_in_data;
-                    tap_wr    <= tap_wr + 1'b1;
-                end
+                case (nob_off)
+                    16'd0: ;                       // DEST
+                    16'd1: nob_is_rx <= (nob_in_data == CTRL_WEIGHT);
+                    16'd2: nob_len[7:0] <= nob_in_data;
+                    16'd3: nob_len[15:8] <= nob_in_data;
+                    default: begin
+                        // a payload byte (the two CRC bytes follow the
+                        // payload and are not delivered)
+                        if ((nob_off - 16'd4) < nob_len) begin
+                            if (nob_is_rx) begin
+                                rx_mem[rx_wr[RX_AW-1:0]] <= nob_in_data;
+                                rx_wr <= rx_wr + 1'b1;
+                            end else begin
+                                tap_mem[tap_wr[TAP_AW-1:0]] <= nob_in_data;
+                                tap_wr <= tap_wr + 1'b1;
+                            end
+                        end
+                    end
+                endcase
             end
             // The count is netted: a pop and a push in the same cycle must
             // cancel, or the count drifts and the read pointer runs past the
             // data.
-            case ({nob_in_valid && nob_in_ready && (tap_hdr == 3'd4),
+            case ({nob_in_valid && nob_in_ready && (nob_off >= 16'd4) &&
+                    ((nob_off - 16'd4) < nob_len) && !nob_is_rx,
                    tap_has && tap_ready})
                 2'b10: tap_count <= tap_count + 1'b1;
                 2'b01: tap_count <= tap_count - 1'b1;

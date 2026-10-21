@@ -54,6 +54,16 @@ module gating_asic #(
     input  wire        prog_sop,
     input  wire        prog_eop,
 
+    // Fabric-side read channel: the manager on the far side of the board's
+    // link reads a register back -- the decision's rank window, the logit
+    // peek window, the status.  Without it a manager that is not the
+    // management node (the host, in mode B) could program the gating engine
+    // but never read its decision.
+    input  wire [15:0] prog_raddr,
+    input  wire        prog_rvalid,
+    output wire        prog_rready,
+    output wire [15:0] prog_rdata,
+
     // Top-K expert results (direct to orchestrator)
     output wire [TOP_K*8-1:0]  expert_idx,
     output wire [TOP_K*16-1:0] expert_logit,
@@ -237,18 +247,6 @@ module gating_asic #(
                             (eff_addr - REG_LOGIT) >> 1 : 8'd0;
     wire [15:0] logit_val;
 
-    // Rank decode for the result windows.  The rank is the half-word index
-    // inside the window; a rank beyond TOP_K reads back as 0xFFFF (no such
-    // expert) rather than an out-of-range slice.
-    wire [7:0]  res_rank = (eff_addr >= REG_RANK_LOG) ?
-                            ((eff_addr - REG_RANK_LOG) >> 1) :
-                            (eff_addr >= REG_RANK_IDX) ?
-                            ((eff_addr - REG_RANK_IDX) >> 1) : 8'd0;
-    wire [15:0] res_idx_val   = (res_rank < TOP_K) ?
-                            mg_idx[res_rank*8 +: 8] : 16'hFFFF;
-    wire [15:0] res_logit_val = (res_rank < TOP_K) ?
-                            mg_logit[res_rank*16 +: 16] : 16'h0000;
-
     // Read data is shared: whichever manager is active sees the same
     // register file (mode A reads it over mgmt_*, mode B over the fabric).
     reg [15:0] rd_data;
@@ -312,6 +310,45 @@ module gating_asic #(
     // latched here pulses moe_gating.weight_load on the following edge,
     // i.e. when wght_we/wght_waddr/wght_wdata are all stable.
     // ---------------------------------------------------------------
+    // The register file's read value.  Both buses use it: the management
+    // node's local bus (registered, so the value is valid on the cycle after
+    // the read) and the fabric-side read channel (combinational, so a
+    // manager on the far side of the board's link can read the decision's
+    // rank window without a round trip through the local bus).
+    function [15:0] reg_read;
+        input [15:0] addr;
+        reg [7:0] rk;
+        begin
+            // The rank this address selects, for the rank windows.
+            rk = (addr >= REG_RANK_LOG) ? ((addr - REG_RANK_LOG) >> 1) :
+                 (addr >= REG_RANK_IDX) ? ((addr - REG_RANK_IDX) >> 1) : 8'd0;
+            case (addr)
+                REG_STATUS:    reg_read = {13'd0, mg_fma_busy, mg_done, busy};
+                REG_CYCLE_LO:  reg_read = cycle_counter[15:0];
+                REG_CYCLE_HI:  reg_read = cycle_counter[31:16];
+                REG_CFG_EXP:   reg_read = {8'd0, NUM_EXPERTS[15:0]};
+                REG_CFG_HID:   reg_read = {8'd0, HIDDEN_DIM[15:0]};
+                REG_CFG_TOPK:  reg_read = {8'd0, TOP_K[15:0]};
+                REG_CFG_ARR:   reg_read = {8'd0, ARRAY_SIZE[15:0]};
+                REG_RES_IDX0:  reg_read = {8'd0, mg_idx[7:0]};
+                REG_RES_IDX1:  reg_read = {8'd0, mg_idx[15:8]};
+                REG_RES_LOG0:  reg_read = mg_logit[15:0];
+                REG_RES_LOG1:  reg_read = mg_logit[31:16];
+                default:
+                    if ((addr >= REG_RANK_IDX) &&
+                        (addr <  REG_RANK_IDX + 2*TOP_K))
+                        reg_read = (rk < TOP_K) ? mg_idx[rk*8 +: 8] : 16'hFFFF;
+                    else if ((addr >= REG_RANK_LOG) &&
+                             (addr <  REG_RANK_LOG + 2*TOP_K))
+                        reg_read = (rk < TOP_K) ? mg_logit[rk*16 +: 16] : 16'h0000;
+                    else if (addr >= REG_LOGIT)
+                        reg_read = logit_val;
+                    else
+                        reg_read = 16'd0;
+            endcase
+        end
+    endfunction
+
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             bus_ready    <= 1'b0;
@@ -415,30 +452,7 @@ module gating_asic #(
                         default: ;
                     endcase
                 end else begin
-                    case (eff_addr)
-                        REG_STATUS:    rd_data   <= {13'd0, mg_fma_busy, mg_done, busy};
-                        REG_CYCLE_LO:  rd_data   <= cycle_counter[15:0];
-                        REG_CYCLE_HI:  rd_data   <= cycle_counter[31:16];
-                        REG_CFG_EXP:   rd_data   <= NUM_EXPERTS[15:0];
-                        REG_CFG_HID:   rd_data   <= HIDDEN_DIM[15:0];
-                        REG_CFG_TOPK:  rd_data   <= TOP_K[15:0];
-                        REG_CFG_ARR:   rd_data   <= ARRAY_SIZE[15:0];
-                        REG_RES_IDX0:  rd_data   <= {8'd0, mg_idx[7:0]};
-                        REG_RES_IDX1:  rd_data   <= {8'd0, mg_idx[15:8]};
-                        REG_RES_LOG0:  rd_data   <= mg_logit[15:0];
-                        REG_RES_LOG1:  rd_data   <= mg_logit[31:16];
-                        default:
-                            if (eff_addr >= REG_RANK_IDX &&
-                                eff_addr <  REG_RANK_IDX + 2*TOP_K)
-                                rd_data   <= res_idx_val;
-                            else if (eff_addr >= REG_RANK_LOG &&
-                                eff_addr <  REG_RANK_LOG + 2*TOP_K)
-                                rd_data   <= res_logit_val;
-                            else if (eff_addr >= REG_LOGIT)
-                                rd_data   <= logit_val;
-                            else
-                                rd_data   <= 16'd0;
-                    endcase
+                    rd_data <= reg_read(eff_addr);
                 end
             end
         end
@@ -476,5 +490,11 @@ module gating_asic #(
         .logit_idx        (logit_idx),
         .logit_val        (logit_val)
     );
+
+    // The fabric-side read channel: a manager on the far side of the board's
+    // link can read any register -- the decision's rank window, the logit
+    // peek window, the status -- without a round trip through the local bus.
+    assign prog_rdata  = reg_read(prog_raddr);
+    assign prog_rready = prog_rvalid;
 
 endmodule

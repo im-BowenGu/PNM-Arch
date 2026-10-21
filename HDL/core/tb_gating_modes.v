@@ -52,6 +52,10 @@ module tb_gating_modes;
 
     // the fabric programming stream (mode B)
     reg  [7:0]  prog_data = 8'd0;
+    reg  [15:0] prog_raddr = 16'd0;
+    reg         prog_rvalid = 1'b0;
+    wire        prog_rready;
+    wire [15:0] prog_rdata;
     reg         prog_valid = 1'b0;
     reg         prog_sop = 1'b0;
     reg         prog_eop = 1'b0;
@@ -82,6 +86,8 @@ module tb_gating_modes;
         .mgmt_ready(mgmt_ready),
         .prog_data(prog_data), .prog_valid(prog_valid),
         .prog_sop(prog_sop), .prog_eop(prog_eop),
+        .prog_raddr(prog_raddr), .prog_rvalid(prog_rvalid),
+        .prog_rready(prog_rready), .prog_rdata(prog_rdata),
         .expert_idx(expert_idx), .expert_logit(expert_logit),
         .expert_layer(expert_layer), .expert_module(expert_module),
         .result_valid(result_valid),
@@ -395,6 +401,37 @@ module tb_gating_modes;
         end
         $display("mode B (host over the fabric):      top-%0d = %0d, %0d", TOP_K,
                  idx_b[0], idx_b[1]);
+
+        // The mode-B manager reads the decision back over the fabric-side
+        // read channel.  Without it a manager that is not the management
+        // node could program the gating engine but never read its decision.
+        begin : mode_b_read
+            reg [15:0] r;
+            integer kk;
+            for (kk = 0; kk < TOP_K; kk = kk + 1) begin
+                prog_raddr  = 16'h0200 + 16'd2 * kk[15:0];
+                prog_rvalid = 1'b1;
+                #1;
+                r = prog_rdata;
+                prog_rvalid = 1'b0;
+                if (r[7:0] !== idx_b[kk][7:0]) begin
+                    $display("FAIL: mode B read rank %0d id %h, expected %h",
+                             kk, r[7:0], idx_b[kk][7:0]);
+                    errors = errors + 1;
+                end
+                prog_raddr  = 16'h0280 + 16'd2 * kk[15:0];
+                prog_rvalid = 1'b1;
+                #1;
+                r = prog_rdata;
+                prog_rvalid = 1'b0;
+                if (r !== log_b[kk]) begin
+                    $display("FAIL: mode B read rank %0d logit %h, expected %h",
+                             kk, r, log_b[kk]);
+                    errors = errors + 1;
+                end
+            end
+            $display("ok: the mode-B manager read the decision back over the fabric-side channel");
+        end
 
         // ---------------- the two modes must agree ----------------
         for (i = 0; i < TOP_K; i = i + 1) begin

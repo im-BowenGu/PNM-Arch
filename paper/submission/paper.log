@@ -1,4 +1,4 @@
-This is pdfTeX, Version 3.141592653-2.6-1.40.26 (TeX Live 2024/nixos.org) (preloaded format=pdflatex 1980.1.1)  21 OCT 2026 11:01
+This is pdfTeX, Version 3.141592653-2.6-1.40.26 (TeX Live 2024/nixos.org) (preloaded format=pdflatex 1980.1.1)  21 OCT 2026 21:46
 entering extended mode
  restricted \write18 enabled.
  %&-line parsing enabled.
@@ -891,6 +891,9 @@ Underfull \hbox (badness 1342) in paragraph at lines 424--425
  []
 
 
+Underfull \vbox (badness 10000) has occurred while \output is active []
+
+
 
 [19]
 Underfull \hbox (badness 10000) in paragraph at lines 451--451
@@ -964,6 +967,8 @@ Underfull \hbox (badness 10000) in paragraph at lines 555--555
 
 
 
+
+[23]
 Underfull \hbox (badness 10000) in paragraph at lines 588--588
 []|\OT1/ptm/m/n/8 (+20) Pipeline
  []
@@ -989,8 +994,6 @@ Overfull \hbox (9.26494pt too wide) in paragraph at lines 588--588
  []
 
 
-
-[23]
 Underfull \vbox (badness 10000) has occurred while \output is active []
 
 
@@ -1030,11 +1033,11 @@ Underfull \vbox (badness 10000) has occurred while \output is active []
 
 
 
+
+[28]
 Underfull \vbox (badness 10000) has occurred while \output is active []
 
 
-
-[28]
 
 
 
@@ -1078,7 +1081,7 @@ Package rerunfilecheck Info: File `paper.out' has not changed.
 Here is how much of TeX's memory you used:
  13092 strings out of 474315
  209837 string characters out of 5718334
- 662793 words of memory out of 5000000
+ 659452 words of memory out of 5000000
  35583 multiletter control sequences out of 15000+600000
  592004 words of font info for 264 fonts, out of 8000000 for 9000
  430 hyphenation exceptions out of 8191
@@ -1103,7 +1106,7 @@ e/4l3m65sl104swdhl3hrpnqmachm98qgx-texlive-combined-medium-2024-final-texmfdist
 texlive-combined-medium-2024-final-texmfdist/fonts/type1/urw/times/utmr8a.pfb><
 /nix/store/4l3m65sl104swdhl3hrpnqmachm98qgx-texlive-combined-medium-2024-final-
 texmfdist/fonts/type1/urw/times/utmri8a.pfb>
-Output written on paper.pdf (31 pages, 628294 bytes).
+Output written on paper.pdf (31 pages, 628435 bytes).
 PDF statistics:
  747 PDF objects out of 1000 (max. 8388607)
  665 compressed objects within 7 object streams

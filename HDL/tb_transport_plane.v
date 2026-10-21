@@ -252,6 +252,7 @@ module tb_transport_plane;
         .tap_data(tap_data), .tap_valid(tap_valid), .tap_sop(tap_sop),
         .tap_eop(tap_eop), .tap_ready(tap_ready), .tap_empty(tap_empty),
         .tap_full(tap_full), .tap_vc(tap_vc),
+        .rx_data(), .rx_valid(), .rx_sop(), .rx_eop(), .rx_ready(1'b0),
         .inj_data(minj_data), .inj_valid(minj_valid), .inj_sop(minj_sop),
         .inj_eop(minj_eop), .inj_ready(minj_ready), .inj_vc(minj_vc),
         .nob_out_data(gate_out_data), .nob_out_valid(gate_out_valid),
@@ -270,6 +271,7 @@ module tb_transport_plane;
         .mgmt_addr(mgr_addr), .mgmt_wdata(mgr_wdata), .mgmt_rdata(asic_rdata),
         .mgmt_we(mgr_we), .mgmt_valid(mgr_valid), .mgmt_ready(asic_ready),
         .prog_data(8'd0), .prog_valid(1'b0), .prog_sop(1'b0), .prog_eop(1'b0),
+        .prog_raddr(16'd0), .prog_rvalid(1'b0), .prog_rready(), .prog_rdata(),
         .expert_idx(), .expert_logit(), .expert_layer(), .expert_module(),
         .result_valid(), .busy(), .done(), .cycle_count()
     );

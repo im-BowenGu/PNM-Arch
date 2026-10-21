@@ -236,6 +236,31 @@ int main(void)
         CHECK(g_model.weights[i] == weights[i],
               "weight %d is %04X, expected %04X", i, g_model.weights[i], weights[i]);
 
+    /* ---------------- the host streams the router weights ---------------- */
+    /* The host's weight-upload flits reach the board's receive path, which
+     * hands the bytes to the management node; the node programs them into
+     * the ASIC as they arrive, so it never holds the whole router. */
+    {
+        int w;
+        mgmt_receive_begin(&mg, 64);
+        CHECK(mg.state == MGMT_STATE_RECEIVE,
+              "the receive did not start (state %d)", mg.state);
+        for (w = 0; w < 64; w++) {
+            mgmt_receive_byte(&mg, (uint8_t)(weights[w] >> 8));
+            mgmt_receive_byte(&mg, (uint8_t)(weights[w] & 0xFF));
+        }
+        CHECK(mg.state == MGMT_STATE_IDLE,
+              "the receive did not finish (state %d)", mg.state);
+        CHECK(mg.rx_count == 64, "the node received %u words, expected 64",
+              mg.rx_count);
+        for (w = 0; w < 64; w++)
+            CHECK(g_model.weights[w] == weights[w],
+                  "the streamed weight %d is %04X, expected %04X", w,
+                  g_model.weights[w], weights[w]);
+        printf("ok: the node streamed %u router words into the ASIC\n",
+               mg.rx_count);
+    }
+
     /* ---------------- a token ---------------- */
     /* the payload carries the hidden state as big-endian 16-bit words */
     for (i = 0; i < 8; i++) {

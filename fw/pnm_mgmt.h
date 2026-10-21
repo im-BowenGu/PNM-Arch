@@ -117,6 +117,7 @@ typedef struct {
 
 typedef enum {
     MGMT_STATE_RESET = 0,     /* waiting for the weights                  */
+    MGMT_STATE_RECEIVE,       /* receiving the router weights from the host */
     MGMT_STATE_IDLE,          /* programmed; waiting for a token          */
     MGMT_STATE_HIDDEN,        /* writing the hidden vector                 */
     MGMT_STATE_START,         /* starting the gating engine               */
@@ -163,6 +164,13 @@ typedef struct {
     /* the gating engine's busy line was seen high */
     bool     busy_seen;
 
+    /* the receive path: the router weights the host streams to this node */
+    uint32_t rx_words;      /* how many words the host is sending        */
+    uint32_t rx_count;      /* how many have arrived                      */
+    uint16_t rx_word;       /* the word being assembled                   */
+    uint8_t  rx_byte;       /* the bytes of that word seen so far         */
+    bool     rx_active;     /* a receive is in progress                   */
+
     /* counters */
     uint32_t tokens_gated;
     uint32_t tokens_dispatched;
@@ -183,6 +191,21 @@ int mgmt_program_weights(mgmt_t *mg, const uint16_t *bf16_words, int nwords);
 /* The board's tap presents a token: the payload as it appears on the
  * fabric, with the hidden state packed as big-endian 16-bit words. */
 void mgmt_push_token(mgmt_t *mg, const uint8_t *payload, int len);
+
+/* Receive the router weights from the host.
+ *
+ * The host streams them to this board during machine programming, in
+ * weight-upload flits; the board's receive path hands the bytes to the
+ * management node, which programs them into the gating ASIC as they arrive
+ * -- the node never holds the whole router, so a 4 KB MCU can program a
+ * 700 KB router.
+ *
+ * mgmt_receive_begin() says how many BF16 words are coming; the board then
+ * calls mgmt_receive_byte() once per byte, in order, most significant byte
+ * first.  When the last word has been written the ASIC holds the router and
+ * the node returns to its idle state. */
+void mgmt_receive_begin(mgmt_t *mg, uint32_t nwords);
+void mgmt_receive_byte(mgmt_t *mg, uint8_t byte);
 
 /* Advance the state machine by one step.  Returns true when the node has
  * emitted a dispatch flit (the caller then reads mg->flit and clears

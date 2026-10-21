@@ -64,6 +64,56 @@ int mgmt_program_weights(mgmt_t *mg, const uint16_t *bf16_words, int nwords)
 /* The token                                                            */
 /* ------------------------------------------------------------------ */
 
+/* ------------------------------------------------------------------ */
+/* Receiving the router weights from the host                           */
+/* ------------------------------------------------------------------ */
+
+void mgmt_receive_begin(mgmt_t *mg, uint32_t nwords)
+{
+    if (nwords == 0) {
+        mg->errors++;
+        return;
+    }
+    /* The coordinate first, then the weight RAM's write pointer: the ASIC
+     * latches the coordinate with the weights, and every data write lands
+     * at the pointer and increments it. */
+    mg->bus.write(mg->bus.ctx, MGMT_REG_COORD_L, mg->layer);
+    mg->bus.write(mg->bus.ctx, MGMT_REG_COORD_M, mg->module);
+    mg->bus.write(mg->bus.ctx, MGMT_REG_WGHT_ADDR_LO, 0);
+    mg->bus.write(mg->bus.ctx, MGMT_REG_WGHT_ADDR_HI, 0);
+
+    mg->rx_words  = nwords;
+    mg->rx_count  = 0;
+    mg->rx_word   = 0;
+    mg->rx_byte   = 0;
+    mg->rx_active = true;
+    mg->state     = MGMT_STATE_RECEIVE;
+}
+
+void mgmt_receive_byte(mgmt_t *mg, uint8_t byte)
+{
+    if (!mg->rx_active) {
+        mg->errors++;
+        return;
+    }
+    /* The weights are BF16 words, most significant byte first. */
+    if (mg->rx_byte == 0)
+        mg->rx_word = (uint16_t)((uint16_t)byte << 8);
+    else
+        mg->rx_word = (uint16_t)(mg->rx_word | (uint16_t)byte);
+    mg->rx_byte++;
+    if (mg->rx_byte < 2)
+        return;
+
+    mg->rx_byte = 0;
+    mg->bus.write(mg->bus.ctx, MGMT_REG_WGHT_DATA, mg->rx_word);
+    mg->rx_count++;
+    if (mg->rx_count >= mg->rx_words) {
+        mg->rx_active = false;
+        mg->state = MGMT_STATE_IDLE;
+    }
+}
+
 void mgmt_push_token(mgmt_t *mg, const uint8_t *payload, int len)
 {
     if (len < 0 || len > MGMT_MAX_TOKEN) {
@@ -124,7 +174,13 @@ bool mgmt_step(mgmt_t *mg)
     switch (mg->state) {
     case MGMT_STATE_RESET:
         /* Nothing to do until the host's router blob arrives and
-         * mgmt_program_weights() runs. */
+         * mgmt_program_weights() or mgmt_receive_begin() runs. */
+        return false;
+
+    case MGMT_STATE_RECEIVE:
+        /* The bytes arrive from the board's receive path, not from here:
+         * mgmt_receive_byte() programs them into the ASIC as they come,
+         * so the node never holds the whole router. */
         return false;
 
     case MGMT_STATE_IDLE:
