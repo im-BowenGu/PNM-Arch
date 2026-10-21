@@ -72,6 +72,7 @@ if [ "$SELF_CHECK" = 1 ]; then
         "$HDL/core/int8_mac.v" "$HDL/core/int4_mac.v" "$HDL/core/fp4_mac.v" \
         "$HDL/core/bf16_mac_array.v" "$HDL/core/fp16_mac_array.v" "$HDL/core/fp_mac_array.v" \
         "$HDL/core/fp32_mac_array.v" "$HDL/core/int4_mac_array.v" \
+        "$HDL/core/quant_mac_array.v" \
         "$HDL/core/fp4_mac_array.v" "$HDL/core/mxfp4_mac_array.v" \
         "$HDL/core/pe_tile_stub.v" "$HDL/core/doorbell.v" "$HDL/core/crc16.v" \
         "$HDL/core/tb_moe_gating.v" "$HDL/core/tb_bf16_fma.v" \
