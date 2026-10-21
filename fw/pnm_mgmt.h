@@ -160,6 +160,9 @@ typedef struct {
     bool     have_flit;
     int      dispatch_index;
 
+    /* the gating engine's busy line was seen high */
+    bool     busy_seen;
+
     /* counters */
     uint32_t tokens_gated;
     uint32_t tokens_dispatched;

@@ -238,8 +238,16 @@ module tb_pnm_host_bridge;
             errors = errors + 1;
         end
 
-        // the result path: a byte extracted from the spine reads back
-        spine_extract_data = 8'h5A;
+        // the result path: a byte extracted from the spine is buffered and
+        // reads back (the host is far slower than the fabric, so the bridge
+        // holds the returned bytes in a FIFO)
+        @(negedge clk);
+        spine_extract_data  = 8'h5A;
+        spine_extract_valid = 1'b1;
+        spine_extract_eop   = 1'b1;
+        @(negedge clk);
+        spine_extract_valid = 1'b0;
+        spine_extract_eop   = 1'b0;
         host_read(8'h18, rd);
         if (rd[7:0] !== 8'h5A) begin
             $display("[TB] ERROR: ROUTE_RESULT = %02x, expected 5a", rd[7:0]);

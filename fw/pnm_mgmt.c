@@ -165,8 +165,20 @@ bool mgmt_step(mgmt_t *mg)
     case MGMT_STATE_WAIT:
         /* The engine's done bit is a one-cycle pulse, so the handshake is
          * "wait for busy to go high, then wait for it to fall". */
-        if (mg->bus.read(mg->bus.ctx, MGMT_REG_STATUS) & MGMT_STATUS_BUSY)
+        if (mg->bus.read(mg->bus.ctx, MGMT_REG_STATUS) & MGMT_STATUS_BUSY) {
+            mg->busy_seen = true;
             return false;
+        }
+        if (!mg->busy_seen) {
+            /* The engine has not started yet. */
+            return false;
+        }
+        /* The engine has finished, but the ASIC's packed decision output
+         * (the rank window's ids and logits) is registered one cycle behind
+         * the top-k buffer, so a read taken in the same cycle would see the
+         * previous token's -- or the reset sentinel's -- decision.  One more
+         * transaction settles it. */
+        mg->bus.read(mg->bus.ctx, MGMT_REG_STATUS);
         mg->tokens_gated++;
         mg->state = MGMT_STATE_RESULT;
         return false;

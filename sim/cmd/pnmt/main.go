@@ -251,6 +251,7 @@ func (r *runner) hdlCore() {
 		{"moe_gating", []string{"core/arith_unit.v", "core/moe_gating.v", "core/bf16_fma.v", "core/fma_core.v", "core/tb_moe_gating.v"}},
 		{"gating_modes", []string{"core/arith_unit.v", "core/moe_gating.v", "core/bf16_fma.v", "core/fma_core.v", "core/gating_asic.v", "core/tb_gating_modes.v"}},
 		{"mgmt_bridge", []string{"core/arith_unit.v", "core/moe_gating.v", "core/bf16_fma.v", "core/fma_core.v", "core/gating_asic.v", "core/mgmt_bridge.v", "core/tb_mgmt_bridge.v"}},
+		{"transport_plane", []string{"pnm_host_top.v", "pnm_arb.v", "pnm_host_bridge.v", "pi_bridge.v", "lxy_repeater.v", "node_eject.v", "flit_gate.v", "vc_merge.v", "core/mgmt_bridge.v", "core/gating_asic.v", "core/moe_gating.v", "core/doorbell.v", "core/crc16.v", "core/arith_unit.v", "core/bf16_fma.v", "core/fma_core.v", "tb_transport_plane.v"}},
 		{"rotary_engine", []string{"core/rotary_engine.v", "core/tb_rotary_engine.v"}},
 		{"weight_dequant", []string{"core/weight_dequant.v", "core/tb_weight_dequant.v"}},
 		{"kv_quant", []string{"core/kv_quant.v", "core/tb_kv_quant.v"}},

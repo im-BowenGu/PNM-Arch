@@ -126,6 +126,44 @@ module pnm_host_bridge #(
     assign host_ready = 1'b1;
 
     // =========================================================================
+    // Result FIFO
+    //
+    // The fabric returns a result as a byte stream, but the host reads the
+    // register window far more slowly (a whole SPI frame per byte).  Without
+    // a buffer the host would read the window long after the byte had gone.
+    // The FIFO holds the returned bytes until the host collects them; a
+    // read of ROUTE_RESULT pops one byte.
+    // =========================================================================
+    localparam RES_FIFO_BYTES = 256;
+    reg [7:0] res_fifo [0:RES_FIFO_BYTES-1];
+    reg [8:0] res_rd;
+    reg [8:0] res_wr;
+    reg [9:0] res_count;
+    reg       res_pop;          // the host is reading the result this cycle
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            res_rd    <= 9'd0;
+            res_wr    <= 9'd0;
+            res_count <= 10'd0;
+        end else begin
+            // pop
+            if (res_pop && (res_count != 0)) begin
+                res_rd    <= res_rd + 1'b1;
+                res_count <= res_count - 1'b1;
+            end
+            // push
+            if (spine_extract_valid && (res_count < RES_FIFO_BYTES)) begin
+                res_fifo[res_wr[7:0]] <= spine_extract_data;
+                res_wr    <= res_wr + 1'b1;
+                res_count <= res_count + 1'b1;
+            end
+        end
+    end
+
+    wire [7:0] res_head = res_fifo[res_rd[7:0]];
+
+    // =========================================================================
     // PNM Router Engine (host-register-driven flit builder)
     // =========================================================================
     localparam CTRL_COMPUTE = 8'h80;  // VC_SPINE | OP_COMPUTE
@@ -344,6 +382,15 @@ module pnm_host_bridge #(
     // return zero on the first access.  Combinational also matches how the
     // 16550 and the gating ASIC present their read data.
     // -------------------------------------------------------------------------
+    // A read of ROUTE_RESULT pops one byte out of the result FIFO.  The pop
+    // happens on the edge the read completes.
+    always @(posedge clk) begin
+        res_pop <= 1'b0;
+        if (sel_pnm && host_valid && !host_we && (pnm_addr == 8'h18) &&
+            (res_count != 0))
+            res_pop <= 1'b1;
+    end
+
     always @(*) begin
         pnm_rdata = 32'h0;
         case (pnm_addr)
@@ -353,7 +400,7 @@ module pnm_host_bridge #(
             8'h0C: pnm_rdata = {16'h0, route_len};          // ROUTE_LEN
             8'h10: pnm_rdata = {24'h0, route_payload[route_wpos]}; // ROUTE_DATA
             8'h14: pnm_rdata = {30'h0, 1'b0, pnm_busy};
-            8'h18: pnm_rdata = spine_extract_data;          // ROUTE_RESULT
+            8'h18: pnm_rdata = {24'h0, res_head};         // ROUTE_RESULT (FIFO head)
             8'h1C: pnm_rdata = route_errors;                // ROUTE_ERRORS
             8'h20: pnm_rdata = route_dispatches;            // ROUTE_DISPATCH
             8'h24: pnm_rdata = route_weight_flits;          // ROUTE_WEIGHT_FLITS

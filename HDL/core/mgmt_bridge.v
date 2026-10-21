@@ -120,6 +120,7 @@ module mgmt_bridge #(
     reg [INJ_AW-1:0] inj_wr;
     reg [INJ_AW:0]   inj_count;
     reg              inj_first;   // the next byte out is the frame's first
+    reg              inj_last;    // the next byte out ends the frame
     reg [1:0]        inj_vc_r;
 
     wire inj_has   = (inj_count != 0);
@@ -133,18 +134,22 @@ module mgmt_bridge #(
             inj_wr    <= {INJ_AW{1'b0}};
             inj_count <= {(INJ_AW+1){1'b0}};
             inj_first <= 1'b1;
+            inj_last  <= 1'b0;
             inj_vc_r  <= 2'b00;
         end else begin
             if (inj_has && nob_out_ready) begin
                 inj_rd    <= inj_rd + 1'b1;
                 inj_count <= inj_count - 1'b1;
                 inj_first <= 1'b0;
+                inj_last  <= 1'b0;
             end
             if (inj_valid && inj_ready) begin
                 inj_mem[inj_wr[INJ_AW-1:0]] <= inj_data;
                 inj_wr    <= inj_wr + 1'b1;
                 inj_count <= inj_count + 1'b1;
                 inj_vc_r  <= inj_vc;
+                // the frame's end marker rides with its last byte
+                inj_last  <= inj_eop;
             end
         end
     end
@@ -162,6 +167,11 @@ module mgmt_bridge #(
     reg [TAP_AW-1:0] tap_rd;
     reg [TAP_AW-1:0] tap_wr;
     reg [TAP_AW:0]   tap_count;
+    // The node's DMA stream is DEST | CTRL | LEN_LO | LEN_HI | payload...
+    // (HDL/pnm_defs.vh).  The tap presents the *payload* to the management
+    // node, so the header is counted off here: the node gates the token's
+    // hidden state, not the framing.
+    reg [2:0] tap_hdr;
 
     wire tap_has = (tap_count != 0);
     wire tap_space = (tap_count < TAP_BYTES);
@@ -185,58 +195,37 @@ module mgmt_bridge #(
             tap_rd    <= {TAP_AW{1'b0}};
             tap_wr    <= {TAP_AW{1'b0}};
             tap_count <= {(TAP_AW+1){1'b0}};
+            tap_hdr   <= 3'd0;
         end else begin
             // pop
             if (tap_has && tap_ready) begin
                 tap_rd    <= tap_rd + 1'b1;
                 tap_count <= tap_count - 1'b1;
             end
-            // push
+            // push: the first four bytes of the frame are the header
             if (nob_in_valid && nob_in_ready) begin
-                tap_mem[tap_wr[TAP_AW-1:0]] <= nob_in_data;
-                tap_wr    <= tap_wr + 1'b1;
-                tap_count <= tap_count + 1'b1;
+                if (tap_hdr != 3'd4) begin
+                    tap_hdr <= tap_hdr + 1'b1;
+                end else begin
+                    tap_mem[tap_wr[TAP_AW-1:0]] <= nob_in_data;
+                    tap_wr    <= tap_wr + 1'b1;
+                    tap_count <= tap_count + 1'b1;
+                end
             end
         end
     end
 
     // =========================================================================
-    // The outgoing lane: the management node's injection has priority over
-    // the repeater's stream, because the injection is the rare event and
-    // the repeater's stream is held by its ready in the meantime.
+    // The outgoing lane carries the management node's injection only.
+    //
+    // The node's *incoming* stream (the token arriving from the fabric) is
+    // consumed by the tap; it is not echoed back out.  The node transmits
+    // only what it decides to dispatch.
     // =========================================================================
-    reg [7:0]  pass_data_r;
-    reg        pass_valid_r;
-    reg        pass_sop_r;
-    reg        pass_eop_r;
-    reg [1:0]  pass_vc_r;
-
-    always @(posedge clk or negedge rst_n) begin
-        if (!rst_n) begin
-            pass_data_r  <= 8'h00;
-            pass_valid_r <= 1'b0;
-            pass_sop_r   <= 1'b0;
-            pass_eop_r   <= 1'b0;
-            pass_vc_r    <= 2'b00;
-        end else begin
-            if (nob_in_valid && nob_in_ready) begin
-                pass_data_r  <= nob_in_data;
-                pass_valid_r <= 1'b1;
-                pass_sop_r   <= nob_in_sop;
-                pass_eop_r   <= nob_in_eop;
-                pass_vc_r    <= nob_in_vc;
-            end else if (pass_valid_r && nob_out_ready) begin
-                pass_valid_r <= 1'b0;
-                pass_sop_r   <= 1'b0;
-                pass_eop_r   <= 1'b0;
-            end
-        end
-    end
-
-    assign nob_out_data  = inj_active ? inj_mem[inj_rd[INJ_AW-1:0]] : pass_data_r;
-    assign nob_out_valid = inj_active ? 1'b1 : pass_valid_r;
-    assign nob_out_sop   = inj_active ? (inj_first ? 1'b1 : 1'b0) : pass_sop_r;
-    assign nob_out_eop   = inj_active ? 1'b0 : pass_eop_r;
-    assign nob_out_vc    = inj_active ? inj_vc_r : pass_vc_r;
+    assign nob_out_data  = inj_mem[inj_rd[INJ_AW-1:0]];
+    assign nob_out_valid = inj_active;
+    assign nob_out_sop   = inj_first;
+    assign nob_out_eop   = inj_last;
+    assign nob_out_vc    = inj_vc_r;
 
 endmodule

@@ -54,6 +54,8 @@ module tb_mgmt_bridge;
     wire [15:0] asic_rdata;
     wire        asic_we;
     wire        asic_valid;
+    // The ASIC's ready is the bridge's asic_ready; the bridge's mgr_ready is
+    // the management node's side.  They are different nets.
     wire        asic_ready;
 
     wire [TOP_K*8-1:0]  expert_idx;
@@ -140,8 +142,8 @@ module tb_mgmt_bridge;
         .bus_addr(16'd0), .bus_wdata(16'd0), .bus_rdata(),
         .bus_we(1'b0), .bus_valid(1'b0), .bus_ready(),
         .mgmt_sel(1'b1),                     // mode A: the embedded node manages
-        .mgmt_addr(mgr_addr), .mgmt_wdata(mgr_wdata), .mgmt_rdata(mgr_rdata),
-        .mgmt_we(mgr_we), .mgmt_valid(mgr_valid), .mgmt_ready(mgr_ready),
+        .mgmt_addr(mgr_addr), .mgmt_wdata(mgr_wdata), .mgmt_rdata(asic_rdata),
+        .mgmt_we(mgr_we), .mgmt_valid(mgr_valid), .mgmt_ready(asic_ready),
         .prog_data(8'd0), .prog_valid(1'b0), .prog_sop(1'b0), .prog_eop(1'b0),
         .expert_idx(expert_idx), .expert_logit(expert_logit),
         .expert_layer(expert_layer), .expert_module(expert_module),
@@ -258,6 +260,7 @@ module tb_mgmt_bridge;
     integer guard;
     integer tap_bytes;
 
+
     initial begin
         rst_n = 1'b0;
         repeat (4) @(posedge clk);
@@ -289,11 +292,21 @@ module tb_mgmt_bridge;
         // 2. a token arrives on the node's NoB and the tap captures it
         // ------------------------------------------------------------------
         tap_bytes = 4;   // the payload is four bytes
-        nob_in_data  = 8'hAA;
+        // The node's DMA stream: DEST | CTRL | LEN_LO | LEN_HI | payload.
+        // The board's tap strips the header, so the node sees the payload.
+        nob_in_data  = 8'h25;      // DEST
         nob_in_sop   = 1'b1;
         nob_in_valid = 1'b1;
         @(posedge clk);
         nob_in_sop   = 1'b0;
+        nob_in_data  = 8'h80;      // CTRL
+        @(posedge clk);
+        nob_in_data  = 8'h04;      // LEN_LO
+        @(posedge clk);
+        nob_in_data  = 8'h00;      // LEN_HI
+        @(posedge clk);
+        nob_in_data  = 8'hAA;      // payload
+        @(posedge clk);
         nob_in_data  = 8'hBB;
         @(posedge clk);
         nob_in_data  = 8'hCC;

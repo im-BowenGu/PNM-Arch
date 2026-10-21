@@ -14,7 +14,7 @@
 // Until this module existed, each piece was checked against a *model* of the
 // next: tb_host_bmc.v and tb_dma_lpddr6.v drove pi_bridge and pnm_arb into
 // register files they defined in the testbench, and tb_pnm_host_bridge.v drove
-// the bridge alone.  The composition -- the actual host path -- was never
+// the bridge alone.  The composition (the actual host path) was never
 // simulated, and it did not work: the arbiter presents an 8-bit byte offset
 // while the bridge decodes a 32-bit address, so nothing was ever selected,
 // and the bridge's registered read data was sampled by the arbiter one cycle
