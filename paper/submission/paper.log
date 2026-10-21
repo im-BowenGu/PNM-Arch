@@ -1,4 +1,4 @@
-This is pdfTeX, Version 3.141592653-2.6-1.40.26 (TeX Live 2024/nixos.org) (preloaded format=pdflatex 1980.1.1)  20 OCT 2026 22:37
+This is pdfTeX, Version 3.141592653-2.6-1.40.26 (TeX Live 2024/nixos.org) (preloaded format=pdflatex 1980.1.1)  21 OCT 2026 01:21
 entering extended mode
  restricted \write18 enabled.
  %&-line parsing enabled.
@@ -936,6 +936,8 @@ Underfull \hbox (badness 1342) in paragraph at lines 422--423
 
 
 [19]
+
+
 Underfull \hbox (badness 10000) in paragraph at lines 449--449
 []|\OT1/ptm/m/n/8 (+20) Node mem-ory
  []
@@ -950,8 +952,6 @@ Underfull \hbox (badness 5077) in paragraph at lines 449--449
 []|\OT1/ptm/m/n/8 (+20) 192 GB dual-slot (2$\OMS/cmsy/m/n/8 ^^B$\OT1/ptm/m/n/8 
 (+20) 96 GB DDR5-5600
  []
-
-
 
 
 
@@ -978,6 +978,12 @@ Package pdftex.def Info: figures/fig_latency.png  used on input line 518.
 (pdftex.def)             Requested size: 235.90218pt x 121.19539pt.
 
 
+
+Underfull \vbox (badness 10000) has occurred while \output is active []
+
+
+
+[22 <./figures/fig_latency.png>]
 LaTeX Font Info:    Trying to load font information for OT1+pcr on input line 5
 28.
 
@@ -990,11 +996,6 @@ Package microtype Info: Loading generic protrusion settings for font family
 (microtype)             For optimal results, create family-specific settings.
 (microtype)             See the microtype manual for details.
 
-Underfull \vbox (badness 10000) has occurred while \output is active []
-
-
-
-[22 <./figures/fig_latency.png>]
 Underfull \hbox (badness 10000) in paragraph at lines 553--553
 []|\OT1/ptm/m/n/8 (+20) Memory
  []
@@ -1017,7 +1018,7 @@ Underfull \hbox (badness 10000) in paragraph at lines 553--553
 
 
 
-Underfull \vbox (badness 2368) has occurred while \output is active []
+Underfull \vbox (badness 10000) has occurred while \output is active []
 
 
 
@@ -1078,15 +1079,15 @@ Underfull \vbox (badness 10000) has occurred while \output is active []
 
 
 [27]
+Underfull \vbox (badness 10000) has occurred while \output is active []
+
+
+
+
 Overfull \hbox (1.63248pt too wide) in paragraph at lines 641--642
 \OT1/ptm/m/n/10 (-20) a sub-second dis-patch out-age. There is no live router f
 ailover---
  []
-
-
-Underfull \vbox (badness 10000) has occurred while \output is active []
-
-
 
 
 
@@ -1107,6 +1108,9 @@ Underfull \hbox (badness 3713) in paragraph at lines 666--667
 Underfull \hbox (badness 6559) in paragraph at lines 666--667
 \OT1/ptm/m/n/10 (+20) build scripts, and this manuscript, is avail-able at
  []
+
+
+Underfull \vbox (badness 10000) has occurred while \output is active []
 
 
 
@@ -1137,11 +1141,11 @@ Package rerunfilecheck Info: File `paper.out' has not changed.
 Here is how much of TeX's memory you used:
  13087 strings out of 474315
  209790 string characters out of 5718334
- 662258 words of memory out of 5000000
+ 660861 words of memory out of 5000000
  35582 multiletter control sequences out of 15000+600000
  591888 words of font info for 262 fonts, out of 8000000 for 9000
  430 hyphenation exceptions out of 8191
- 75i,11n,79p,3751b,572s stack positions out of 10000i,1000n,20000p,200000b,200000s
+ 75i,11n,79p,3783b,570s stack positions out of 10000i,1000n,20000p,200000b,200000s
 </nix/store/4l3m65sl104swdhl3hrpnqmachm98qgx-texlive-combined-medium-2024-fin
 al-texmfdist/fonts/type1/public/amsfonts/cm/cmmi10.pfb></nix/store/4l3m65sl104s
 wdhl3hrpnqmachm98qgx-texlive-combined-medium-2024-final-texmfdist/fonts/type1/p
@@ -1162,7 +1166,7 @@ e/4l3m65sl104swdhl3hrpnqmachm98qgx-texlive-combined-medium-2024-final-texmfdist
 texlive-combined-medium-2024-final-texmfdist/fonts/type1/urw/times/utmr8a.pfb><
 /nix/store/4l3m65sl104swdhl3hrpnqmachm98qgx-texlive-combined-medium-2024-final-
 texmfdist/fonts/type1/urw/times/utmri8a.pfb>
-Output written on paper.pdf (31 pages, 629352 bytes).
+Output written on paper.pdf (31 pages, 629670 bytes).
 PDF statistics:
  743 PDF objects out of 1000 (max. 8388607)
  661 compressed objects within 7 object streams
