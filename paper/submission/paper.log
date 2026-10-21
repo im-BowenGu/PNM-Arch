@@ -1,4 +1,4 @@
-This is pdfTeX, Version 3.141592653-2.6-1.40.26 (TeX Live 2024/nixos.org) (preloaded format=pdflatex 1980.1.1)  21 OCT 2026 09:47
+This is pdfTeX, Version 3.141592653-2.6-1.40.26 (TeX Live 2024/nixos.org) (preloaded format=pdflatex 1980.1.1)  21 OCT 2026 09:56
 entering extended mode
  restricted \write18 enabled.
  %&-line parsing enabled.
@@ -777,7 +777,7 @@ Underfull \vbox (badness 10000) has occurred while \output is active []
 
 
 
-<figures/fig_pipeline.png, id=264, 428.19975pt x 153.57375pt>
+<figures/fig_pipeline.png, id=265, 428.19975pt x 153.57375pt>
 File: figures/fig_pipeline.png Graphic file (type png)
 <use figures/fig_pipeline.png>
 Package pdftex.def Info: figures/fig_pipeline.png  used on input line 238.
@@ -796,7 +796,7 @@ Underfull \vbox (badness 1895) has occurred while \output is active []
 
 [11 <./figures/fig_pipeline.png>]
 
-<figures/fig_doorbell.png, id=292, 462.16666pt x 228.3732pt>
+<figures/fig_doorbell.png, id=293, 462.16666pt x 228.3732pt>
 File: figures/fig_doorbell.png Graphic file (type png)
 <use figures/fig_doorbell.png>
 Package pdftex.def Info: figures/fig_doorbell.png  used on input line 288.
@@ -910,7 +910,7 @@ Underfull \hbox (badness 5077) in paragraph at lines 449--449
 
 
 [20]
-<figures/fig_roofline.png, id=446, 414.46844pt x 243.18855pt>
+<figures/fig_roofline.png, id=447, 414.46844pt x 243.18855pt>
 File: figures/fig_roofline.png Graphic file (type png)
 <use figures/fig_roofline.png>
 Package pdftex.def Info: figures/fig_roofline.png  used on input line 475.
@@ -923,7 +923,7 @@ Overfull \hbox (1.5824pt too wide) in paragraph at lines 514--515
 RC flits---
  []
 
-<figures/fig_latency.png, id=456, 407.24146pt x 209.22165pt>
+<figures/fig_latency.png, id=457, 407.24146pt x 209.22165pt>
 File: figures/fig_latency.png Graphic file (type png)
 <use figures/fig_latency.png>
 Package pdftex.def Info: figures/fig_latency.png  used on input line 518.
@@ -1105,10 +1105,10 @@ e/4l3m65sl104swdhl3hrpnqmachm98qgx-texlive-combined-medium-2024-final-texmfdist
 texlive-combined-medium-2024-final-texmfdist/fonts/type1/urw/times/utmr8a.pfb><
 /nix/store/4l3m65sl104swdhl3hrpnqmachm98qgx-texlive-combined-medium-2024-final-
 texmfdist/fonts/type1/urw/times/utmri8a.pfb>
-Output written on paper.pdf (31 pages, 626931 bytes).
+Output written on paper.pdf (31 pages, 627178 bytes).
 PDF statistics:
- 746 PDF objects out of 1000 (max. 8388607)
- 664 compressed objects within 7 object streams
+ 747 PDF objects out of 1000 (max. 8388607)
+ 665 compressed objects within 7 object streams
  134 named destinations out of 1000 (max. 500000)
  45594 words of extra memory for PDF output out of 51595 (max. 10000000)
 

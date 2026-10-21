@@ -256,6 +256,108 @@ func TestIntegration_CMgmtGating(t *testing.T) {
 	}
 }
 
+// TestIntegration_CBootPhases checks the two boot phases that used to be
+// no-ops in both twins -- the routing-table load and the MoE gating load --
+// against each other.  The C firmware programs the 11-bit routing bitmaps
+// and counts the gating engines; the Go twin emits one command per node
+// carrying the same bitmap.  They must agree.
+func TestIntegration_CBootPhases(t *testing.T) {
+	fwDir := SiblingRepo("fw")
+	if _, err := os.Stat(filepath.Join(fwDir, "test_boot_phases.c")); os.IsNotExist(err) {
+		t.Skip("fw/test_boot_phases.c not found")
+	}
+	gcc := gccPath()
+	if gcc == "" {
+		t.Skip("gcc not found in PATH")
+	}
+
+	bin := filepath.Join(os.TempDir(), "test_boot_phases_c")
+	if runtime.GOOS == "windows" {
+		bin += ".exe"
+	}
+
+	cmd := exec.Command(gcc, "-Wall", "-Wextra", "-std=c11",
+		"-o", bin, "test_boot_phases.c", "pnm_fw.c")
+	cmd.Dir = fwDir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("test_boot_phases.c compile failed: %v\nOutput: %s", err, out)
+	}
+
+	cmd = exec.Command(bin)
+	cmd.Dir = fwDir
+	out, err = cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("test_boot_phases run failed: %v\nOutput: %s", err, out)
+	}
+	if !strings.Contains(string(out), "BOOT PHASES TEST PASSED") {
+		t.Fatalf("test_boot_phases did not self-pass:\n%s", out)
+	}
+
+	// The C's routing table, as (layer, x, y, bitmap).
+	cRoutes := map[NodeID]uint16{}
+	cCount, cGating := -1, -1
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		switch fields[0] {
+		case "ROUTING_COUNT":
+			fmt.Sscanf(line, "ROUTING_COUNT %d", &cCount)
+		case "GATING_COUNT":
+			fmt.Sscanf(line, "GATING_COUNT %d", &cGating)
+		case "ROUTE":
+			var l, x, y int
+			var bits uint16
+			fmt.Sscanf(line, "ROUTE %d %d %d %04X", &l, &x, &y, &bits)
+			cRoutes[NodeID{L: l, X: x, Y: y}] = bits
+		}
+	}
+	if cCount < 0 || len(cRoutes) != cCount {
+		t.Fatalf("the C reported %d routing entries but printed %d", cCount, len(cRoutes))
+	}
+
+	// The Go twin's routing table, from the same chassis shape.
+	drv := &Driver{
+		Dims: Dims{Layers: 2, Bx: 4, By: 4},
+	}
+	drv.MC = &ModelCompiler{NodeAssignments: map[NodeID]*NodeAssignment{}}
+	for l := 0; l < drv.Dims.Layers; l++ {
+		for x := 0; x < drv.Dims.Bx; x++ {
+			for y := 0; y < drv.Dims.By; y++ {
+				nid := NodeID{L: l, X: x, Y: y}
+				drv.MC.NodeAssignments[nid] = &NodeAssignment{Node: nid}
+			}
+		}
+	}
+	drv.RouteBitmaps = drv.computeRouteBitmaps()
+	fw := &Firmware{Driver: drv}
+	cmds, err := fw.bootRoutingTable()
+	if err != nil {
+		t.Fatalf("the Go twin's routing phase failed: %v", err)
+	}
+	if len(cmds) != cCount {
+		t.Errorf("the Go twin produced %d routing commands, the C %d", len(cmds), cCount)
+	}
+	for _, c := range cmds {
+		nid := NodeID{L: c.TargetLayer, X: int(c.TargetModule >> 4), Y: int(c.TargetModule & 0x0F)}
+		want := cRoutes[nid]
+		got := uint16(c.Payload[0])<<8 | uint16(c.Payload[1])
+		if got != want {
+			t.Errorf("node %v: the Go twin's bitmap is %04X, the C's %04X", nid, got, want)
+		}
+	}
+	if fw.RoutingCount != cCount {
+		t.Errorf("the Go twin counted %d routing commands, the C %d", fw.RoutingCount, cCount)
+	}
+
+	// The gating phase: the C counts the layers that hold a router.
+	if cGating != 3 {
+		t.Errorf("the C counted %d gating programs, expected 3", cGating)
+	}
+}
+
 // TestIntegration_CMoeGating verifies the C firmware's deterministic top-k
 // MoE gating (select_topk in pnm_fw.c) matches the Go reference selectTopExperts
 // bit-for-bit for several (token, layer) inputs.

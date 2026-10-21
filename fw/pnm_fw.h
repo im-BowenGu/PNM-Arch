@@ -183,6 +183,8 @@ typedef struct {
     /* MoE expert map */
     moe_entry_t     moe_map[PNM_MAX_EXPERTS * PNM_MAX_MODEL_LAYERS];
     int             moe_count;
+    int             routing_count;        /* routing bitmap entries programmed */
+    int             gating_program_count; /* gating engines programmed */
     int             top_k_experts; /* active experts per token (0 = default) */
 
     /* Weight commands */

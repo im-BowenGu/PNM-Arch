@@ -214,6 +214,11 @@ type Firmware struct {
 	DispatchCount int
 	WeightCount   int
 	ErrorCount    int
+	// RoutingCount is the number of routing-bitmap programming commands the
+	// boot sequence produced; MoEStateCount the number of gating-engine
+	// programming commands.
+	RoutingCount  int
+	MoEStateCount int
 
 	// Advanced feature configs
 	FlashAttn      FlashAttnConfig
@@ -301,10 +306,35 @@ func (fw *Firmware) bootPOSTDiscovery() ([]WeightUploadCommand, error) {
 	return nil, nil
 }
 
-// bootRoutingTable: generate the commands to program routing bitmaps.
+// bootRoutingTable: generate the commands that program each node's routing
+// bitmap.
+//
+// The bitmap is the 11-bit routing comparator every repeater and node
+// carries: [10:7] the 1-based layer, [6] the axis (0 = X, 1 = Y), [5] the
+// direction, [4:0] the hop distance.  It is what makes the routing
+// source-routed and deterministic -- a packet matches a gate by comparing
+// this bitmap against the header, never by looking a table up at run time.
+//
+// One command per node, carrying the bitmap as a 16-bit payload.
 func (fw *Firmware) bootRoutingTable() ([]WeightUploadCommand, error) {
+	bitmaps := fw.Driver.RouteBitmaps
+	cmds := make([]WeightUploadCommand, 0, len(bitmaps))
+	for nid, bits := range bitmaps {
+		payload := []byte{byte(bits >> 8), byte(bits & 0xFF)}
+		cmds = append(cmds, WeightUploadCommand{
+			TargetLayer:  nid.L,
+			TargetModule: byte((nid.X << 4) | nid.Y),
+			Payload:      payload,
+			SizeBytes:    int64(len(payload)),
+			CUType:       CUTypeNone,
+			DType:        "U16",
+			ModelLayer:   -1,
+			TensorRole:   "routing_bitmap",
+		})
+	}
+	fw.RoutingCount = len(cmds)
 	fw.State = FWStateRoutingTable
-	return nil, nil
+	return cmds, nil
 }
 
 // bootWeightUpload: generate weight upload commands for all nodes.
@@ -318,11 +348,70 @@ func (fw *Firmware) bootWeightUpload() ([]WeightUploadCommand, error) {
 	return cmds, nil
 }
 
-// bootMoELoad: generate commands to load MoE gating weights into the router
-// chip's on-chip SRAM.
+// bootMoELoad: generate the commands that load the MoE gating state.
+//
+// The gating ASIC is a per-node device: it holds one layer's router weights
+// and produces the expert decision for every token that lands on its node
+// (Section 2.17.1).  The router weights themselves were already uploaded by
+// the weight-upload phase -- they are ordinary model tensors, the router
+// projection -- so this phase tells each node's gating engine which layer it
+// holds and how many words its router is, and the node programs its own
+// gating ASIC from local memory.
+//
+// One command per (node, layer) that hosts a gating engine.  In mode A the
+// node's own management node acts on it locally; in mode B it arrives over
+// the fabric.
 func (fw *Firmware) bootMoELoad() ([]WeightUploadCommand, error) {
+	cmds := make([]WeightUploadCommand, 0, len(fw.Driver.MC.NodeAssignments))
+
+	// Does any node hold a router projection at all?
+	haveRouter := false
+	for _, na := range fw.Driver.MC.NodeAssignments {
+		for _, t := range na.Tensors {
+			if t.Role == "orchestrator_weights" {
+				haveRouter = true
+			}
+		}
+	}
+	if !haveRouter {
+		// No router in the compiled model: nothing to load.  The gating
+		// engine keeps its reset state, and the co-simulation's
+		// token-seeded routing hash stands in for the learned router
+		// (Section 2.12).
+		fw.State = FWStateMoELoad
+		return nil, nil
+	}
+
+	for nid, na := range fw.Driver.MC.NodeAssignments {
+		if nid.L < 0 {
+			continue
+		}
+		// A node hosts a gating engine for each model layer whose router it
+		// holds.
+		for _, t := range na.Tensors {
+			if t.Role != "orchestrator_weights" {
+				continue
+			}
+			words := t.SizeBytes / 2 // BF16 words
+			payload := []byte{
+				byte(t.ModelLayer),
+				byte(words >> 8), byte(words & 0xFF),
+			}
+			cmds = append(cmds, WeightUploadCommand{
+				TargetLayer:  nid.L,
+				TargetModule: byte((nid.X << 4) | nid.Y),
+				Payload:      payload,
+				SizeBytes:    int64(len(payload)),
+				CUType:       CUTypeNone,
+				DType:        "U8",
+				ModelLayer:   t.ModelLayer,
+				TensorRole:   "gating_program",
+			})
+		}
+	}
+	fw.MoEStateCount = len(cmds)
 	fw.State = FWStateMoELoad
-	return nil, nil
+	return cmds, nil
 }
 
 // ============================================================================

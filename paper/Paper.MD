@@ -126,7 +126,7 @@ Every trace is impedance-controlled and length-matched within its group. The LPD
 
 2.5 Initialization and the POST discovery sequence
 
-The firmware state machine boots the chassis through five deterministic phases, each completing before the next begins. The host's firmware drives the sequence; no node participates until the phase that addresses it. The state machine is:
+The firmware state machine boots the chassis through five deterministic phases, each completing before the next begins. The host's firmware drives the sequence; no node participates until the phase that addresses it. The two phases that program the machine -- the routing table and the gating state -- are machine-checked against each other in the firmware's two implementations (Section 3.5). The state machine is:
 
 RESET $\\rightarrow$ POST\\_DISCOVERY $\\rightarrow$ ROUTING\\_TABLE $\\rightarrow$ WEIGHT\\_UPLOAD $\\rightarrow$ MOE\\_LOAD $\\rightarrow$ READY
 

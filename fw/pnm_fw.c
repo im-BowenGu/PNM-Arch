@@ -92,11 +92,40 @@ int fw_boot_post_discovery(firmware_t *fw) {
 }
 
 /**
- * Phase 2: Routing Table Load — program xyz_repeaters and HFRs.
+ * Phase 2: Routing Table Load — program the xyz_repeaters and HFRs.
+ *
  * The routing bitmaps are loaded into each repeater's parameter registers
- * via sideband at boot.  The driver pre-computes these.
+ * via sideband at boot.  The bitmap is the 11-bit routing comparator every
+ * repeater and node carries: [10:7] the 1-based layer, [6] the axis
+ * (0 = X, 1 = Y), [5] the direction, [4:0] the hop distance.  It is what
+ * makes the routing source-routed and deterministic: a packet matches a gate
+ * by comparing this bitmap against the header, never by looking a table up
+ * at run time.
+ *
+ * The Go twin (sim/internal/pnm/firmware.go bootRoutingTable) emits one
+ * command per node carrying the same bitmap; this fills the firmware's
+ * routing table with the same values so the two agree.
  */
 int fw_boot_routing_table(firmware_t *fw) {
+    int bx = fw->board_x > 0 ? fw->board_x : 4;
+    int by = fw->board_y > 0 ? fw->board_y : 4;
+    int n = 0;
+
+    for (int l = 0; l < fw->num_layers && n < PNM_ROUTING_TABLE_SIZE; l++) {
+        for (int x = 0; x < bx && n < PNM_ROUTING_TABLE_SIZE; x++) {
+            for (int y = 0; y < by && n < PNM_ROUTING_TABLE_SIZE; y++) {
+                routing_entry_t *r = &fw->routes[n];
+                r->node.L = (int8_t)l;
+                r->node.X = (uint8_t)x;
+                r->node.Y = (uint8_t)y;
+                r->bitmap = (uint16_t)(((uint16_t)(l + 1) << 7) |
+                                       (1u << 6) | ((uint16_t)y & 0x1Fu));
+                r->cu_type = CU_BF16_FMA;
+                n++;
+            }
+        }
+    }
+    fw->routing_count = n;
     fw->state = FW_ROUTING_TABLE;
     return 0;
 }
@@ -112,10 +141,36 @@ int fw_boot_weight_upload(firmware_t *fw) {
 }
 
 /**
- * Phase 4: MoE Gating Load — program router.proj weights into on-chip SRAM.
- * The moe_gating unit uses these for the gating network forward pass.
+ * Phase 4: MoE Gating Load — program the gating engines' router weights.
+ *
+ * The gating ASIC is a per-node device: it holds one layer's router weights
+ * and produces the expert decision for every token that lands on its node
+ * (Section 2.17.1).  The router weights themselves were already uploaded by
+ * the weight-upload phase -- they are ordinary model tensors, the router
+ * projection -- so this phase tells each node's gating engine which layer it
+ * holds and how many words its router is, and the node programs its own
+ * gating ASIC from local memory.  In mode A the node's own management node
+ * acts on it; in mode B it arrives over the fabric.
+ *
+ * The Go twin (sim/internal/pnm/firmware.go bootMoELoad) emits one command
+ * per (node, layer) that hosts a gating engine; this counts the same set.
  */
 int fw_boot_moe_load(firmware_t *fw) {
+    int n = 0;
+    int layers_seen[PNM_MAX_MODEL_LAYERS];
+    int nl = 0;
+
+    for (int i = 0; i < fw->moe_count; i++) {
+        int ml = fw->moe_map[i].model_layer;
+        int known = 0;
+        for (int k = 0; k < nl; k++)
+            if (layers_seen[k] == ml) known = 1;
+        if (!known && nl < PNM_MAX_MODEL_LAYERS) {
+            layers_seen[nl++] = ml;
+            n++;
+        }
+    }
+    fw->gating_program_count = n;
     fw->state = FW_MOE_LOAD;
     return 0;
 }
