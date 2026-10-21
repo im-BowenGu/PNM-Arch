@@ -1,7 +1,13 @@
 /**
- * pnm_fw.c — Firmware for the PNM central router chip.
+ * pnm_fw.c — the host-side dispatch firmware for the PNM chassis.
  *
- * Port of sim/internal/pnm/firmware.go to C for microcontroller targets.
+ * Port of sim/internal/pnm/firmware.go to C.  The router bridge has no
+ * processor of its own, so this firmware runs on the *host*: a Raspberry Pi
+ * over the SPI adapter, or any third-party microcontroller, driving the
+ * bridge's register window.  It performs the five boot phases (POST
+ * discovery, routing tables, weight upload, MoE gating load) and then the
+ * dispatch loop.
+ *
  * Supports all compute units: bf16_fma, fp16_fma, fp32_fma, fp64_fma,
  * fp32_alu, int8_mac, bf16_mac_array, fp16_mac_array.
  *

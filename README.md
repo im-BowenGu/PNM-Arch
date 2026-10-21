@@ -25,7 +25,7 @@ and the host drivers.
 | **Problem** | GPU/HBM monoliths cost ~$375/GB (H100-class), are capacity-capped by interposer reticle limits, and spend most energy on data movement |
 | **Solution** | Replace HBM with commodity 192-bit LPDDR6 CAMM2 (~$16/GB, ~24× cheaper per byte), each paired with a mature-node DUV MAC ASIC on a rigid X/Y grid |
 | **Reference chassis** | 512 nodes (8 layers × 8×8 grid) · 64 TB · ~262 TB/s aggregate · ~197 TFLOPS FP64 |
-| **Hardware** | Four kinds: DRAM modules, MAC ASICs, stateless flit repeaters, one RISC-V orchestrator chip |
+| **Hardware** | Four kinds: DRAM modules, MAC ASICs, stateless flit repeaters, one CPU-less router bridge the host drives |
 | **Routing** | Source-routed wormhole, O(1) coordinate arithmetic, deterministic latency, no runtime scheduling |
 | **Gate** | Hardware doorbell: three-condition fire (byte count, CRC, destination match) — sub-microsecond activation, no software interrupt |
 
@@ -39,9 +39,9 @@ paper/                  ← The paper + its proofs
   submission/             generated artifacts (DOCX, PDF, TeX)
   HDL/                    routing fabric RTL + verification testbenches
 
-HDL/                    ← Full Verilog fabric (RTL + all compute units + SoC)
+HDL/                    ← Full Verilog fabric (RTL + all compute units)
   core/                   compute primitives (FMA, ALU, MAC, systolic arrays)
-  (plus all routing gates, orchestrator SoCs, memory models, PHYs, testbenches)
+  (plus all routing gates, the host bridge, memory models, PHYs, testbenches)
 
 pcb/                    ← Manufacturable PCB assembly
   README.md               board architecture (spine, processor, gating, NVMe)
@@ -62,69 +62,38 @@ sim/                    ← Go co-simulation harness (stdlib only)
   examples/               test configs (gemma4_test_synthetic, mini_glm_moe)
 
 fw/                       C firmware port for MCU targets
-toolchain/                MCU and SoC cross-build systems
-fw/os/                   router-chip OS images (Linux NOMMU, seL4)
+toolchain/                host MCU cross-build system
 pi_host/                  Raspberry Pi Compute Module host drivers
 
 implementations/        ← Board netlist assembly + schema
 docs/                   ← Usage manual, profiling guide
 ```
 
-### The router chip's software (and what actually runs on it)
+### The host side: who runs the firmware
 
-The router SoC ships two OS stacks, both **software** (so they live with the
-firmware, not with the cross-compilers):
+The router bridge has **no processor**. The host --- a Raspberry Pi over the
+SPI adapter, or any third-party microcontroller over the same byte-level host
+link --- runs the boot sequence, the weight upload, and the dispatch loop.
+The repository ships that firmware in two forms: a Go reference model (the
+co-simulation's golden implementation) and a C port with static allocation
+only, no `malloc`, and no OS dependency, so the same binary runs on a Pi, on an
+MCU, or on a workstation.
 
-| Tree | What it is | Status |
-|------|------------|--------|
-| `fw/os/linux/` | Trimmed NOMMU Linux (RV32I, no MMU/FPU) + a freestanding init that prints a banner, reads the PNM status register, probes the NVMe window and idles | the kernel and the init image **build**; the init does **not yet boot** on the proof-of-concept core (see below) |
-| `fw/os/sel4/` | seL4 microkernel root task for the same chip | the build system is in place; the seL4 source tree is not vendored |
+| Piece | Where | What it is |
+|-------|-------|------------|
+| `HDL/pnm_host_bridge.v` | the chip | the router engine, the SRAM and the host register window |
+| `HDL/pi_bridge.v` | the chip | the SPI adapter that turns a Raspberry Pi into the host link |
+| `HDL/pnm_arb.v` | the chip | the register-window arbiter |
+| `fw/pnm_fw.c` | the host | the C port of the dispatch firmware (static allocation) |
+| `sim/internal/pnm/firmware.go` | the host | the Go reference the C port is checked against |
+| `pi_host/` | the host | the Raspberry Pi drivers (C, Go, Rust, Python) |
+| `toolchain/mcu/` | the host | the cross-build system for a third-party RISC-V MCU |
 
-```bash
-cd fw/os/linux
-make init.hex            # link the init image (needs the RISC-V cross compiler)
-```
-
-**What is machine-checked.** `HDL/tb_linux_init.v` executes that init binary
-on the chip's *own* `rv32_core.v` and `uart.v` and checks the boot banner, the
-PNM status read and the NVMe probe:
-
-```
-*** LINUX INIT TEST PASSED ***
-fw-os-linux init for orchestrator_sbc
-PNM STS=0x00000000
-NVME CAP=0x00000000 VS=0x00000000 RC=0x00000000
-```
-
-so the userspace image and its drivers are verified against the chip's own
-models, not a host's. Three RTL defects had to be fixed for that to work: the
-core did not implement the JAL/JALR link store, the UART's line status
-register had several procedural drivers (so a driver polling THRE saw `X`),
-and the SoC bus stalled the core on an unmapped access.
-
-**What is not yet checked, and why.** The *kernel* image builds (a real
-NOMMU RV32I kernel — the config fragment used to be silently reverted by
-Kconfig, so a 64-bit MMU kernel was being built instead). Booting it is
-blocked by an architectural gap, not by the image:
-
-> **The core's instruction fetch is a separate combinational port onto the
-> 64 KB boot ROM.** The SRAM (0x4000_0000) and DRAM (0x8000_0000) windows
-> are data-only: `sel_rom = (cpu_fetch_addr[31:16] == 16'h0000)` in
-> `HDL/bmc_orchestrator_top.v`, and the core's only fetch port is
-> `fetch_addr = pc`. A 1.8 MB kernel image in memory therefore cannot be
-> fetched at all, and neither can the init binary once it is loaded from an
-> initramfs. Unifying the fetch path with the data bus (or giving the core a
-> fetch port onto the SRAM window) is the piece of hardware work Linux and
-> seL4 need on this chip.
-
-Until that is done, the honest status is: *the userspace image runs on the
-chip's core; the kernel that would host it cannot be fetched yet.*
-
-**How the test suite decides.** `iverilog`'s `$finish(1)` exits with status
-0 (the argument is the diagnostic level, not the exit code), so the test
-runner now decides on the *output*: a `FAILED` marker in a testbench's
-output fails the test. Without that, a broken testbench was reported as a
-pass.
+**What is machine-checked.** `HDL/tb_pnm_host_bridge.v` plays the host: it
+writes the routing and payload registers and checks that the chip emits a
+byte-exact wormhole flit (header, payload, CRC-16, SOP/EOP framing) and that
+the result path and the counters read back. `HDL/tb_host_bmc.v` drives the
+same bridge from a Raspberry Pi model over the SPI adapter.
 
 ### Published split repositories
 
@@ -133,11 +102,11 @@ as six sibling repositories so each component can be cloned on its own:
 
 | Repo | Contents |
 |------|----------|
-| [`PNM-HDL`](https://github.com/im-BowenGu/PNM-HDL) | Routing fabric + compute-unit RTL, the compute node, the RISC-V orchestrator family, `implementations/` board tooling |
+| [`PNM-HDL`](https://github.com/im-BowenGu/PNM-HDL) | Routing fabric + compute-unit RTL, the compute node, the CPU-less router bridge, `implementations/` board tooling |
 | [`PNM-sim`](https://github.com/im-BowenGu/PNM-sim) | Go co-simulation harness, model compiler, inference client, source-language frontends |
-| [`PNM-fw`](https://github.com/im-BowenGu/PNM-fw) | C firmware twin for MCU/SoC targets |
+| [`PNM-fw`](https://github.com/im-BowenGu/PNM-fw) | The host-side C firmware (the dispatch loop the host runs) |
 | [`PNM-PCB`](https://github.com/im-BowenGu/PNM-PCB) | LibrePCB board designs (interconnect, processor, gating ASIC, node) |
-| [`PNM-toolchain`](https://github.com/im-BowenGu/PNM-toolchain) | MCU / SoC cross-compilation build systems |
+| [`PNM-toolchain`](https://github.com/im-BowenGu/PNM-toolchain) | The host MCU cross-compilation build system |
 | [`PNM-paper`](https://github.com/im-BowenGu/PNM-paper) | Manuscript (`Paper.MD`), build pipeline, submission artifacts |
 
 Re-sync them after changing the monorepo:
@@ -415,28 +384,27 @@ board architecture and wiring.
 
 ### Firmware
 
-Four toolchains for the RISC-V orchestrator chip, from bare-metal to Linux:
+The firmware is the host's, not the chip's:
 
-| Toolchain | Target | ISA | Output |
-|-----------|--------|-----|--------|
-| `toolchain/mcu/` | Bare-metal MCU | RV32I | `firmware.bin` (8 KB ROM) |
-| `toolchain/soc/` | NOMMU Linux daemon | RV32IMA | `pnm_socd` (static musl) |
-| `fw/os/linux/` | Linux tinyconfig | RV32I | `Image` + `initrd.cpio` (16 MB) |
-| `fw/os/sel4/` | seL4 microkernel | RV32IMA | root task ELF |
+| Piece | Target | ISA | Output |
+|-------|--------|-----|--------|
+| `fw/pnm_fw.c` | the dispatch loop (host side) | portable C11 | the C port of the Go reference firmware |
+| `toolchain/mcu/` | a third-party RISC-V MCU acting as the host | RV32I | `firmware.bin` |
+| `sim/internal/pnm/firmware.go` | the Go reference model | Go | the golden implementation the C port is checked against |
 
-Build any toolchain with `make` in its directory. See
+Build the MCU firmware with `make` in `toolchain/mcu/`. See
 [`docs/usage_manual.md`](docs/usage_manual.md) for details.
 
 ### Boot sequence
 
 ```
-Boot ROM (64 KB) → SPL (NVMe → DRAM) → kernel or seL4 → init → dispatch
+host firmware → POST discovery → routing tables → weights → MoE gating → dispatch
 ```
 
-The orchestrator chip boots, discovers the POST chain, loads routing tables
-and MoE expert maps, then dispatches workloads to the fabric. On the SoC
-variant, `pnm_socd` mmaps `/dev/pnm` and runs the dispatch loop from
-userspace.
+The host firmware discovers the POST chain, loads the routing tables and the
+MoE expert maps through the bridge's register window, then dispatches
+workloads into the fabric. The same firmware runs on a Raspberry Pi (over the
+SPI adapter), on a third-party MCU, or in the co-simulation.
 
 ## Manufacturable design
 
@@ -444,7 +412,7 @@ Everything outside `paper/` is the production design:
 
 | Directory | What it contains | License |
 |-----------|-----------------|---------|
-| `HDL/` | Full Verilog-2005 fabric: routing gates, compute units (BF16/FP16/FP32/FP64 FMA, FP32 ALU, INT8/INT4/FP4/MXFP4 MAC + systolic arrays, weight dequant), RISC-V SoCs, memory controllers, PHYs, testbenches | CERN-OHL-S v2 |
+| `HDL/` | Full Verilog-2005 fabric: routing gates, compute units (BF16/FP16/FP32/FP64 FMA, FP32 ALU, INT8/INT4/FP4/MXFP4 MAC + systolic arrays, weight dequant), the CPU-less router bridge, memory controllers, PHYs, testbenches | CERN-OHL-S v2 |
 | `pcb/` | PCB assembly: interconnect board (SEARAY 12G spine taps; ≈2 TB/s aggregate across 128 parallel lanes per the paper's spine sizing rule), processor board (Pi Bridge / MCU / Custom SoC), gating ASIC (MoE + DRAM) | CERN-OHL-S v2 |
 | `sim/` | Go co-simulation, model compiler (HuggingFace → PNM), inference client, firmware (Go), source-language compilers (R/Haskell/HLSL) | AGPL-3.0 |
 | `fw/` | C firmware port for MCU targets (ARM Cortex-M/R, RISC-V) | AGPL-3.0 |

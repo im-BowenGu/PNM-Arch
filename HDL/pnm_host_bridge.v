@@ -1,18 +1,21 @@
 // =============================================================================
-// bmc_orchestrator_top — RISC-V BMC / Router Chip SoC
+// pnm_host_bridge — the PNM host bridge
 //
-// Integrates:
-//   - RV32IMA multi-cycle CPU core (rv32_core.v)
-//   - 64KB boot ROM (instruction memory, initialized by testbench)
-//   - 64KB SRAM (data memory)
-//   - 16550-compatible UART (uart.v)
-//   - Core Local Interruptor with timer (clint.v)
+// A CPU-less companion chip for the PNM chassis.  The host (a Raspberry Pi
+// over the SPI bridge, or any third-party microcontroller) drives it; the
+// chip injects the host's commands into the PNM fabric and returns results.
+//
+// It integrates:
+//   - 64KB SRAM (data memory, host-addressable)
 //   - PNM router engine (flit builder + spine injection/extraction)
+//   - the host bus (the PNM register window, the SRAM and the router
+//     registers), driven from outside through the SPI bridge / arbiter
 //
-// Memory map:
-//   0x0000_0000 - 0x0000_FFFF  Boot ROM (64KB, read-only)
-//   0x1000_0000 - 0x1000_001F  UART0
-//   0x2000_0000 - 0x2000_BFFF  CLINT
+// There is no CPU, no boot ROM, no timer and no console: the host owns the
+// boot sequence (POST discovery, routing tables, weight upload, MoE gating
+// weights) by writing the registers below.
+//
+// Memory map (host bus):
 //   0x8000_0000 - 0x8000_FFFF  SRAM (64KB, read-write)
 //   0xF000_0000 - 0xF000_003F  PNM router registers
 //       0x00: ROUTE_CTRL      (write 1 to trigger flit injection)
@@ -26,9 +29,7 @@
 //       0x20: ROUTE_DISPATCH  (dispatch counter, read)
 //       0x24: ROUTE_WEIGHTS   (weight flit counter, read)
 //
-// The PNM router engine is a simplified version of orchestrator_chip.v,
-// driven by CPU register writes instead of a host PCIe stream.
-// The CPU firmware boot sequence:
+// The host boot sequence:
 //   1. POST discovery (poll topology_rdy)
 //   2. Load routing tables
 //   3. Upload weights
@@ -37,7 +38,7 @@
 //   6. Begin inference dispatch loop
 // =============================================================================
 
-module bmc_orchestrator_top #(
+module pnm_host_bridge #(
     parameter CLK_FREQ    = 100_000_000,
     parameter BAUD_RATE   = 115200,
     parameter NUM_LAYERS  = 4,
@@ -51,9 +52,14 @@ module bmc_orchestrator_top #(
     input  wire        clk,
     input  wire        rst_n,
 
-    // UART
-    input  wire        uart_rx,
-    output wire        uart_tx,
+    // Host bus (the SPI bridge / arbiter drives this)
+    input  wire [31:0] host_addr,
+    input  wire [31:0] host_wdata,
+    output reg  [31:0] host_rdata,
+    input  wire        host_we,
+    input  wire [3:0]  host_be,
+    input  wire        host_valid,
+    output wire        host_ready,
 
     // POST discovery sideband
     input  wire [NUM_NODES-1:0] topology_rdy,
@@ -73,165 +79,33 @@ module bmc_orchestrator_top #(
     input  wire        spine_extract_eop,
     input  wire [1:0]  spine_extract_vc,
 
-    // External interrupts
-    input  wire [15:0] ext_irq,
-
     // Status
     output wire        boot_done
 );
 
     // =========================================================================
-    // Bus interconnect signals
+    // Host bus interconnect
     // =========================================================================
-    wire [31:0] cpu_addr;
-    wire [31:0] cpu_wdata;
-    wire [31:0] cpu_rdata;
-    wire        cpu_we;
-    wire [3:0]  cpu_be;
-    wire        cpu_valid;
-    wire        cpu_ready;
-    wire        cpu_error;
+    reg  [31:0] sram_rdata;
+    reg  [31:0] pnm_rdata;
 
-    reg [31:0] rom_rdata;
-    reg [31:0] sram_rdata;
-    wire [31:0] uart_rdata;
-    wire [31:0] clint_rdata;
-    reg [31:0] pnm_rdata;
-    wire [31:0] cpu_fetch_addr;
-
-    // Slave selects (active-high, combinational from fetch_addr or bus_addr)
-    wire sel_rom  = (cpu_fetch_addr[31:16] == 16'h0000);  // ROM uses fetch_addr (pc)
-    wire sel_uart = (cpu_addr[31:8]  == 24'h1000_00);     // 0x1000_0000
-    wire sel_clint= (cpu_addr[31:16] == 16'h2000);        // 0x2000_0000
-    wire sel_sram = (cpu_addr[31:16] == 16'h8000);        // 0x8000_0000
-    wire sel_pnm  = (cpu_addr[31:8]  == 24'hF000_00);     // 0xF000_0000
-
-    assign cpu_error = 1'b0;
+    // Slave selects (active-high, combinational from the host address)
+    wire sel_sram = (host_addr[31:16] == 16'h8000);        // 0x8000_0000
+    wire sel_pnm  = (host_addr[31:8]  == 24'hF000_00);     // 0xF000_0000
 
     // Mux read data based on slave select
-    reg [31:0] mux_rdata;
     always @(*) begin
-        mux_rdata = 32'h0;
-        if (sel_rom)   mux_rdata = rom_rdata;
-        else if (sel_uart) mux_rdata = uart_rdata;
-        else if (sel_clint) mux_rdata = clint_rdata;
-        else if (sel_sram) mux_rdata = sram_rdata;
-        else if (sel_pnm)  mux_rdata = pnm_rdata;
+        host_rdata = 32'h0;
+        if (sel_sram) host_rdata = sram_rdata;
+        else if (sel_pnm)  host_rdata = pnm_rdata;
     end
 
-    assign cpu_rdata = mux_rdata;
-
-    // Ready: any selected slave is ready
-    // The bus acknowledges every access: an unmapped read returns zero and an
-    // unmapped write is dropped.  (A JAL/JALR link store writes to sp-4, and
-    // a boot ROM that never sets sp would otherwise stall the core.)
-    assign cpu_ready = 1'b1;
+    // The host bus acknowledges every access: an unmapped read returns zero
+    // and an unmapped write is dropped.
+    assign host_ready = 1'b1;
 
     // =========================================================================
-    // CPU Core
-    // =========================================================================
-    rv32_core #(
-        .RESET_ADDR(32'h0000_0000),
-        .NMINT(16)
-    ) u_cpu (
-        .clk       (clk),
-        .rst_n     (rst_n),
-        .bus_addr  (cpu_addr),
-        .bus_wdata (cpu_wdata),
-        .bus_rdata (cpu_rdata),
-        .bus_we    (cpu_we),
-        .bus_be    (cpu_be),
-        .bus_valid (cpu_valid),
-        .bus_ready (cpu_ready),
-        .bus_error (cpu_error),
-        .irq       (ext_irq),
-        .fetch_addr(cpu_fetch_addr)
-    );
-
-    // =========================================================================
-    // Boot ROM (64KB, word-addressable)
-    // =========================================================================
-    reg [31:0] rom [0:16383];  // 64KB / 4 = 16K words
-    // Combinational ROM read using fetch_addr (combinational PC)
-    always @(*) begin
-        rom_rdata = rom[cpu_fetch_addr[15:2]];
-    end
-
-    // =========================================================================
-    // SRAM (64KB, word-addressable, byte-enable write)
-    // =========================================================================
-    reg [31:0] sram [0:16383];
-    // Combinational SRAM read (for loads)
-    always @(*) begin
-        if (sel_sram)
-            sram_rdata = sram[cpu_addr[15:2]];
-        else
-            sram_rdata = 32'h0;
-    end
-
-    // Synchronous SRAM write
-    always @(posedge clk) begin
-        if (sel_sram && cpu_valid && cpu_we) begin
-            if (cpu_be[0]) sram[cpu_addr[15:2]][7:0]   <= cpu_wdata[7:0];
-            if (cpu_be[1]) sram[cpu_addr[15:2]][15:8]  <= cpu_wdata[15:8];
-            if (cpu_be[2]) sram[cpu_addr[15:2]][23:16] <= cpu_wdata[23:16];
-            if (cpu_be[3]) sram[cpu_addr[15:2]][31:24] <= cpu_wdata[31:24];
-        end
-    end
-
-    // =========================================================================
-    // UART
-    // =========================================================================
-    wire        uart_irq;
-    uart #(
-        .CLK_FREQ(CLK_FREQ),
-        .BAUD_RATE(BAUD_RATE)
-    ) u_uart (
-        .clk      (clk),
-        .rst_n    (rst_n),
-        .addr     (cpu_addr),
-        .wdata    (cpu_wdata),
-        .rdata    (uart_rdata),
-        .we       (cpu_we),
-        .valid    (sel_uart && cpu_valid),
-        .ready    (uart_ready),
-        .uart_rx  (uart_rx),
-        .uart_tx  (uart_tx),
-        .irq      (uart_irq)
-    );
-
-    // =========================================================================
-    // CLINT (timer + software interrupt)
-    // =========================================================================
-    wire        clint_mtip;
-    wire        clint_msip;
-    clint #(
-        .CLK_FREQ(CLK_FREQ),
-        .TIMER_PERIOD(CLK_FREQ / 10)  // 100ms tick
-    ) u_clint (
-        .clk    (clk),
-        .rst_n  (rst_n),
-        .addr   (cpu_addr),
-        .wdata  (cpu_wdata),
-        .rdata  (clint_rdata),
-        .we     (cpu_we),
-        .be     (cpu_be),
-        .valid  (sel_clint && cpu_valid),
-        .ready  (),
-        .msip   (clint_msip),
-        .mtip   (clint_mtip)
-    );
-
-    // Wire CLINT interrupts to CPU external IRQ lines
-    // irq[0] = UART, irq[1] = CLINT timer, irq[2] = CLINT software
-    wire [15:0] cpu_irq;
-    assign cpu_irq[0]  = uart_irq;
-    assign cpu_irq[1]  = clint_mtip;
-    assign cpu_irq[2]  = clint_msip;
-    assign cpu_irq[15:3] = ext_irq[15:3];
-
-    // =========================================================================
-    // PNM Router Engine (CPU-register-driven flit builder)
+    // PNM Router Engine (host-register-driven flit builder)
     // =========================================================================
     localparam CTRL_COMPUTE = 8'h80;  // VC_SPINE | OP_COMPUTE
     localparam CTRL_FORWARD = 8'h90;  // VC_SPINE | OP_FORWARD
@@ -297,7 +171,7 @@ module bmc_orchestrator_top #(
     endfunction
 
     // PNM register access
-    wire [7:0] pnm_addr = cpu_addr[7:0];
+    wire [7:0] pnm_addr = host_addr[7:0];
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -328,21 +202,21 @@ module bmc_orchestrator_top #(
             fb_out_eop_r   <= 1'b0;
 
             // CPU register writes
-            if (sel_pnm && cpu_valid && cpu_we) begin
+            if (sel_pnm && host_valid && host_we) begin
                 case (pnm_addr)
-                    8'h04: route_layer  <= cpu_wdata[7:0];
-                    8'h08: route_module <= cpu_wdata[7:0];
-                    8'h0C: route_len    <= cpu_wdata[15:0];
+                    8'h04: route_layer  <= host_wdata[7:0];
+                    8'h08: route_module <= host_wdata[7:0];
+                    8'h0C: route_len    <= host_wdata[15:0];
                     8'h10: begin  // ROUTE_DATA: write payload byte, auto-increment
                         if (!pnm_busy && route_wpos != 8'hFF) begin
-                            route_payload[route_wpos] <= cpu_wdata[7:0];
+                            route_payload[route_wpos] <= host_wdata[7:0];
                             route_wpos <= route_wpos + 1;
                         end
                     end
                     8'h00: begin  // ROUTE_CTRL: trigger injection or boot_done
-                        if (cpu_wdata[2])
+                        if (host_wdata[2])
                             boot_done_r <= 1'b1;
-                        if (!pnm_busy && cpu_wdata[0]) begin
+                        if (!pnm_busy && host_wdata[0]) begin
                             fb_layer_r  <= route_layer;
                             fb_module_r <= route_module;
                             fb_ctrl     <= CTRL_COMPUTE;
@@ -439,7 +313,7 @@ module bmc_orchestrator_top #(
 
             // CPU register reads
             pnm_rdata <= 32'h0;
-            if (sel_pnm && cpu_valid && !cpu_we) begin
+            if (sel_pnm && host_valid && !host_we) begin
                 case (pnm_addr)
                     8'h00: pnm_rdata <= {30'h0, 1'b0, pnm_busy};  // STATUS
                     8'h14: pnm_rdata <= {30'h0, 1'b0, pnm_busy};

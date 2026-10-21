@@ -77,15 +77,15 @@
 \citation{18}
 \newlabel{sec:2.6}{{}{8}{2.6 Software stack and execution model}{section*.15}{}}
 \newlabel{sec:2.7}{{}{8}{2.7 The compilation pipeline}{section*.16}{}}
-\@writefile{lof}{\contentsline {figure}{\numberline {2}{\ignorespaces The five-stage ahead-of-time pipeline lowers a safetensors archive and config.json into a static coordinate assignment, routing table, and dispatch schedule; emit, load, and execute complete the path from model file to doorbells firing.}}{10}{figure.2}\protected@file@percent }
-\newlabel{fig:pipeline}{{2}{10}{The five-stage ahead-of-time pipeline lowers a safetensors archive and config.json into a static coordinate assignment, routing table, and dispatch schedule; emit, load, and execute complete the path from model file to doorbells firing}{figure.2}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {2}{\ignorespaces The five-stage ahead-of-time pipeline lowers a safetensors archive and config.json into a static coordinate assignment, routing table, and dispatch schedule; emit, load, and execute complete the path from model file to doorbells firing.}}{11}{figure.2}\protected@file@percent }
+\newlabel{fig:pipeline}{{2}{11}{The five-stage ahead-of-time pipeline lowers a safetensors archive and config.json into a static coordinate assignment, routing table, and dispatch schedule; emit, load, and execute complete the path from model file to doorbells firing}{figure.2}{}}
 \newlabel{sec:2.8}{{}{11}{2.8 Coordinate routing and dispatch}{section*.17}{}}
 \newlabel{sec:2.9}{{}{12}{2.9 The doorbell mechanism}{section*.18}{}}
-\@writefile{lof}{\contentsline {figure}{\numberline {3}{\ignorespaces The wire format and the three-condition doorbell. The CRC covers [MODULE\_ID, CTRL, LEN, payload] --- everything except LAYER\_ID and the CRC bytes --- so the destination field is inside CRC coverage; only a complete, valid, correctly addressed message fires DOORBELL\_TRIG and DOORBELL\_ACK.}}{12}{figure.3}\protected@file@percent }
-\newlabel{fig:doorbell}{{3}{12}{The wire format and the three-condition doorbell. The CRC covers [MODULE\_ID, CTRL, LEN, payload] --- everything except LAYER\_ID and the CRC bytes --- so the destination field is inside CRC coverage; only a complete, valid, correctly addressed message fires DOORBELL\_TRIG and DOORBELL\_ACK}{figure.3}{}}
+\newlabel{sec:2.10}{{}{12}{2.10 Reliability and determinism}{section*.19}{}}
 \citation{3}
 \citation{4}
-\newlabel{sec:2.10}{{}{13}{2.10 Reliability and determinism}{section*.19}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {3}{\ignorespaces The wire format and the three-condition doorbell. The CRC covers [MODULE\_ID, CTRL, LEN, payload] --- everything except LAYER\_ID and the CRC bytes --- so the destination field is inside CRC coverage; only a complete, valid, correctly addressed message fires DOORBELL\_TRIG and DOORBELL\_ACK.}}{13}{figure.3}\protected@file@percent }
+\newlabel{fig:doorbell}{{3}{13}{The wire format and the three-condition doorbell. The CRC covers [MODULE\_ID, CTRL, LEN, payload] --- everything except LAYER\_ID and the CRC bytes --- so the destination field is inside CRC coverage; only a complete, valid, correctly addressed message fires DOORBELL\_TRIG and DOORBELL\_ACK}{figure.3}{}}
 \newlabel{sec:2.11}{{}{13}{2.11 Target workloads}{section*.20}{}}
 \newlabel{sec:2.11.1}{{}{13}{2.11.1 Workload simulation suite}{section*.21}{}}
 \newlabel{sec:2.12}{{}{13}{2.12 Mixture-of-Experts transformers}{section*.22}{}}
@@ -98,52 +98,51 @@
 \newlabel{sec:2.14}{{}{14}{2.14 Functional data-based workflows}{section*.24}{}}
 \newlabel{sec:2.15}{{}{14}{2.15 Verification methodology: machine-checking the transport claims}{section*.25}{}}
 \newlabel{sec:2.16}{{}{16}{2.16 The LPDDR6 memory controller}{section*.26}{}}
-\citation{29}
-\newlabel{sec:2.17}{{}{17}{2.17 The BMC/router chip: a RISC-V SoC for chassis management}{section*.27}{}}
-\newlabel{sec:2.18}{{}{18}{2.18 PCB interconnect models}{section*.28}{}}
-\newlabel{sec:2.19}{{}{19}{2.19 Inter-chassis optical links}{section*.29}{}}
-\newlabel{sec:2.20}{{}{19}{2.20 The compute node and the gating ASIC}{section*.30}{}}
+\newlabel{sec:2.17}{{}{17}{2.17 The router bridge: a CPU-less chip with a host link}{section*.27}{}}
+\newlabel{sec:2.18}{{}{17}{2.18 PCB interconnect models}{section*.28}{}}
+\newlabel{sec:2.19}{{}{18}{2.19 Inter-chassis optical links}{section*.29}{}}
+\newlabel{sec:2.20}{{}{18}{2.20 The compute node and the gating ASIC}{section*.30}{}}
 \citation{25}
 \citation{27}
-\newlabel{sec:results}{{}{20}{Results}{section*.31}{}}
-\newlabel{sec:3.1}{{}{20}{3.1 Reference chassis}{section*.32}{}}
-\@writefile{lot}{\contentsline {table}{\numberline {2}{\ignorespaces Reference chassis configuration (first-order estimates).}}{20}{table.2}\protected@file@percent }
-\newlabel{tab:2}{{2}{20}{Reference chassis configuration (first-order estimates)}{table.2}{}}
-\newlabel{sec:3.1.1}{{}{20}{3.1.1 The reference chassis as a dedicated capacity-serving appliance}{section*.33}{}}
+\newlabel{sec:results}{{}{19}{Results}{section*.31}{}}
+\newlabel{sec:3.1}{{}{19}{3.1 Reference chassis}{section*.32}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {2}{\ignorespaces Reference chassis configuration (first-order estimates).}}{19}{table.2}\protected@file@percent }
+\newlabel{tab:2}{{2}{19}{Reference chassis configuration (first-order estimates)}{table.2}{}}
+\newlabel{sec:3.1.1}{{}{19}{3.1.1 The reference chassis as a dedicated capacity-serving appliance}{section*.33}{}}
 \citation{5}
 \citation{2}
 \citation{25}
-\newlabel{sec:3.2}{{}{21}{3.2 Roofline: why mature nodes suffice}{section*.34}{}}
-\@writefile{lof}{\contentsline {figure}{\numberline {4}{\ignorespaces Roofline for the reference node. Both flagship workload intensities fall below all three machine-balance ridges (FP64 1.5, FP16 3.0, INT8 6.0 FLOP/byte), so LPDDR6 bandwidth --- and even the DDR5 baseline --- binds before the MAC array does.}}{21}{figure.4}\protected@file@percent }
-\newlabel{fig:roofline}{{4}{21}{Roofline for the reference node. Both flagship workload intensities fall below all three machine-balance ridges (FP64 1.5, FP16 3.0, INT8 6.0 FLOP/byte), so LPDDR6 bandwidth --- and even the DDR5 baseline --- binds before the MAC array does}{figure.4}{}}
-\newlabel{sec:3.3}{{}{21}{3.3 Cost and capacity model}{section*.35}{}}
-\newlabel{sec:3.4}{{}{22}{3.4 Thermal and latency budgets}{section*.36}{}}
-\newlabel{sec:3.5}{{}{22}{3.5 Co-simulation verification results}{section*.37}{}}
-\@writefile{lof}{\contentsline {figure}{\numberline {5}{\ignorespaces Per-scenario latency distributions from the 48-node co-simulation (Table 3, seed 1). Sweep hits the closed form exactly; the hotspot and stress tails are sink backpressure, and no scenario drops a byte.}}{22}{figure.5}\protected@file@percent }
-\newlabel{fig:latency}{{5}{22}{Per-scenario latency distributions from the 48-node co-simulation (Table 3, seed 1). Sweep hits the closed form exactly; the hotspot and stress tails are sink backpressure, and no scenario drops a byte}{figure.5}{}}
-\@writefile{lot}{\contentsline {table}{\numberline {3}{\ignorespaces Co-simulation verification results (48-node chassis, 3$\times $4$\times $4, seed 1, three parallel slices).}}{23}{table.3}\protected@file@percent }
-\newlabel{tab:3}{{3}{23}{Co-simulation verification results (48-node chassis, 3$\times $4$\times $4, seed 1, three parallel slices)}{table.3}{}}
-\@writefile{lot}{\contentsline {table}{\numberline {4}{\ignorespaces DUV MAC ASIC specifications (reference node; first-order estimates).}}{23}{table.4}\protected@file@percent }
-\newlabel{tab:4}{{4}{23}{DUV MAC ASIC specifications (reference node; first-order estimates)}{table.4}{}}
-\newlabel{sec:3.6}{{}{23}{3.6 The DUV MAC ASIC: detailed specifications}{section*.38}{}}
+\newlabel{sec:3.2}{{}{20}{3.2 Roofline: why mature nodes suffice}{section*.34}{}}
+\newlabel{sec:3.3}{{}{20}{3.3 Cost and capacity model}{section*.35}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {4}{\ignorespaces Roofline for the reference node. Both flagship workload intensities fall below all three machine-balance ridges (FP64 1.5, FP16 3.0, INT8 6.0 FLOP/byte), so LPDDR6 bandwidth --- and even the DDR5 baseline --- binds before the MAC array does.}}{20}{figure.4}\protected@file@percent }
+\newlabel{fig:roofline}{{4}{20}{Roofline for the reference node. Both flagship workload intensities fall below all three machine-balance ridges (FP64 1.5, FP16 3.0, INT8 6.0 FLOP/byte), so LPDDR6 bandwidth --- and even the DDR5 baseline --- binds before the MAC array does}{figure.4}{}}
+\newlabel{sec:3.4}{{}{20}{3.4 Thermal and latency budgets}{section*.36}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5}{\ignorespaces Per-scenario latency distributions from the 48-node co-simulation (Table 3, seed 1). Sweep hits the closed form exactly; the hotspot and stress tails are sink backpressure, and no scenario drops a byte.}}{21}{figure.5}\protected@file@percent }
+\newlabel{fig:latency}{{5}{21}{Per-scenario latency distributions from the 48-node co-simulation (Table 3, seed 1). Sweep hits the closed form exactly; the hotspot and stress tails are sink backpressure, and no scenario drops a byte}{figure.5}{}}
+\newlabel{sec:3.5}{{}{21}{3.5 Co-simulation verification results}{section*.37}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {3}{\ignorespaces Co-simulation verification results (48-node chassis, 3$\times $4$\times $4, seed 1, three parallel slices).}}{22}{table.3}\protected@file@percent }
+\newlabel{tab:3}{{3}{22}{Co-simulation verification results (48-node chassis, 3$\times $4$\times $4, seed 1, three parallel slices)}{table.3}{}}
+\newlabel{sec:3.6}{{}{22}{3.6 The DUV MAC ASIC: detailed specifications}{section*.38}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {4}{\ignorespaces DUV MAC ASIC specifications (reference node; first-order estimates).}}{22}{table.4}\protected@file@percent }
+\newlabel{tab:4}{{4}{22}{DUV MAC ASIC specifications (reference node; first-order estimates)}{table.4}{}}
 \citation{42}
+\newlabel{sec:3.7}{{}{23}{3.7 Configuration spectrum: SODIMM deskside units to spatial supercomputers}{section*.39}{}}
 \citation{16}
 \citation{17}
 \citation{30}
-\@writefile{lot}{\contentsline {table}{\numberline {5}{\ignorespaces Compute unit taxonomy (per-node; reference configuration).}}{25}{table.5}\protected@file@percent }
-\newlabel{tab:5}{{5}{25}{Compute unit taxonomy (per-node; reference configuration)}{table.5}{}}
-\newlabel{sec:3.7}{{}{25}{3.7 Configuration spectrum: SODIMM deskside units to spatial supercomputers}{section*.39}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {5}{\ignorespaces Compute unit taxonomy (per-node; reference configuration).}}{24}{table.5}\protected@file@percent }
+\newlabel{tab:5}{{5}{24}{Compute unit taxonomy (per-node; reference configuration)}{table.5}{}}
 \citation{13}
 \citation{14}
 \citation{17}
 \citation{16}
 \citation{17}
 \citation{9}
-\newlabel{sec:discussion}{{}{26}{Discussion}{section*.40}{}}
-\newlabel{sec:4.1}{{}{26}{4.1 Failure model and recovery}{section*.41}{}}
-\newlabel{sec:4.2}{{}{26}{4.2 Host interface and I/O}{section*.42}{}}
-\newlabel{sec:4.3}{{}{26}{4.3 Verification and formal properties}{section*.43}{}}
-\newlabel{sec:4.4}{{}{26}{4.4 Limitations and future work}{section*.44}{}}
+\newlabel{sec:discussion}{{}{25}{Discussion}{section*.40}{}}
+\newlabel{sec:4.1}{{}{25}{4.1 Failure model and recovery}{section*.41}{}}
+\newlabel{sec:4.2}{{}{25}{4.2 Host interface and I/O}{section*.42}{}}
+\newlabel{sec:4.3}{{}{25}{4.3 Verification and formal properties}{section*.43}{}}
+\newlabel{sec:4.4}{{}{25}{4.4 Limitations and future work}{section*.44}{}}
 \citation{21}
 \citation{22}
 \citation{23}
@@ -155,8 +154,8 @@
 \citation{26}
 \citation{27}
 \citation{5}
-\newlabel{sec:4.5}{{}{28}{4.5 Impacts: capacity-bound workloads at commodity economics}{section*.45}{}}
 \citation{24}
+\newlabel{sec:4.5}{{}{27}{4.5 Impacts: capacity-bound workloads at commodity economics}{section*.45}{}}
 \citation{42}
 \citation{21}
 \citation{22}
@@ -170,8 +169,8 @@
 \citation{17}
 \citation{13}
 \citation{14}
-\newlabel{sec:4.6}{{}{29}{4.6 Design-for-test and manufacturing readiness}{section*.46}{}}
-\newlabel{sec:conclusion}{{}{29}{Conclusion}{section*.47}{}}
+\newlabel{sec:4.6}{{}{28}{4.6 Design-for-test and manufacturing readiness}{section*.46}{}}
+\newlabel{sec:conclusion}{{}{28}{Conclusion}{section*.47}{}}
 \citation{3}
 \citation{4}
 \citation{5}
@@ -188,11 +187,11 @@
 \bibcite{10}{10}
 \bibcite{11}{11}
 \bibcite{12}{12}
-\newlabel{sec:acknowledgments}{{}{30}{Acknowledgments}{section*.48}{}}
 \bibcite{13}{13}
 \bibcite{14}{14}
 \bibcite{15}{15}
 \bibcite{16}{16}
+\newlabel{sec:acknowledgments}{{}{29}{Acknowledgments}{section*.48}{}}
 \bibcite{17}{17}
 \bibcite{18}{18}
 \bibcite{19}{19}
@@ -219,4 +218,4 @@
 \bibcite{40}{40}
 \bibcite{41}{41}
 \bibcite{42}{42}
-\gdef \@abspage@last{32}
+\gdef \@abspage@last{30}

@@ -263,37 +263,6 @@ func (r *runner) hdlCore() {
 	}
 }
 
-// linuxInitCase runs the Linux init binary (fw/os/linux) on the chip's own
-// RISC-V core and UART model and checks its boot banner.
-//
-// It covers the whole chain: the init binary is linked, loaded and executed
-// by the chip's own rv32_core.v and uart.v, and the banner, the PNM status
-// read and the NVMe probe are checked.
-func (r *runner) linuxInitCase(cat, h string) {
-	if r.t.iverilog == "" || r.t.vvp == "" {
-		r.skipTest(cat, "linux_init", "iverilog/vvp not found")
-		return
-	}
-	r.runTest(cat, "linux_init", func() (string, int) {
-		// build the init image (the cross compiler comes from the flake)
-		fw := filepath.Join(h, "..", "fw", "os", "linux")
-		if out, code := r.run("make", fw, "init.hex"); code != 0 {
-			return out, code
-		}
-		bin := filepath.Join(os.TempDir(), "tb_linux_init.out")
-		args := []string{"-g2005", "-o", bin, "tb_linux_init.v", "rv32_core.v", "uart.v"}
-		out, code := r.run(r.t.iverilog, h, args...)
-		if code != 0 {
-			return out, code
-		}
-		out, code = r.run(r.t.vvp, h, bin)
-		if code == 0 && outputFailed(out) {
-			code = 1
-		}
-		return out, code
-	})
-}
-
 func (r *runner) hdlFabric() {
 	cat := "hdl/fabric"
 	h := pnm.SiblingRepo("HDL")
@@ -310,11 +279,7 @@ func (r *runner) hdlFabric() {
 	cases := []tbCase{
 		{"fabric", []string{"hfr.v", "flit_gate.v", "vc_merge.v", "lxy_repeater.v", "xy_turn.v", "node_eject.v", "tb_fabric.v"}},
 		{"load", []string{"hfr.v", "flit_gate.v", "vc_merge.v", "lxy_repeater.v", "xy_turn.v", "node_eject.v", "tb_load.v"}},
-		{"orchestrator_chip", []string{"orchestrator.v", "core/arith_unit.v", "orchestrator_chip.v", "core/moe_gating.v", "core/bf16_fma.v", "core/fma_core.v", "tb_orchestrator_chip.v"}},
-		{"orchestrator_mcu", []string{"orchestrator.v", "orchestrator_mcu.v", "rv32_core.v", "uart.v", "clint.v", "tb_orchestrator_mcu.v"}},
-		{"orchestrator_sbc", []string{"orchestrator.v", "orchestrator_sbc.v", "rv32_core.v", "uart.v", "clint.v", "pcie_phy.v", "nvme_ctrl.v", "tb_orchestrator_sbc.v"}},
-		{"orchestrator_sbc_moe", []string{"orchestrator.v", "core/arith_unit.v", "orchestrator_sbc_moe.v", "rv32_core.v", "uart.v", "clint.v", "core/moe_gating.v", "core/bf16_fma.v", "core/fma_core.v", "tb_orchestrator_sbc_moe.v"}},
-		{"bmc_orchestrator", []string{"rv32_core.v", "uart.v", "clint.v", "bmc_orchestrator_top.v", "tb_bmc_orchestrator.v"}},
+		{"host_bridge", []string{"pnm_host_bridge.v", "tb_pnm_host_bridge.v"}},
 		{"pi_bridge", []string{"pi_bridge.v", "tb_pi_bridge.v"}},
 		{"host_bmc", []string{"pi_bridge.v", "pnm_arb.v", "tb_host_bmc.v"}},
 		{"kv_cache_bank", []string{"kv_offload.v", "core/crc16.v", "kv_cache_bank.v", "tb_kv_cache_bank.v"}},
@@ -324,10 +289,6 @@ func (r *runner) hdlFabric() {
 		bin := filepath.Join("/tmp", "tb_"+c.name+ext)
 		r.compileAndRun(cat, c.name, h, c.src, bin, c.name)
 	}
-
-	// The Linux init binary on the chip's own core and UART (needs the
-	// cross compiler for fw/os/linux, so it is a separate case).
-	r.linuxInitCase(cat, h)
 }
 
 func (r *runner) hdlPhy() {
@@ -352,8 +313,6 @@ func (r *runner) hdlPhy() {
 		{"sodimm_ctrl", []string{"sodimm_ctrl.v", "tb_sodimm_ctrl.v"}},
 		{"pcb_link", []string{"pcb_link.v", "tb_pcb_link.v"}},
 		{"optical_link", []string{"optical_link.v", "tb_optical_link.v"}},
-		{"pcie_phy", []string{"pcie_phy.v", "tb_pcie_phy.v"}},
-		{"nvme_ctrl", []string{"nvme_ctrl.v", "tb_nvme_ctrl.v"}},
 		{"power_rails", []string{"power_rails.v", "tb_power_rails.v"}},
 		{"pcb_si_link", []string{"pcb_si_link.v", "tb_pcb_si_link.v"}},
 		{"rst_sync", []string{"rst_sync.v", "tb_rst_sync.v"}},

@@ -59,12 +59,7 @@ if [ "$SELF_CHECK" = 1 ]; then
         "$HDL/hfr.v" "$HDL/flit_gate.v" "$HDL/vc_merge.v" \
         "$HDL/lxy_repeater.v" "$HDL/xy_turn.v" "$HDL/node_eject.v" \
         "$HDL/tb_fabric.v" "$HDL/tb_load.v" \
-        "$HDL/orchestrator.v" "$HDL/orchestrator_chip.v" \
-        "$HDL/tb_orchestrator_chip.v" "$HDL/tb_orchestrator_mcu.v" \
-        "$HDL/tb_orchestrator_sbc.v" "$HDL/tb_orchestrator_sbc_moe.v" \
-        "$HDL/rv32_core.v" "$HDL/uart.v" "$HDL/clint.v" \
-        "$HDL/orchestrator_mcu.v" "$HDL/orchestrator_sbc.v" \
-        "$HDL/orchestrator_sbc_moe.v" "$HDL/pcie_phy.v" "$HDL/nvme_ctrl.v" \
+        "$HDL/pnm_host_bridge.v" "$HDL/tb_pnm_host_bridge.v" \
         "$HDL/core/bf16_fp.vh" "$HDL/core/fma_core.v" \
         "$HDL/core/arith_unit.v" \
         "$HDL/core/gemma_decoder_block.v" "$HDL/core/node.v" \

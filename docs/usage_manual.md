@@ -113,19 +113,17 @@ Each node's PE tile instantiates one compute unit type:
 
 | Chip | Class | Key features |
 |------|-------|-------------|
-| `bmc_orchestrator_top` | Full BMC | CPU + UART + CLINT + PNM engine |
-| `orchestrator_mcu` | Minimal MCU | CPU + UART only |
-| `orchestrator_sbc` | SBC | CPU + SRAM + DRAM + PCIe + NVMe |
-| `orchestrator_sbc_moe` | SBC+MoE | CPU + MoE gating + PCIe |
+| `pnm_host_bridge` | Host bridge | PNM engine + SRAM + host register window |
 
-### Memory map (orchestrator_sbc)
+### Host window (pnm_host_bridge)
+
+The bridge has no processor and no boot ROM: the host drives everything
+through this window.
 
 | Region | Address | Size | Description |
 |--------|---------|------|-------------|
-| Boot ROM | `0x0000_0000` | 64 KB | Reset vector + SPL |
-| UART | `0x1000_0000` | 256 B | 16550-compatible console |
-| CLINT | `0x2000_0000` | 64 KB | Machine-mode timer + software IRQ (page-decoded) |
-| SRAM | `0x4000_0000` | 512 KB (default; configurable 500 KB–32 MB) | Kernel image + stack |
+| SRAM | `0x8000_0000` | 64 KB | Scratch / staging for the host's DMA path |
+| PNM router registers | `0xF000_0000` | 64 B | Routing, weight upload, dispatch, status |
 | DRAM | `0x8000_0000` | 1 GB | LPDDR5/6 heap + data |
 | PCIe | `0xC000_0000` | 256 MB | Gen5 x16 PHY registers |
 | NVMe | `0xD000_0000` | 64 B | AXI-Lite register window |
@@ -262,72 +260,48 @@ memory is the assembly board `implementations/boards/node_dual_mem.json`
 3. Place footprints on the board; route DDR escape and fabric links
 4. Run DRC; export Gerber + drill + BOM via File -> Output -> Manufacturing
 
-### Stage 3: Firmware
+### Stage 3: Firmware (host side)
 
-Four toolchains for the RISC-V orchestrator chip:
+The chip has no firmware of its own: the host runs it. The repository ships
+the dispatch firmware in two forms --- a Go reference model (the co-simulation's
+golden implementation) and a C port with static allocation only, no `malloc`
+and no OS dependency --- plus a cross-build system for a third-party RISC-V
+MCU that acts as the host.
 
-#### MCU (bare-metal, RV32I)
+#### Host MCU (bare-metal, RV32I)
 
-For `orchestrator_mcu` on small chassis. No OS, no libc, 8 KB ROM.
+For a microcontroller acting as the host. No OS, no libc, static allocation.
 
 ```bash
 cd toolchain/mcu
 make            # → firmware.bin + firmware.hex
 ```
 
-Output: flat binary for ROM burn-in. Linker script splits 8 KB ROM
-(`0x0000_0000`) and 4 KB SRAM (`0x8000_0000`).
+#### The C port (portable C11)
 
-#### SoC daemon (NOMMU Linux, RV32IMA)
-
-For `orchestrator_sbc` running NOMMU Linux userspace (seL4 as the hardened option).
+The dispatch loop, checked against the Go reference model.
 
 ```bash
-cd toolchain/soc
-make            # → pnm_socd (static musl binary)
+cd fw
+gcc -Wall -Wextra -std=c11 -c pnm_fw.c -o /dev/null   # compile check
 ```
 
-Statically linked against musl-libc. Accesses PNM via `/dev/pnm` mmap.
-
-#### Linux tinyconfig (RV32I)
-
-Minimal Linux image that fits in 16 MB SRAM.
+#### Go reference model
 
 ```bash
-cd fw/os/linux
-make check      # compile-check drivers + init
-make image      # → build/Image (requires Linux source tree)
-make initrd     # → build/initrd.cpio
-```
-
-Kernel config enables only: 16550 UART, NVMe block device, INITRD.
-Everything else disabled.
-
-#### seL4 microkernel (RV32IMA)
-
-Formally-verified microkernel for hardened control plane.
-
-```bash
-cd fw/os/sel4
-make            # → seL4 kernel + root task ELF (requires seL4 source tree)
+cd sim && go test ./internal/pnm/ -run Firmware -count=1
 ```
 
 ### Boot sequence
 
 ```
-Boot ROM (64 KB)
-  → SPL: probe NVMe, load kernel to DRAM 0x8000_0000
-    → kernel or seL4
-      → init: UART banner, NVMe probe, wfi idle
-        → pnm_socd: mmaps /dev/pnm, runs dispatch loop
+host firmware
+  → POST discovery: walk the spine, identify all nodes
+    → routing table load: program the flit builder's coordinate map
+      → weight upload: stream model weights to the node DRAM
+        → MoE gating load: program the expert-to-node assignment
+          → dispatch loop: route tokens to experts, collect results
 ```
-
-The orchestrator chip's firmware:
-1. **POST discovery** — walks the spine, identifies all nodes
-2. **Routing table load** — programs the flit builder's coordinate map
-3. **Weight upload** — streams model weights to node DRAM via PCIe
-4. **MoE gating load** — programs expert-to-node assignment
-5. **Dispatch loop** — routes tokens to experts, collects results
 
 ## Pi host drivers
 
@@ -691,19 +665,19 @@ go run ./cmd/hlsl_pnm examples/hello.hlsl -l 2 -x 2 -y 2 -run -inputs x=4,y=7
 
 ## Workload classification
 
-### MCU-class (orchestrator_mcu)
+### Small chassis (an MCU host)
 
 - Stencil (jacobi5): intra-layer nearest-neighbor communication
 - Reduction: tree-based parallel reduction along the spine
 - Broadcast: fan-out from spine root to all nodes
 - Matrix-vector multiply: spine descent, single-layer
 
-### SoC-class (orchestrator_sbc)
+### Full chassis (a Pi or workstation host)
 
 - LLM inference: model compiler transpiles HuggingFace safetensors
 - MoE dispatch: top-k expert selection, gating, token routing
-- KV cache management: FIFO eviction, NVMe overflow
-- Model weight persistence: NVMe save/load across power cycles
+- KV cache management: FIFO eviction
+- Model weight persistence: the host's own storage
 
 ### Compute-intensive
 
