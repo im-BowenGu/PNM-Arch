@@ -151,7 +151,9 @@ module tb_linux_init;
         for (i = 0; i < MEM_WORDS; i = i + 1)
             mem[i] = 32'h0;
 
-        fd = $fopen("init.hex", "r");
+        fd = $fopen("../fw/os/linux/init.hex", "r");
+        if (fd == 0)
+            fd = $fopen("init.hex", "r");
         if (fd == 0) begin
             $display("[TB] ERROR: init.hex not found — build it with:");
             $display("      cd fw/os/linux && make INIT_BASE=0x40000000 init.hex");

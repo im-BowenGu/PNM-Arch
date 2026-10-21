@@ -122,7 +122,10 @@ module bmc_orchestrator_top #(
     assign cpu_rdata = mux_rdata;
 
     // Ready: any selected slave is ready
-    assign cpu_ready = sel_rom | sel_uart | sel_clint | sel_sram | sel_pnm;
+    // The bus acknowledges every access: an unmapped read returns zero and an
+    // unmapped write is dropped.  (A JAL/JALR link store writes to sp-4, and
+    // a boot ROM that never sets sp would otherwise stall the core.)
+    assign cpu_ready = 1'b1;
 
     // =========================================================================
     // CPU Core

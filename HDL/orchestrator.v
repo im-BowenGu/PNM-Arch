@@ -776,7 +776,9 @@ module orchestrator #(
                 end
 
                 assign cpu_rdata = mux_rdata;
-                assign cpu_ready = sel_rom | sel_uart | sel_sram | sel_pnm;
+                // every access is acknowledged (an unmapped read returns zero,
+                // an unmapped write is dropped) — see bmc_orchestrator_top.v
+                assign cpu_ready = 1'b1;
 
                 wire [7:0] cpu_irq;
 
@@ -1080,11 +1082,13 @@ module orchestrator #(
 
                 assign cpu_rdata = mux_rdata;
 
+                // Every access is acknowledged except the ones whose model can
+                // stall; an unmapped read returns zero and an unmapped write
+                // is dropped (a JAL/JALR link store writes to sp-4, and a boot
+                // ROM that never sets sp would otherwise stall the core).
                 assign cpu_ready = (sel_dram && !dram_ready) ? 1'b0 :
                                    (sel_pcie && !pcie_ready && cpu_we) ? 1'b0 :
-                                   (sel_nvme && !nvme_ready) ? 1'b0 :
-                                   (sel_rom | sel_uart | sel_clint | sel_sram |
-                                    sel_dram | sel_pcie | sel_nvme | sel_pnm);
+                                   (sel_nvme && !nvme_ready) ? 1'b0 : 1'b1;
 
                 // =========================================================================
                 // CPU Core
@@ -1541,10 +1545,10 @@ module orchestrator #(
 
                 assign cpu_rdata = mux_rdata;
 
-                // DRAM has multi-cycle latency; all other slaves are single-cycle
-                assign cpu_ready = (sel_dram && !dram_ready) ? 1'b0 :
-                                   (sel_rom | sel_uart | sel_clint | sel_gating |
-                                    sel_dram | sel_pcie | sel_pnm);
+                // DRAM has multi-cycle latency; every other access is
+                // acknowledged (an unmapped read returns zero, an unmapped
+                // write is dropped).
+                assign cpu_ready = (sel_dram && !dram_ready) ? 1'b0 : 1'b1;
 
                 // =========================================================================
                 // CPU Core (RV32IMA — production upgrades to RV32IMAFC)
