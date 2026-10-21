@@ -148,16 +148,22 @@ module pnm_host_bridge #(
             res_count <= 10'd0;
         end else begin
             // pop
-            if (res_pop && (res_count != 0)) begin
-                res_rd    <= res_rd + 1'b1;
-                res_count <= res_count - 1'b1;
-            end
+            if (res_pop && (res_count != 0))
+                res_rd <= res_rd + 1'b1;
             // push
             if (spine_extract_valid && (res_count < RES_FIFO_BYTES)) begin
                 res_fifo[res_wr[7:0]] <= spine_extract_data;
-                res_wr    <= res_wr + 1'b1;
-                res_count <= res_count + 1'b1;
+                res_wr <= res_wr + 1'b1;
             end
+            // The count is netted: a pop and a push in the same cycle must
+            // cancel, or the count drifts and the read pointer runs past the
+            // data.
+            case ({spine_extract_valid && (res_count < RES_FIFO_BYTES),
+                   res_pop && (res_count != 0)})
+                2'b10: res_count <= res_count + 1'b1;
+                2'b01: res_count <= res_count - 1'b1;
+                default: res_count <= res_count;
+            endcase
         end
     end
 

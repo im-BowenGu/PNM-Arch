@@ -503,6 +503,8 @@ module tb_transport_plane;
     always @(posedge clk) begin
         if (spup_valid) begin
             egress_capture[egress_len] = spup_data;
+            if (egress_len > 14 && egress_len < 20)
+                $display("  [egress] byte %0d = %h", egress_len, spup_data);
             egress_len = egress_len + 1;
         end
     end
@@ -570,10 +572,12 @@ module tb_transport_plane;
         // =================================================================
         // The management node reads the token and gates it
         // =================================================================
+        // The tap's head is valid *before* the edge that pops it, so the
+        // byte is sampled first and the edge drained afterwards.
         tap_ready = 1'b1;
         for (i = 0; i < 8; i = i + 1) begin
-            @(posedge clk);
             m_token[i] = tap_data;
+            @(posedge clk);
         end
         tap_ready = 1'b0;
         for (i = 0; i < 4; i = i + 1)
@@ -591,14 +595,19 @@ module tb_transport_plane;
         if (m_state != M_RESULT) begin
             $display("FAIL: the management node never got the decision");
             errors = errors + 1;
-        end else
-            $display("ok: the management node read the decision over its bus: expert %0d",
-                     m_sel[0][7:0]);
+        end else begin
+            mgmt_step;                 // RESULT: read the decision back
+            $display("ok: the management node read the decision over its bus: expert %0d (logit %h)",
+                     m_sel[0][7:0], m_sel_logit);
+            if (m_sel[0][7:0] === 8'hXX) begin
+                $display("FAIL: the decision is undefined");
+                errors = errors + 1;
+            end
+        end
 
         // =================================================================
         // The management node injects the dispatch flit
         // =================================================================
-        mgmt_step;                             // RESULT  -> DISPATCH
         mgmt_step;                             // DISPATCH: build the flit
         for (i = 0; i < m_flit_bytes; i = i + 1) begin
             minj_data  = m_flit[i];
@@ -664,22 +673,42 @@ module tb_transport_plane;
         // expert's result reaching the bridge's FIFO) is checked here; the
         // read-back is left as the known gap.
         // =================================================================
+        // The expert's result goes onto the egress, holding valid until the
+        // fabric has taken it.
         exp_data  = 8'h5C;
         exp_sop   = 1'b1;
         exp_eop   = 1'b1;
         exp_valid = 1'b1;
-        @(posedge clk);
+        guard = 0;
+        while (egress_len <= 15 && guard < 5000) begin
+            @(posedge clk);
+            guard = guard + 1;
+        end
         exp_valid = 1'b0;
         exp_sop   = 1'b0;
         exp_eop   = 1'b0;
         repeat (8) @(posedge clk);
 
-        if (u_top.u_bridge.res_count == 0) begin
-            $display("FAIL: the expert's result never reached the bridge's result FIFO");
-            errors = errors + 1;
-        end else
-            $display("ok: the expert's result reached the bridge's result FIFO (%0d bytes buffered)",
+        // The bridge's result FIFO holds, in order: the dispatch the node
+        // sent up (which the host reads and re-issues), and then the
+        // expert's result.  The host collects them one byte at a time.
+        if (u_top.u_bridge.res_count < 16) begin
+            $display("FAIL: the result FIFO holds %0d bytes, expected at least 16",
                      u_top.u_bridge.res_count);
+            errors = errors + 1;
+        end else begin : collect_fifo
+            reg [7:0] last;
+            last = 8'h00;
+            for (i = 0; i < 16; i = i + 1) begin
+                spi_xfer(SEL_RESULT, 1'b1, 32'd0, rd, status);
+                last = rd[7:0];
+            end
+            if (last !== 8'h5C) begin
+                $display("FAIL: the host read %h as the last result byte, expected 5C", last);
+                errors = errors + 1;
+            end else
+                $display("ok: the host collected the dispatch and then the expert's result over SPI");
+        end
 
         if (errors == 0)
             $display("*** TRANSPORT PLANE TEST PASSED ***");

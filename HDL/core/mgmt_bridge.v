@@ -137,20 +137,27 @@ module mgmt_bridge #(
             inj_last  <= 1'b0;
             inj_vc_r  <= 2'b00;
         end else begin
+            // The pop and the push can happen in the same cycle, so the
+            // count is *netted*: two independent updates would let the
+            // count drift upward and the read pointer would run past the
+            // data, emitting garbage.
             if (inj_has && nob_out_ready) begin
                 inj_rd    <= inj_rd + 1'b1;
-                inj_count <= inj_count - 1'b1;
                 inj_first <= 1'b0;
                 inj_last  <= 1'b0;
             end
             if (inj_valid && inj_ready) begin
                 inj_mem[inj_wr[INJ_AW-1:0]] <= inj_data;
                 inj_wr    <= inj_wr + 1'b1;
-                inj_count <= inj_count + 1'b1;
                 inj_vc_r  <= inj_vc;
                 // the frame's end marker rides with its last byte
                 inj_last  <= inj_eop;
             end
+            case ({inj_valid && inj_ready, inj_has && nob_out_ready})
+                2'b10: inj_count <= inj_count + 1'b1;   // push only
+                2'b01: inj_count <= inj_count - 1'b1;   // pop only
+                default: inj_count <= inj_count;        // both, or neither
+            endcase
         end
     end
 
@@ -198,10 +205,8 @@ module mgmt_bridge #(
             tap_hdr   <= 3'd0;
         end else begin
             // pop
-            if (tap_has && tap_ready) begin
-                tap_rd    <= tap_rd + 1'b1;
-                tap_count <= tap_count - 1'b1;
-            end
+            if (tap_has && tap_ready)
+                tap_rd <= tap_rd + 1'b1;
             // push: the first four bytes of the frame are the header
             if (nob_in_valid && nob_in_ready) begin
                 if (tap_hdr != 3'd4) begin
@@ -209,9 +214,17 @@ module mgmt_bridge #(
                 end else begin
                     tap_mem[tap_wr[TAP_AW-1:0]] <= nob_in_data;
                     tap_wr    <= tap_wr + 1'b1;
-                    tap_count <= tap_count + 1'b1;
                 end
             end
+            // The count is netted: a pop and a push in the same cycle must
+            // cancel, or the count drifts and the read pointer runs past the
+            // data.
+            case ({nob_in_valid && nob_in_ready && (tap_hdr == 3'd4),
+                   tap_has && tap_ready})
+                2'b10: tap_count <= tap_count + 1'b1;
+                2'b01: tap_count <= tap_count - 1'b1;
+                default: tap_count <= tap_count;
+            endcase
         end
     end
 
