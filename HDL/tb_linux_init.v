@@ -202,7 +202,7 @@ module tb_linux_init;
             cycles = cycles + 1;
             if (capn >= 80)
                 done = 1'b1;
-            if (cycles > 40_000_000) begin
+            if (cycles > 5_000_000) begin
                 $display("[TB] TIMEOUT after %0d cycles (captured %0d chars)", cycles, capn);
                 errors = errors + 1;
                 done = 1'b1;
