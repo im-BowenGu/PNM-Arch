@@ -71,9 +71,15 @@ typedef struct {
 
 static model_t g_model;
 
+/* The trace of bus transactions, so the RTL can replay the firmware's exact
+ * sequence and check that the silicon agrees with it.  Set PNM_MGMT_TRACE to
+ * change where it goes. */
+static FILE *g_trace = NULL;
+
 static void model_write(void *ctx, uint16_t addr, uint16_t data)
 {
     model_t *m = (model_t *)ctx;
+    if (g_trace) fprintf(g_trace, "W %04X %04X\n", addr, data);
     m->n_writes++;
     m->last_addr = addr;
     m->step++;
@@ -121,6 +127,7 @@ static void model_write(void *ctx, uint16_t addr, uint16_t data)
 static uint16_t model_read(void *ctx, uint16_t addr)
 {
     model_t *m = (model_t *)ctx;
+    if (g_trace) fprintf(g_trace, "R %04X\n", addr);
     m->n_reads++;
     switch (addr) {
     case MGMT_REG_STATUS:
@@ -189,6 +196,15 @@ int main(void)
     bus.write = model_write;
     bus.read = model_read;
     bus.ctx = &g_model;
+
+    {
+        const char *path = getenv("PNM_MGMT_TRACE");
+        g_trace = fopen(path ? path : "/tmp/pnm_mgmt_trace.txt", "w");
+        if (!g_trace) {
+            printf("FAIL: cannot open the trace file\n");
+            return 1;
+        }
+    }
 
     mgmt_init(&mg, &bus, 3, 0x25);
     mg.num_experts = 8;
@@ -332,6 +348,11 @@ int main(void)
         uint16_t crc = pnm_crc16(body, 4);
         CHECK(crc == 0xDFCCu, "the CRC of the sample body is %04X, expected DFCC",
               crc);
+    }
+
+    if (g_trace) {
+        fclose(g_trace);
+        g_trace = NULL;
     }
 
     if (errors == 0)

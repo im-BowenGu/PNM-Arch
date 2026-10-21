@@ -245,14 +245,55 @@ func TestIntegration_CMgmtGating(t *testing.T) {
 		t.Fatalf("test_mgmt_gating.c compile failed: %v\nOutput: %s", err, out)
 	}
 
+	// The firmware records its bus transactions, so the RTL can replay them.
+	trace := "/tmp/pnm_mgmt_trace.txt"
+
 	cmd = exec.Command(bin)
 	cmd.Dir = fwDir
+	cmd.Env = append(os.Environ(), "PNM_MGMT_TRACE="+trace)
 	out, err = cmd.CombinedOutput()
 	if err != nil {
 		t.Errorf("management node gating test failed: %v\nOutput: %s", err, out)
 	}
 	if !strings.Contains(string(out), "MGMT GATING TEST PASSED") {
 		t.Errorf("management node gating test did not pass:\n%s", out)
+	}
+
+	// Now replay the firmware's exact sequence against the *real* gating
+	// ASIC, so the firmware and the silicon are checked against each other
+	// rather than each against its own model.
+	iverilog := iverilogPath()
+	if iverilog == "" {
+		t.Skip("iverilog not found in PATH")
+	}
+	vvpBin := vvpPath()
+	if vvpBin == "" {
+		t.Skip("vvp not found in PATH")
+	}
+	hdlDir := SiblingRepo("HDL")
+
+	simBin := filepath.Join(os.TempDir(), "tb_mgmt_trace")
+	args := []string{"-g2005", "-o", simBin,
+		filepath.Join(hdlDir, "core", "tb_mgmt_trace.v"),
+		filepath.Join(hdlDir, "core", "gating_asic.v"),
+		filepath.Join(hdlDir, "core", "moe_gating.v"),
+		filepath.Join(hdlDir, "core", "arith_unit.v"),
+		filepath.Join(hdlDir, "core", "bf16_fma.v"),
+		filepath.Join(hdlDir, "core", "fma_core.v"),
+	}
+	cmd = exec.Command(iverilog, args...)
+	out, err = cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("tb_mgmt_trace.v compile failed: %v\nOutput: %s", err, out)
+	}
+
+	cmd = exec.Command(vvpBin, simBin)
+	out, err = cmd.CombinedOutput()
+	if err != nil {
+		t.Errorf("the firmware's trace did not replay against the gating ASIC: %v\nOutput: %s", err, out)
+	}
+	if !strings.Contains(string(out), "MGMT TRACE TEST PASSED") {
+		t.Errorf("the firmware's trace did not replay against the gating ASIC:\n%s", out)
 	}
 }
 
