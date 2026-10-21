@@ -16,6 +16,7 @@ compiled, tested, or documented as current.
 | `hdl/core/tb_int4_mac.v` | Standalone INT4 MAC TB | `pnmt` exercises `tb_int4_mac_array.v` (arrays), not this scalar TB. |
 | `hdl/orchestrator_chip_haskell.v` | "Haskell-optimized Router Chip" variant | Dead ceremony: no instantiation and no compiler emits it (the Haskell frontend targets generic FP64 IR). |
 | `hdl/core/ram_phy_stub.v` | RAM PHY stub | Only consumed by the archived `tb_expert_loop.v`; no live instantiation. |
+| `hdl/gen_orchestrator.py` | Generator for the four `orchestrator_*.v` SoC tiers (CPU + boot ROM + UART + CLINT) | The tiers were deleted when the router chip became the CPU-less host bridge (`HDL/pnm_host_bridge.v`); the generator reads its sources from `git show HEAD:HDL/<file>`, so it can no longer regenerate them. |
 
 Relevant constraints honoured during the move: `kv_cache.go` depends on
 `NVMeDev` (`KVCache.NVMe`), which stays in the package; the C firmware build

@@ -28,7 +28,7 @@ Verilog-2005 model of the **routing fabric**, **compute units**, and **co-simula
 | `fp32_alu_chip.v` | FP32 ALU chip — wraps `fp32_alu.v` with AXI-Stream flit interface for PNM fabric integration |
 | `int8_mac.v` | INT8 multiply-accumulate |
 | **Fabric integration** | |
-| `orchestrator_chip.v` | Central router chip — PCIe ingress, flit builder, POST discovery FSM, spine injection |
+| `pnm_host_bridge.v` | The CPU-less router bridge — PNM router engine, SRAM, host register window (SPI on a Pi, or any third-party MCU) |
 | `kv_cache_bank.v` | KV cache bank (on-node) |
 | `kv_offload.v` | KV cache offload engine |
 | `moe_gating.v` | MoE expert gating (top-K selection) |
@@ -49,7 +49,8 @@ Verilog-2005 model of the **routing fabric**, **compute units**, and **co-simula
 | `tb_fp16_mac_array.v` | FP16 MAC array testbench |
 | `tb_bf16_mac_array.v` | BF16 MAC array testbench |
 | `tb_int8_mac.v` | INT8 MAC testbench |
-| `tb_orchestrator_chip.v` | Router chip testbench |
+| `tb_pnm_host_bridge.v` | Host bridge testbench — the TB plays the host and checks the emitted flit and the counters |
+| `tb_gating_modes.v` | The two gating managers — the same weights and the same hidden state programmed through the embedded node's bus and through the fabric, requiring the same top-K decision |
 | `tb_moe_gating.v` | MoE gating testbench |
 | `tb_node.v` | Compute-node testbench — boots expert weights, streams the hidden vector, dumps gate/up/act/out (`node_reference_test.py` drives it; BF16 + INT8 bit-exact) |
 | `tb_dma_lpddr6.v` | Host→BMC→DMA→LPDDR6 roundtrip with mid-transfer refresh stalls |
@@ -388,70 +389,59 @@ All three compilers produce **straight-line code**: the IR is a linear sequence
 of instructions with no control flow. This is sufficient for inference
 workloads (forward pass only) but not for training or iterative algorithms.
 
-### Router chip architecture (`orchestrator_chip.v`)
+### The host bridge (`pnm_host_bridge.v`)
 
-The router chip is the only stateful silicon in the fabric. It contains four
-independent FSMs that run concurrently:
+The router bridge is the only stateful silicon in the fabric, and it has **no
+processor**: no CPU, no boot ROM, no timer, no console. It is a bridge the
+host drives. The host runs the boot sequence, the weight upload and the
+dispatch loop; the bridge keeps the hardware that must be hardware:
 
-#### 1. Boot FSM (`boot_state`, 7 states)
+| Block | What it does |
+|-------|-------------|
+| PNM router engine | Flit builder (LAYER_ID, MODULE_ID, CTRL, LEN, payload, CRC-16/CCITT-FALSE), POST discovery, coordinate mapping, spine injection |
+| SRAM | 64 KB: the routing table, the MoE map, and the host's staging area |
+| Host register window | The route/payload/status/counter registers the host writes through |
+| Host bus | The port the host attaches to: SPI (via `pi_bridge.v`) or PCIe |
 
-```
-BOOT_RESET → BOOT_POST_PING → BOOT_POST_WAIT → BOOT_LOAD_RT
-  → BOOT_LOAD_WT → BOOT_LOAD_MOE → BOOT_READY
-```
+Because the sequencing lives in the host, the same silicon serves a Raspberry
+Pi, a microcontroller, or a workstation. `tb_pnm_host_bridge.v` plays the host:
+it writes the routing and payload registers and checks that the chip emits a
+byte-exact wormhole flit (header, payload, CRC over the protected body,
+SOP/EOP) and that the result path and counters read back. `tb_host_bmc.v`
+drives the same bridge from a Raspberry Pi model over the SPI adapter, through
+the two-port arbiter (`pnm_arb`).
 
-| Phase | State | What it does |
-|-------|-------|-------------|
-| POST discovery | `BOOT_POST_PING` | Sends ping flits to all nodes, latches `topology_rdy` bits for 256 cycles |
-| | `BOOT_POST_WAIT` | Popcount of latched bits → node count |
-| Routing table | `BOOT_LOAD_RT` | Programs lxy_repeaters/HFRs with 11-bit routing bitmaps via PCIe cmd `0x02` |
-| Weight upload | `BOOT_LOAD_WT` | Receives weight blobs from host via PCIe cmd `0x01`, wraps in wormhole flits, injects into spine |
-| MoE gating | `BOOT_LOAD_MOE` | Loads `router.proj.weight` into on-chip SRAM + expert→(layer, module) map via PCIe cmd `0x03` |
-| Ready | `BOOT_READY` | Normal operation; `boot_done` asserted |
+### The gating ASIC and its two managers (`core/gating_asic.v`)
 
-#### 2. PCIe Ingress Parser (`pie_state`, 8 states)
+The gating ASIC is a **per-node** device: it holds the router weights and
+produces the expert decision for each token that lands on its node. It has two
+management paths onto one register file, and a strapping pin (`mgmt_sel`)
+selects which one is live:
 
-| Command | State | Description |
-|---------|-------|-------------|
-| `0x01` | `PIE_WEIGHT_H` → `PIE_WEIGHT_P` | Weight upload: 4-byte header + payload |
-| `0x02` | `PIE_RT_NODE` | Routing table entry: node_id + bitmap |
-| `0x03` | `PIE_MOE_H` | MoE map entry: expert→(layer, module) |
-| `0x04` | `PIE_INF_TOKEN` → `PIE_INF_TOKEN_P` | Inference token: header + hidden state |
-| `0xFF` | — | NOP / idle marker |
+| Mode | Manager | Interface |
+|------|---------|-----------|
+| **A** | The embedded management node on the node board (an MCU or a Raspberry Pi Compute Module) | The management bus `mgmt_addr/wdata/rdata/we/valid/ready` — a direct local bus |
+| **B** | The host | The fabric-side programming port `prog_data/valid/sop/eop` — the host's bytes, decoded into the same register map |
 
-The parser buffers up to 6 header bytes in `pie_buf[0:5]` and dispatches to the
-appropriate sub-FSM. The `weight_load` signal to the MoE gating unit is
-asserted when `pie_state == PIE_MOE_H && pie_pos == 3` (4th byte of MoE header).
+Mode A is for the board that owns the node: the embedded node also masters the
+node's NoB, so it reaches the memory behind the node and can read the token's
+hidden state out of local DRAM. It programs the gating weights once at setup
+and then takes each token's decision locally — the decision never crosses the
+fabric.
 
-#### 3. Flit Builder (`fb_state`, 4 states)
+Mode B is for the host that owns the machine: it can reprogram the router of
+any node at any time, and the same host firmware drives a Pi, a microcontroller
+or a workstation.
 
-Constructs wormhole flits from PCIe data:
+The two modes are the same silicon and the same register map, so the decision
+is identical either way. `tb_gating_modes.v` programs the same weights and the
+same hidden state through each path and requires the same top-K selection.
 
-```
-FB_IDLE → FB_HDR → FB_PAYLOAD → FB_CRC
-```
-
-The builder accumulates LAYER_ID, MODULE_ID, CTRL, LEN in the header phase,
-streams payload bytes, and appends a running CRC-16/CCITT-FALSE. The completed
-flit is injected into the spine.
-
-#### 4. Result Collection (`rc_state`)
-
-Forwards `spine_extract` bytes (returned computation results) back to PCIe
-egress. Runs continuously when `spine_extract_valid` is high.
-
-#### MoE gating integration
-
-The router chip instantiates `moe_gating.v` as `u_gating`. The gating unit
-receives:
-- `weight_load` / `weight_addr` / `weight_data` from the PCIe parser
-- `current_layer` from the flit builder
-- `expert_idx_packed` / `expert_logit_packed` from the FMA computation
-
-The gating unit performs a **systolic gated matrix-vector multiply** (hidden
-state × router weight matrix) and a **top-K selection** (insertion sort into a
-sorted buffer of size K). The selected expert indices and logits are packed
-into the dispatch flit.
+What differs is only what crosses the fabric: in mode A the gating weights
+cross once (0.3–1 MB of BF16 per layer) and no per-token management traffic
+crosses at all; in mode B every weight byte crosses and every token's decision
+crosses back (256 bytes of logits, or 8 bytes for the top-K identifiers, per
+token per layer) on the same fabric that is already the capacity bottleneck.
 
 ### KV cache architecture
 

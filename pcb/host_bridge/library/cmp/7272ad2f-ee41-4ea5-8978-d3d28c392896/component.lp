@@ -1,6 +1,6 @@
 (librepcb_component 7272ad2f-ee41-4ea5-8978-d3d28c392896
- (name "PNM SOC")
- (description "PNM SOC component")
+ (name "PNM Host Bridge")
+ (description "CPU-less PNM router bridge: the PNM router engine, the SRAM and the host register window. No processor, no boot ROM, no timer, no console — the host runs the boot sequence, the weight upload and the dispatch loop.")
  (keywords "soc,pnm")
  (author "PNM Project")
  (version "0.1")

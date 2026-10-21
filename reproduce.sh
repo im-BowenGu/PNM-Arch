@@ -64,6 +64,7 @@ if [ "$SELF_CHECK" = 1 ]; then
         "$HDL/core/arith_unit.v" \
         "$HDL/core/gemma_decoder_block.v" "$HDL/core/node.v" \
         "$HDL/core/moe_gating.v" "$HDL/core/gating_asic.v" \
+        "$HDL/core/tb_gating_modes.v" "$HDL/core/tb_gating_server.v" \
         "$HDL/core/bf16_fma.v" "$HDL/core/fp16_fma.v" \
         "$HDL/core/fp32_fma.v" "$HDL/core/fp64_fma.v" \
         "$HDL/core/fp32_alu.v" "$HDL/core/fp64_alu.v" "$HDL/core/int8_alu.v" \
@@ -186,6 +187,10 @@ echo "=== HDL testbenches ==="
 if command -v "$IVERILOG" >/dev/null 2>&1; then
     run "bf16_fp library (bf16 ops bit-exact)" python3 "$HDL/core/bf16_fp_ref.py"
     run "gating ASIC server (8x16 logits bit-exact, vvp)" python3 "$HDL/core/gating_reference_test.py"
+    run "gating ASIC management modes (embedded node vs host, vvp)" bash -c "
+        $IVERILOG -g2005 -o /tmp/pnm_tb_gm $HDL/core/tb_gating_modes.v $HDL/core/gating_asic.v \
+            $HDL/core/moe_gating.v $HDL/core/arith_unit.v $HDL/core/bf16_fma.v $HDL/core/fma_core.v &&
+        $VVP /tmp/pnm_tb_gm | tee /tmp/pnm_gating_modes.log | grep -q 'GATING MODE TEST PASSED'"
     run "node compute ASIC (8x16 BF16 bit-exact, vvp)" python3 "$HDL/core/node_reference_test.py"
     run "node compute ASIC (8x16 INT8 exact, vvp)" python3 "$HDL/core/node_reference_test.py" --cu 4
     run "node compute ASIC (8x16 ternary BitNet exact, vvp)" python3 "$HDL/core/node_reference_test.py" --cu 8

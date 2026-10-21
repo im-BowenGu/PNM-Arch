@@ -16,11 +16,11 @@ control board sits at the spine's root (one end). There are no branching fabric
 paths, with the spine running as one vertical line through every layer:
 
 ```
-                ┌───────────────────────┐    ┌────────────────────────┐
-                │ processor board       │    │ gating board (opt.)    │
-                │ (orchestrator, root)  │    │ MoE gating,            │
-                │ PCIe + NVMe + PNM     │    │ LPCAMM2 or LPDDR5      │
-                └───────────┬───────────┘    └────────────────────────┘
+                ┌───────────────────────┐
+                │ host bridge board     │
+                │ (spine root)          │
+                │ PCIe/SPI + PNM bridge │
+                └───────────┬───────────┘
                             │
         ┌───────────────────┼───────────────────────────────────────┐
         │                   │  THE SPINE: one vertical line. It      │
@@ -32,8 +32,9 @@ paths, with the spine running as one vertical line through every layer:
         │  │  ┌─────────────┴───────┐   ┌─────┴─────────────┐       │
         │  │  │ interconnect board  │   │ node board        │       │
         │  │  │ (lxy repeater, HFR, │◄──┤ MAC ASIC + LPDDR6 │       │
-        │  │  │  spine pass-thru)   │NoB│ 64 compute nodes  │       │
-        │  │  └─────────────────────┘   └───────────────────┘       │
+        │  │  │  spine pass-thru)   │NoB│ gating ASIC +     │       │
+        │  │  └─────────────────────┘   │ mgmt node header  │       │
+        │  │                            └───────────────────┘       │
         │  └────────────────────────────────────────────────────┘   │
         │  layer N-1 … 1: identical boards down the same spine      │
         └───────────────────┼───────────────────────────────────────┘
@@ -48,6 +49,36 @@ paths, with the spine running as one vertical line through every layer:
 - `pnm_node/`, `processor/`, `gating_asic/` — project shells with populated
   local libraries (the symbols/packages/devices listed below); schematics and
   boards are empty placeholders awaiting placement and routing.
+
+## Two management modes
+
+Every board in the chassis is managed from one of two places, and the choice is
+a board-level strapping, not a silicon variant.
+
+**Mode A — the embedded management node.** Each node board carries a
+mezzanine header (`PNM MGMT NODE HDR`) for an MCU or a Raspberry Pi Compute
+Module. The module drives the board's gating ASIC directly over the gating
+ASIC's management bus (`MGMT_*`), and it is a master of the node's NoB, so it
+reaches the memory behind the node as well. It programs the gating weights
+once during machine setup and then takes each token's routing decision locally:
+the decision never leaves the board. The header carries a `MGMT_SEL` strap
+that selects this manager.
+
+**Mode B — the host.** The host owns the whole machine. The host's gating
+programming is streamed over the fabric to the gating ASIC, whose fabric-side
+receiver (`PROG_DATA`/`PROG_VALID`/`PROG_SOP`/`PROG_EOP`) decodes it into the
+same register map the embedded node uses, and the decision is read back over
+the fabric. This is the mode the host bridge at the spine root is built for.
+
+The two modes are the same silicon. `HDL/core/gating_asic.v` exposes both
+management paths on one register file (`mgmt_sel` picks the manager), and
+`HDL/core/tb_gating_modes.v` programs the same weights and the same hidden
+state through each path and requires the same top-K decision.
+
+What changes between the modes is only what crosses the fabric. In mode A the
+gating weights cross once, at setup; in mode B every weight byte crosses, and
+so does every token's decision (256 bytes of logits, or 8 bytes for the top-K
+identifiers, per token per layer).
 
 All four projects open cleanly in LibrePCB (`librepcb-cli open-project`).
 
@@ -72,39 +103,43 @@ Per-node power: ~15 W total (9 W MAC, 5 W DRAM, 1 W fabric) on three rails
 
 **4-layer stackup**: top copper → inner1 (GND) → inner2 (power) → bottom copper.
 
-### processor board (was "orchestrator_sbc")
+### processor board (was "orchestrator_sbc") — the host bridge board
 
-The management board at the spine root. Connects the host (PCIe) to the PNM
-fabric (spine cable). Supports three processor options (one active at a time,
-selected by solder jumpers):
+The board at the spine root. It carries the PNM router bridge die and connects
+the host to the fabric (spine cable). **The bridge has no processor of its
+own**: the host runs the boot sequence, the weight upload and the dispatch
+loop, so the same silicon serves a Raspberry Pi, a microcontroller, or a
+workstation. Two host attach options (one active at a time, selected by a
+solder jumper):
 
-| Processor | Interface | Use case |
+| Host attach | Interface | Use case |
 |-----------|-----------|----------|
 | **Pi Bridge** (`pi_bridge.v`) | SPI slave (SCLK/MOSI/MISO/CS) | CM0-CM4 host access via Python/Go/Rust/C drivers |
-| **Off-the-shelf MCU** | UART (TX/RX) + GPIO (DOORBELL_TRIG, PNM_VALID) | ESP32, Arduino, Pi Pico — simple dispatch controller |
-| **Custom SoC** (BGA-400) | Native bus (AXI-Lite) | Full RISC-V SoC with NOMMU Linux, NVMe boot, PCIe Gen5 |
+| **PCIe** (`PNM PCIE`) | PCIe Gen5 x16 | A workstation or server host, byte-stream flits in and out |
 
-All three processor options share the same PNM register window at `0xF000_0000`
-(on custom SoC) or the same SPI/UART protocol (on Pi Bridge / MCU).
+Both attach paths reach the same PNM register window at `0xF000_0000`: the
+route table, the MoE map, the flit-builder command registers (destination,
+length, payload byte, trigger), the status and counter registers, and the
+extracted result bytes. The host-side firmware (`fw/pnm_fw.c`, the C port of
+the Go reference in `sim/internal/pnm/firmware.go`) is unchanged between them.
 
-**Boot**: 64KB bootstub ROM (`orchestrator_sbc.v` `0x0000_0000 - 0x0000_FFFF`)
-copies the kernel from NVMe into SRAM (500KB-32MB configurable), then jumps to
-it. NOMMU Linux fits in ~1MB stripped down. The custom SoC also carries a 1 GB
-LPDDR5/6 window at `0x8000_0000` (instruction/data heap) in addition to on-chip
-SRAM (`orchestrator_sbc.v`); the Pi Bridge and MCU variants run from SRAM only.
+The board also carries an M.2 M-Key NVMe slot for weight persistence and KV
+spill; NVMe is storage, not compute, and the bridge never boots from it.
 
-**Memory map** (custom SoC only):
+**Boot**: there is no boot ROM and no boot stub. The host boots the machine:
+it POSTs the fabric, discovers the topology, loads the routing tables, uploads
+the weights, and starts the dispatch loop. A bridge that had to boot itself
+would need a processor, a ROM, a timer and a console — the four blocks this
+design deliberately removed (Section 2.17 of the paper).
+
+**Memory map** (as seen by the host):
 
 | Region | Address Range | Size | Description |
 |--------|--------------|------|-------------|
-| Boot ROM | `0x0000_0000` | 64KB | Bootstub: NVMe→SRAM copy + jump |
-| UART | `0x1000_0000` | 256B | 16550-compatible debug console |
-| CLINT | `0x2000_0000` | 64KB | Timer + software interrupt |
-| SRAM | `0x4000_0000` | 500KB-32MB | On-chip SRAM (kernel + runtime) |
-| DRAM | `0x8000_0000` | 1GB | LPDDR5/6 window (heap + data) |
+| SRAM | `0x8000_0000` | 64KB | On-chip SRAM (route table, MoE map, staging) |
 | PCIe | `0xC000_0000` | 256MB | PCIe config/status registers |
-| NVMe | `0xD000_0000` | 64B | NVMe controller (boot + weights + swap) |
-| PNM | `0xF000_0000` | 64B | PNM orchestrator engine |
+| NVMe | `0xD000_0000` | 64B | NVMe controller (weights + KV spill) |
+| PNM | `0xF000_0000` | 64B | PNM router engine |
 
 **NVMe** provides block storage for:
 - Model weight persistence (survives power cycles)
@@ -132,6 +167,13 @@ projection plus top-K selection) once per token---the design bottleneck for MoE
 routing---so DRAM bandwidth directly impacts expert selection latency. A BF16
 MAC array dimension is provisioned as a parameter; the co-simulated RTL realizes
 the gating unit itself, not a separate systolic-array instance.
+
+The board also carries the `PNM MGMT NODE HDR` mezzanine: the header for the
+embedded management node (an MCU or a Raspberry Pi Compute Module) that
+programs this gating ASIC and reaches its memory. With the header populated
+the board runs in mode A (the embedded node manages the gating ASIC locally);
+with it empty and the `MGMT_SEL` strap open the board runs in mode B (the host
+manages it over the fabric). See "Two management modes" above.
 
 **Power**: ~8W (3W logic + 5W DRAM).
 
@@ -184,15 +226,14 @@ pcb/
 │   ├── library/               MAC ASIC (LGA-830), LPCAMM2 (644-ball)
 │   ├── schematics/            schematic sheets
 │   └── boards/                4-layer board layout
-├── processor/                 processor board (was orchestrator_sbc)
+├── processor/                 host bridge board (was orchestrator_sbc)
 │   ├── processor.lpp          LibrePCB project
-│   ├── library/               Pi Bridge, MCU header, Custom SoC BGA-400,
-│   │                          PCIe x16 edge, M.2 NVMe
+│   ├── library/               Pi Bridge, MCU header, PCIe x16 edge, M.2 NVMe
 │   ├── schematics/            schematic sheets
 │   └── boards/                6-layer board layout
 ├── gating_asic/              MoE gating ASIC board (BF16 MAC) + LPCAMM2/LPDDR5
 │   ├── gating_asic.lpp       LibrePCB project
-│   ├── library/               Gating ASIC, LPCAMM2, LPDDR5 BGA
+│   ├── library/               Gating ASIC, mgmt-node mezzanine, LPCAMM2, LPDDR5 BGA
 │   ├── schematics/            schematic sheets
 │   └── boards/                4-layer board layout
 └── interconnect_board/        spine fabric (LXY repeaters + HFRs + spine pass-through)
@@ -220,6 +261,7 @@ names as they appear in `library/dev/`):
 | `processor` | PNM-MCU-HEADER | `PinHeader_2x10` | UART+GPIO header for ESP32/Pico/Arduino |
 | `processor` | PNM-SPDT-JUMPER | `SOT-23_SolderJumper` | Processor-select solder jumper |
 | `gating_asic` | PNM-GATE-ASIC | `QFN-48 Gating ASIC` | MoE gating ASIC (moe_gating top-K unit) |
+| `gating_asic` | PNM-MGMT-NODE-HDR | `PinHeader_2x10` | Mezzanine for the embedded management node (MCU / CM4) that manages the gating ASIC and the memory behind it |
 | `gating_asic` | — (packages only) | `LPCAMM2_Socket`, `LPDDR5_BGA_Soldered` | DRAM option footprints (no device entry yet) |
 | `interconnect_board` | Samtec-Searay-60 | `Searay-60 Spine Mezzanine` | Spine tap, SEARAY 12G 60-pin |
 | `interconnect_board` | PNM-SPINE-MEZZ | `Searay-60 Spine Pass-Through` | Spine cable pass-through, SEARAY 12G 60-pin |
@@ -274,27 +316,30 @@ of the stack and injects/ejects flits from the spine.
 
 ## Processor board: MCU selector
 
-The processor board has three processor footprints. Solder jumpers select
+The processor board has two host-attach footprints. A solder jumper selects
 which one drives the PNM bus:
 
-| Jumper | Position | Active processor | Interface |
+| Jumper | Position | Active host attach | Interface |
 |--------|----------|-----------------|-----------|
 | JP1 | 1-2 | Pi Bridge | SPI (SCLK/MOSI/MISO/CS) |
-| JP1 | 2-3 | MCU header | UART (TX/RX) + GPIO |
-| JP2 | 1-2 | Custom SoC | Native AXI-Lite bus |
+| JP1 | 2-3 | PCIe | PCIe Gen5 x16 |
+| JP2 | 1-2 | MCU header | UART (TX/RX) + GPIO |
 | JP2 | 2-3 | (reserved) | — |
 
-Only one processor can be active at a time. The PNM register window is
-the same regardless of which processor is selected.
+Only one host attach can be active at a time. The PNM register window is
+the same regardless of which one is selected, and the host-side firmware is
+the same source in every case.
 
 ## Integration with HDL/
 
 LibrePCB handles the physical board; the HDL sources handle the logic.
 The connection between them is the register map documented in:
-- `HDL/orchestrator_sbc.v` — memory map (SRAM, PCIe, NVMe, PNM windows)
+- `HDL/pnm_host_bridge.v` — the router bridge: memory map (SRAM, PCIe, NVMe,
+  PNM windows) and the host bus
 - `HDL/pi_bridge.v` — SPI bridge register protocol (for Pi Bridge / CM0–CM4)
 - `HDL/core/pe_tile_stub.v` — MAC ASIC port list (symbol pin definitions)
-- `HDL/orchestrator_mcu.v` — minimal MCU variant (UART + PNM only)
+- `HDL/core/gating_asic.v` — the gating ASIC's management bus (`MGMT_*`) and
+  its fabric-side programming port (`PROG_*`)
 
 ## LibrePCB setup
 

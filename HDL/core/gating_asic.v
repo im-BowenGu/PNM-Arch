@@ -13,13 +13,46 @@ module gating_asic #(
     input  wire        clk,
     input  wire        rst_n,
 
-    // Register-mapped bus from orchestrator (active-high valid/ready)
+    // Register-mapped bus from the chip (active-high valid/ready)
     input  wire [15:0] bus_addr,
     input  wire [15:0] bus_wdata,
-    output reg  [15:0] bus_rdata,
+    output wire [15:0] bus_rdata,
     input  wire        bus_we,
     input  wire        bus_valid,
     output reg         bus_ready,
+
+    // ---------------------------------------------------------------------
+    // Management modes
+    //
+    // The gating ASIC is managed from one of two places:
+    //
+    //   mode A (mgmt_sel = 1) — the *embedded management node* on this node
+    //     board (an MCU or a Raspberry Pi Compute Module) drives the register
+    //     bus directly.  It also owns the node's memory, so it can stage the
+    //     gating weights and read the token's hidden state locally: the
+    //     per-token decision never leaves the board.
+    //
+    //   mode B (mgmt_sel = 0) — the *host* owns the machine.  The host's
+    //     programming stream arrives over the fabric and is decoded by the
+    //     fabric receiver below; the chip's local bus is idle.
+    //
+    // mgmt_sel is a strapping pin (the board's mode jumper), so the two modes
+    // are the same silicon with a different manager.
+    // ---------------------------------------------------------------------
+    input  wire        mgmt_sel,        // 1 = the embedded management node
+    input  wire [15:0] mgmt_addr,
+    input  wire [15:0] mgmt_wdata,
+    output wire [15:0] mgmt_rdata,
+    input  wire        mgmt_we,
+    input  wire        mgmt_valid,
+    output reg         mgmt_ready,
+
+    // Fabric-side programming stream (mode B): the host's bytes, addressed at
+    // this node's coordinate, decoded into the same register map.
+    input  wire [7:0]  prog_data,
+    input  wire        prog_valid,
+    input  wire        prog_sop,
+    input  wire        prog_eop,
 
     // Top-K expert results (direct to orchestrator)
     output wire [TOP_K*8-1:0]  expert_idx,
@@ -181,6 +214,74 @@ module gating_asic #(
                             (bus_addr - REG_LOGIT) >> 1 : 8'd0;
     wire [15:0] logit_val;
 
+    // Read data is shared: whichever manager is active sees the same
+    // register file (mode A reads it over mgmt_*, mode B over the fabric).
+    reg [15:0] rd_data;
+    assign bus_rdata  = rd_data;
+    assign mgmt_rdata = rd_data;
+
+    // ---------------------------------------------------------------
+    // The effective register bus: the embedded management node in mode A,
+    // the chip's local bus in mode B (the legacy/bring-up path).
+    // ---------------------------------------------------------------
+    wire [15:0] eff_addr  = mgmt_sel ? mgmt_addr  : bus_addr;
+    wire [15:0] eff_wdata = mgmt_sel ? mgmt_wdata : bus_wdata;
+    wire        eff_we    = mgmt_sel ? mgmt_we    : bus_we;
+    wire        eff_valid = mgmt_sel ? mgmt_valid : bus_valid;
+    wire        eff_ready = mgmt_sel ? mgmt_ready : bus_ready;
+
+
+    // ---------------------------------------------------------------
+    // Fabric programming receiver (mode B)
+    //
+    // The host's gating-weight programming arrives as a byte stream on the
+    // fabric.  Bytes are assembled into 16-bit register writes on the same
+    // map the bus uses (low byte first), so both managers program the ASIC
+    // identically.
+    // ---------------------------------------------------------------
+    // A frame is three bytes: [reg_addr][data_lo][data_hi].  The address is
+    // a byte offset, so the programming block (control, weights, hidden) is
+    // reachable; the read-only logit window stays on the bus.
+    reg [7:0]  prog_addr;
+    reg [7:0]  prog_dlo;
+    reg [1:0]  prog_phase;       // 0 = address, 1 = data low, 2 = data high
+    reg        prog_wr_en;
+    reg [15:0] prog_wr_addr;
+    reg [15:0] prog_wr_data;
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            prog_addr      <= 8'd0;
+            prog_dlo       <= 8'd0;
+            prog_phase     <= 2'd0;
+            prog_wr_en     <= 1'b0;
+            prog_wr_addr   <= 16'd0;
+            prog_wr_data   <= 16'd0;
+        end else begin
+            prog_wr_en <= 1'b0;
+            if (prog_valid) begin
+                if (prog_sop)
+                    prog_phase <= 2'd0;
+                case (prog_phase)
+                    2'd0: begin
+                        prog_addr  <= prog_data;
+                        prog_phase <= 2'd1;
+                    end
+                    2'd1: begin
+                        prog_dlo   <= prog_data;
+                        prog_phase <= 2'd2;
+                    end
+                    default: begin
+                        prog_wr_en   <= 1'b1;
+                        prog_wr_addr <= {8'h00, prog_addr};
+                        prog_wr_data <= {prog_data, prog_dlo};
+                        prog_phase   <= 2'd0;
+                    end
+                endcase
+            end
+        end
+    end
+
     // ---------------------------------------------------------------
     // Bus interface (registered, one-cycle latency). A WGHT_DATA write
     // latched here pulses moe_gating.weight_load on the following edge,
@@ -189,7 +290,8 @@ module gating_asic #(
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             bus_ready    <= 1'b0;
-            bus_rdata    <= 16'd0;
+            mgmt_ready   <= 1'b0;
+            rd_data      <= 16'd0;
             ctrl_start   <= 1'b0;
             ctrl_soft_reset <= 1'b0;
             current_layer  <= 8'd0;
@@ -206,6 +308,7 @@ module gating_asic #(
             hidden_incr  <= 1'b0;
         end else begin
             bus_ready <= bus_valid;
+            mgmt_ready <= mgmt_valid;
             ctrl_start   <= 1'b0;
             ctrl_soft_reset <= 1'b0;
             wght_we   <= 1'b0;
@@ -235,49 +338,75 @@ module gating_asic #(
             wght_incr   <= 1'b0;
             hidden_incr <= 1'b0;
 
-            if (bus_valid && bus_ready) begin
-                if (bus_we) begin
-                    case (bus_addr)
+            // A fabric program write (mode B) takes precedence over the
+            // local bus, which is idle in that mode.
+            if (prog_wr_en) begin
+                case (prog_wr_addr)
+                    REG_CTRL: begin
+                        ctrl_start    <= prog_wr_data[0];
+                        ctrl_soft_reset <= prog_wr_data[1];
+                    end
+                    REG_WGHT_ADDR_LO: wght_waddr_lo <= prog_wr_data;
+                    REG_WGHT_ADDR_HI: wght_waddr_hi <= prog_wr_data;
+                    REG_WGHT_DATA: begin
+                        wght_wdata <= prog_wr_data;
+                        wght_we    <= 1'b1;
+                        wght_incr  <= 1'b1;
+                    end
+                    REG_HID_ADDR_LO: hidden_waddr_lo <= prog_wr_data;
+                    REG_HID_ADDR_HI: hidden_waddr_hi <= prog_wr_data;
+                    REG_HID_DATA: begin
+                        hidden_wdata <= prog_wr_data;
+                        hidden_we    <= 1'b1;
+                        hidden_incr  <= 1'b1;
+                    end
+                    REG_COORD_L: current_layer  <= prog_wr_data[7:0];
+                    REG_COORD_M: current_module <= prog_wr_data[7:0];
+                    default: ;
+                endcase
+            end else if (eff_valid && eff_ready) begin
+                if (eff_we) begin
+                    case (eff_addr)
                         REG_CTRL: begin
-                            ctrl_start    <= bus_wdata[0];
-                            ctrl_soft_reset <= bus_wdata[1];
+                            ctrl_start    <= eff_wdata[0];
+                            ctrl_soft_reset <= eff_wdata[1];
                         end
-                        REG_WGHT_ADDR_LO: wght_waddr_lo <= bus_wdata;
-                        REG_WGHT_ADDR_HI: wght_waddr_hi <= bus_wdata;
+                        REG_WGHT_ADDR_LO: wght_waddr_lo <= eff_wdata;
+                        REG_WGHT_ADDR_HI: wght_waddr_hi <= eff_wdata;
                         REG_WGHT_DATA: begin
-                            wght_wdata <= bus_wdata;
+                            wght_wdata <= eff_wdata;
                             wght_we    <= 1'b1;
                             wght_incr  <= 1'b1;
                         end
-                        REG_HID_ADDR_LO: hidden_waddr_lo <= bus_wdata;
-                        REG_HID_ADDR_HI: hidden_waddr_hi <= bus_wdata;
+                        REG_HID_ADDR_LO: hidden_waddr_lo <= eff_wdata;
+                        REG_HID_ADDR_HI: hidden_waddr_hi <= eff_wdata;
                         REG_HID_DATA: begin
-                            hidden_wdata <= bus_wdata;
+                            hidden_wdata <= eff_wdata;
                             hidden_we    <= 1'b1;
                             hidden_incr  <= 1'b1;
                         end
-                        REG_COORD_L: current_layer  <= bus_wdata[7:0];
-                        REG_COORD_M: current_module <= bus_wdata[7:0];
+                        REG_COORD_L: current_layer  <= eff_wdata[7:0];
+                        REG_COORD_M: current_module <= eff_wdata[7:0];
                         default: ;
                     endcase
                 end else begin
-                    case (bus_addr)
-                        REG_STATUS:    bus_rdata <= {13'd0, mg_fma_busy, mg_done, busy};
-                        REG_CYCLE_LO:  bus_rdata <= cycle_counter[15:0];
-                        REG_CYCLE_HI:  bus_rdata <= cycle_counter[31:16];
-                        REG_CFG_EXP:   bus_rdata <= NUM_EXPERTS[15:0];
-                        REG_CFG_HID:   bus_rdata <= HIDDEN_DIM[15:0];
-                        REG_CFG_TOPK:  bus_rdata <= TOP_K[15:0];
-                        REG_CFG_ARR:   bus_rdata <= ARRAY_SIZE[15:0];
-                        REG_RES_IDX0:  bus_rdata <= {8'd0, mg_idx[7:0]};
-                        REG_RES_IDX1:  bus_rdata <= {8'd0, mg_idx[15:8]};
-                        REG_RES_LOG0:  bus_rdata <= mg_logit[15:0];
-                        REG_RES_LOG1:  bus_rdata <= mg_logit[31:16];
+                    case (eff_addr)
+                        REG_STATUS:    rd_data   <= {13'd0, mg_fma_busy, mg_done, busy};
+                        REG_CYCLE_LO:  rd_data   <= cycle_counter[15:0];
+                        REG_CYCLE_HI:  rd_data   <= cycle_counter[31:16];
+                        REG_CFG_EXP:   rd_data   <= NUM_EXPERTS[15:0];
+                        REG_CFG_HID:   rd_data   <= HIDDEN_DIM[15:0];
+                        REG_CFG_TOPK:  rd_data   <= TOP_K[15:0];
+                        REG_CFG_ARR:   rd_data   <= ARRAY_SIZE[15:0];
+                        REG_RES_IDX0:  rd_data   <= {8'd0, mg_idx[7:0]};
+                        REG_RES_IDX1:  rd_data   <= {8'd0, mg_idx[15:8]};
+                        REG_RES_LOG0:  rd_data   <= mg_logit[15:0];
+                        REG_RES_LOG1:  rd_data   <= mg_logit[31:16];
                         default:
                             if (bus_addr >= REG_LOGIT)
-                                bus_rdata <= logit_val;
+                                rd_data   <= logit_val;
                             else
-                                bus_rdata <= 16'd0;
+                                rd_data   <= 16'd0;
                     endcase
                 end
             end

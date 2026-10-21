@@ -44,10 +44,10 @@ HDL/                    ← Full Verilog fabric (RTL + all compute units)
   (plus all routing gates, the host bridge, memory models, PHYs, testbenches)
 
 pcb/                    ← Manufacturable PCB assembly
-  README.md               board architecture (spine, processor, gating, NVMe)
+  README.md               board architecture (spine, host bridge, gating, NVMe)
   interconnect_board/     spine pass-through (SEARAY 12G), LXY repeaters, mezzanines
-  processor/              three processor options (Pi Bridge / MCU / Custom SoC)
-  gating_asic/            MoE gating ASIC + DRAM (LPCAMM2 / LPDDR5)
+  host_bridge/            the host bridge board (Pi Bridge SPI / PCIe)
+  gating_asic/            MoE gating ASIC + DRAM + the embedded management node header
 
 sim/                    ← Go co-simulation harness (stdlib only)
   cmd/pnm/                orchestrator + verification scenarios
@@ -370,8 +370,8 @@ Four boards, all LibrePCB (open-source EDA), 4-layer stackup:
 | Board | What it is | Generator |
 |-------|-----------|-----------|
 | `interconnect_board` | Spine fabric: SEARAY 12G pass-through taps (one byte-wide lane each), LXY repeaters, HFR pipe stages | `gen_schematic.py` (fixed variant; `gen_topology.py` explores parameterized layouts) |
-| `processor` | Management: Pi Bridge / MCU Header / Custom SoC (BGA-400) | manual placement |
-| `gating_asic` | MoE gating + DRAM (LPCAMM2 socket or soldered LPDDR5) | manual placement |
+| `host_bridge` | Host bridge: the CPU-less PNM router bridge + Pi Bridge (SPI) / PCIe + M.2 NVMe | manual placement |
+| `gating_asic` | MoE gating + DRAM (LPCAMM2 socket or soldered LPDDR5) + the embedded management node mezzanine | manual placement |
 | `pnm_node` | Compute node: MAC ASIC (LGA-830) + LPCAMM2 socket | manual placement |
 
 ```bash
@@ -413,7 +413,7 @@ Everything outside `paper/` is the production design:
 | Directory | What it contains | License |
 |-----------|-----------------|---------|
 | `HDL/` | Full Verilog-2005 fabric: routing gates, compute units (BF16/FP16/FP32/FP64 FMA, FP32 ALU, INT8/INT4/FP4/MXFP4 MAC + systolic arrays, weight dequant), the CPU-less router bridge, memory controllers, PHYs, testbenches | CERN-OHL-S v2 |
-| `pcb/` | PCB assembly: interconnect board (SEARAY 12G spine taps; ≈2 TB/s aggregate across 128 parallel lanes per the paper's spine sizing rule), processor board (Pi Bridge / MCU / Custom SoC), gating ASIC (MoE + DRAM) | CERN-OHL-S v2 |
+| `pcb/` | PCB assembly: interconnect board (SEARAY 12G spine taps; ≈2 TB/s aggregate across 128 parallel lanes per the paper's spine sizing rule), host bridge board (Pi Bridge SPI / PCIe), gating ASIC board (MoE + DRAM + the embedded management node header) | CERN-OHL-S v2 |
 | `sim/` | Go co-simulation, model compiler (HuggingFace → PNM), inference client, firmware (Go), source-language compilers (R/Haskell/HLSL) | AGPL-3.0 |
 | `fw/` | C firmware port for MCU targets (ARM Cortex-M/R, RISC-V) | AGPL-3.0 |
 | `toolchain/` | MCU/SoC cross-compilation build systems | AGPL-3.0 |
@@ -421,14 +421,22 @@ Everything outside `paper/` is the production design:
 | `implementations/` | Board netlist assembly, build scripts, schema | AGPL-3.0 |
 | `docs/` | Usage manual, profiling guide | AGPL-3.0 |
 
-The processor board supports three options selected by solder jumpers:
+The host bridge board supports two host attaches selected by solder jumpers:
 - **Pi Bridge** — SPI slave for Raspberry Pi CM0-CM4 host access
-- **MCU Header** — UART + GPIO for ESP32, Pi Pico, Arduino
-- **Custom SoC** — RISC-V with PCIe Gen5, NVMe, and spine engine
+- **PCIe** — Gen5 x16 for a workstation or server host
+
+The bridge die itself has no processor: the host runs the boot sequence, the
+weight upload and the dispatch loop.
 
 The gating board carries the MoE gating ASIC with DRAM options:
 - **LPCAMM2 socket** (default) — field-replaceable, up to 64 GB
 - **Soldered LPDDR5** — compact, lower cost
+
+and a mezzanine for the **embedded management node** (an MCU or a Pi Compute
+Module). With that mezzanine populated the board manages its own gating ASIC
+and reaches the memory behind it locally; with it empty the host manages the
+gating ASIC over the fabric. Same silicon either way — a `MGMT_SEL` strap
+picks the manager (see `pcb/README.md`, "Two management modes").
 
 ## License
 

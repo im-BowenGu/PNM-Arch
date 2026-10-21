@@ -123,11 +123,24 @@ through this window.
 | Region | Address | Size | Description |
 |--------|---------|------|-------------|
 | SRAM | `0x8000_0000` | 64 KB | Scratch / staging for the host's DMA path |
-| PNM router registers | `0xF000_0000` | 64 B | Routing, weight upload, dispatch, status |
-| DRAM | `0x8000_0000` | 1 GB | LPDDR5/6 heap + data |
 | PCIe | `0xC000_0000` | 256 MB | Gen5 x16 PHY registers |
 | NVMe | `0xD000_0000` | 64 B | AXI-Lite register window |
 | PNM | `0xF000_0000` | 64 B | Router chip registers |
+
+### The two management modes
+
+The gating ASIC on each node is managed from one of two places, chosen by a
+`MGMT_SEL` strap on the board:
+
+| Mode | Manager | Path | Cost |
+|------|---------|------|------|
+| **A** | The embedded management node on the node board (an MCU or a Pi Compute Module) | The node's own management bus (`mgmt_*` on `gating_asic.v`); the node is also a NoB master, so it reaches the memory behind the node | The gating weights cross the fabric once, at setup; each token's decision is taken locally |
+| **B** | The host | The host's programming is streamed over the fabric and decoded by the gating ASIC's fabric-side receiver (`prog_*`); the decision is read back over the fabric | Every weight byte and every token's decision crosses the fabric |
+
+Both managers drive the same register file, the same weight format and the
+same top-K selection, so the decision is identical either way. The testbench
+`HDL/core/tb_gating_modes.v` programs the same weights and the same hidden
+state through each path and requires the same decision.
 
 ## Build system
 
@@ -221,17 +234,16 @@ Variants:
 The generator emits LibrePCB schematic files (`.lp`) with components,
 netsegments, junctions, and labels.
 
-#### Processor board (manual)
+#### Host bridge board (manual)
 
-Three processor options selected by solder jumpers:
+Two host attaches selected by solder jumpers:
 
 | Option | Interface | Connector |
 |--------|-----------|-----------|
 | Pi Bridge | SPI slave (CM0-CM4) | 2x6 header |
-| MCU Header | UART + GPIO (ESP32, Pi Pico) | 2x10 header |
-| Custom SoC | RISC-V + PCIe Gen5 + NVMe | BGA-400 |
+| PCIe | Gen5 x16 | PCIe x16 edge connector |
 
-Open `pcb/processor/processor.lpp` in LibrePCB to place and route.
+Open `pcb/host_bridge/host_bridge.lpp` in LibrePCB to place and route.
 
 #### Gating ASIC board (manual)
 

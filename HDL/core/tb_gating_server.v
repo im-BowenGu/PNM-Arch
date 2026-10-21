@@ -76,6 +76,11 @@ module tb_gating_server;
         .clk(clk), .rst_n(rst_n),
         .bus_addr(bus_addr), .bus_wdata(bus_wdata), .bus_rdata(bus_rdata),
         .bus_we(bus_we), .bus_valid(bus_valid), .bus_ready(bus_ready),
+        // the chip's local bus is the manager in this server; the embedded
+        // management node's bus and the fabric stream are idle
+        .mgmt_sel(1'b0), .mgmt_addr(16'd0), .mgmt_wdata(16'd0),
+        .mgmt_rdata(), .mgmt_we(1'b0), .mgmt_valid(1'b0), .mgmt_ready(),
+        .prog_data(8'd0), .prog_valid(1'b0), .prog_sop(1'b0), .prog_eop(1'b0),
         .expert_idx(expert_idx), .expert_logit(expert_logit),
         .expert_layer(expert_layer), .expert_module(expert_module),
         .result_valid(result_valid),

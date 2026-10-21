@@ -134,7 +134,7 @@
 <fontconfig/>
 EOF
               export FONTCONFIG_FILE="$TMPDIR/minimal-fonts.conf"
-              for prj in pcb/pnm_node/pnm_node.lpp pcb/processor/processor.lpp pcb/gating_asic/gating_asic.lpp pcb/interconnect_board/interconnect_board.lpp; do
+              for prj in pcb/pnm_node/pnm_node.lpp pcb/host_bridge/host_bridge.lpp pcb/gating_asic/gating_asic.lpp pcb/interconnect_board/interconnect_board.lpp; do
                 if ! librepcb-cli open-project "$prj" >/tmp/librepcb.log 2>&1 || ! grep -q SUCCESS /tmp/librepcb.log; then
                   echo "PCB project validation FAILED: $prj"
                   cat /tmp/librepcb.log
