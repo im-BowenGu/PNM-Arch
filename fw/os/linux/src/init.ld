@@ -11,6 +11,9 @@
  *   -Wl,--defsym=__base=0x40000000   the orchestrator_sbc SRAM window
  *   -Wl,--defsym=__base=0x80000000   DRAM / QEMU RAM base
  *
+ * The stack lives 8 KB above the image (__stack_top = __base + 0x2000), so a
+ * flat-memory harness only has to model the first 32 KB of the window.
+ *
  * __base defaults to 0x40000000 in the Makefile.
  */
 OUTPUT_ARCH(riscv)
@@ -41,5 +44,5 @@ SECTIONS
     _end = .;
 
     /* the stack lives above the image, inside the same window */
-    __stack_top = __base + 0x4000;
+    __stack_top = __base + 0x2000;
 }

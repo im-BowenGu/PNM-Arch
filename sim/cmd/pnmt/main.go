@@ -266,20 +266,12 @@ func (r *runner) hdlCore() {
 // linuxInitCase runs the Linux init binary (fw/os/linux) on the chip's own
 // RISC-V core and UART model and checks its boot banner.
 //
-// It is currently reported as skipped: the chip's RV32 core does not
-// implement the JAL/JALR link store (the RISC-V ISA writes the return
-// address to *both* rd and memory[sp-4]), so no compiler-generated code —
-// which always spills the link to the stack — can run on it yet.  The
-// testbench is kept in the tree so the gap stays visible and the check
-// comes back to green when the core is fixed.
+// It covers the whole chain: the init binary is linked, loaded and executed
+// by the chip's own rv32_core.v and uart.v, and the banner, the PNM status
+// read and the NVMe probe are checked.
 func (r *runner) linuxInitCase(cat, h string) {
 	if r.t.iverilog == "" || r.t.vvp == "" {
 		r.skipTest(cat, "linux_init", "iverilog/vvp not found")
-		return
-	}
-	if os.Getenv("PNM_RUN_LINUX_INIT") == "" {
-		r.skipTest(cat, "linux_init",
-			"the chip's RV32 core lacks the JAL/JALR link store (ISA gap); set PNM_RUN_LINUX_INIT=1 to run it anyway")
 		return
 	}
 	r.runTest(cat, "linux_init", func() (string, int) {

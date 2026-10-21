@@ -73,6 +73,8 @@ module uart #(
 
     reg        tx_busy;
     reg        thr_has_data;   // THR holds an unsent byte (set on write, cleared on send)
+    reg        rdr_read_p;     // the bus read RDR this cycle (clears lsr[0])
+    reg        lsr_read_p;     // the bus read LSR this cycle (clears lsr[3])
     reg [3:0]  tx_bit_cnt;
     reg [9:0]  tx_shift;     // start + 8 data + stop
     reg [3:0]  rx_bit_cnt;
@@ -80,11 +82,23 @@ module uart #(
     reg        rx_busy;
     reg [3:0]  rx_sync;      // synchronizer for uart_rx
 
-    // TX state machine.
+    wire rx_pin = rx_sync[3];  // metastable-resolved
+
+    // =========================================================================
+    // Transmitter, receiver status and bus access — one sequential block.
+    //
+    // The line status register must have a *single* owner: when two always
+    // blocks assign the same bit in the same cycle the simulation resolves it
+    // to X, and a driver that polls the LSR (the Linux init waiting for THRE,
+    // for instance) then spins forever on an undefined value.  So the TX
+    // path and the bus path live in one block here (the later assignment
+    // wins), and the RX path signals the two status clears through flags.
+    //
     // A byte is loaded from THR into the shift register only when THR actually
     // holds data (thr_has_data).  Using lsr[5] (THR-empty) as the start trigger
     // was a bug: it fired on reset (empty==1) transmitting stale data, and the
     // same-cycle THR write + stale capture dropped the first written byte.
+    // =========================================================================
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             tx_busy       <= 1'b0;
@@ -92,88 +106,76 @@ module uart #(
             tx_bit_cnt    <= 4'h0;
             tx_shift      <= 10'h3FF;
             uart_tx       <= 1'b1;
-            lsr[5]        <= 1'b1;  // THR empty
-            lsr[6]        <= 1'b1;  // shift register empty
-        end else if (!tx_busy && thr_has_data) begin
-            // Start new transmission from the held byte
-            tx_shift      <= {1'b1, thr, 1'b0};  // stop, 8 data, start
-            tx_bit_cnt    <= 4'd0;
-            tx_busy       <= 1'b1;
-            thr_has_data  <= 1'b0;
-            lsr[5]        <= 1'b1;  // THR becomes empty once loaded
-            lsr[6]        <= 1'b0;
-        end else if (tx_busy && baud_tick) begin
-            uart_tx       <= tx_shift[tx_bit_cnt];
-            tx_bit_cnt    <= tx_bit_cnt + 1;
-            if (tx_bit_cnt == 4'd9) begin
-                tx_busy    <= 1'b0;
-                // NOTE: do not clear thr_has_data here; a byte written while
-                // transmitting stays pending and is sent next.
-                lsr[6]     <= 1'b1;  // shift register empty
-            end
-        end
-    end
-
-    // RX synchronizer
-    always @(posedge clk or negedge rst_n) begin
-        if (!rst_n)
-            rx_sync <= 4'hF;
-        else
-            rx_sync <= {rx_sync[2:0], uart_rx};
-    end
-
-    wire rx_pin = rx_sync[3];  // metastable-resolved
-
-    // RX state machine
-    always @(posedge clk or negedge rst_n) begin
-        if (!rst_n) begin
-            rx_busy    <= 1'b0;
-            rx_bit_cnt <= 4'h0;
-            rx_shift   <= 8'h0;
-            lsr[0]     <= 1'b0;  // data ready
-        end else if (!rx_busy && !rx_pin) begin
-            // Start bit detected
-            rx_busy    <= 1'b1;
-            rx_bit_cnt <= 4'd0;
-        end else if (rx_busy && baud_tick) begin
-            if (rx_bit_cnt >= 4'd1 && rx_bit_cnt <= 4'd8) begin
-                // Sample data bits D0..D7 into rx_shift[0..7].
-                // rx_bit_cnt is a 4-bit count, so rx_bit_cnt - 4'd1 is
-                // plain 4-bit arithmetic (1..8 -> 0..7); a [2:0] part-select
-                // would wrap 8 to 0 and index out of range.
-                rx_shift[rx_bit_cnt - 4'd1] <= rx_pin;
-            end else if (rx_bit_cnt == 4'd9) begin
-                // Stop bit check
-                if (rx_pin) begin
-                    rdr       <= rx_shift;
-                    lsr[0]    <= 1'b1;  // data ready
-                end else begin
-                    lsr[3]    <= 1'b1;  // framing error
-                end
-                rx_busy   <= 1'b0;
-            end
-            rx_bit_cnt <= rx_bit_cnt + 1;
-        end
-    end
-
-    // Interrupt generation
-    always @(posedge clk or negedge rst_n) begin
-        if (!rst_n)
-            irq <= 1'b0;
-        else
-            irq <= (ier[0] && lsr[0]) || (ier[1] && lsr[5]);
-    end
-
-    // Bus access
-    always @(posedge clk or negedge rst_n) begin
-        if (!rst_n) begin
+            // The whole line status register is initialised: an undefined bit
+            // makes the byte read back as X, and a driver that polls THRE
+            // (lsr & 0x20) then spins on an undefined value.
+            lsr           <= 8'h60;  // THRE (THR empty) | TEMT (shift empty)
             thr          <= 8'h0;
-            thr_has_data <= 1'b0;
             ier          <= 8'h0;
             fcr          <= 8'h0;
             lcr          <= 8'h0;
             mcr          <= 8'h0;
+            rdr_read_p   <= 1'b0;
+            lsr_read_p   <= 1'b0;
+            rx_busy      <= 1'b0;
+            rx_bit_cnt   <= 4'd0;
+            rx_shift     <= 8'h0;
+            rdr          <= 8'h0;
+
         end else begin
+            // ---- transmitter ----
+            if (!tx_busy && thr_has_data) begin
+                // Start new transmission from the held byte
+                tx_shift      <= {1'b1, thr, 1'b0};  // stop, 8 data, start
+                tx_bit_cnt    <= 4'd0;
+                tx_busy       <= 1'b1;
+                thr_has_data  <= 1'b0;
+                lsr[5]        <= 1'b1;  // THR becomes empty once loaded
+                lsr[6]        <= 1'b0;
+            end else if (tx_busy && baud_tick) begin
+                uart_tx       <= tx_shift[tx_bit_cnt];
+                tx_bit_cnt    <= tx_bit_cnt + 1;
+                if (tx_bit_cnt == 4'd9) begin
+                    tx_busy    <= 1'b0;
+                    // NOTE: do not clear thr_has_data here; a byte written while
+                    // transmitting stays pending and is sent next.
+                    lsr[6]     <= 1'b1;  // shift register empty
+                end
+            end
+
+            // ---- receiver ----
+            if (!rx_busy && !rx_pin) begin
+                // Start bit detected
+                rx_busy    <= 1'b1;
+                rx_bit_cnt <= 4'd0;
+            end else if (rx_busy && baud_tick) begin
+                if (rx_bit_cnt >= 4'd1 && rx_bit_cnt <= 4'd8) begin
+                    // Sample data bits D0..D7 into rx_shift[0..7].
+                    // rx_bit_cnt is a 4-bit count, so rx_bit_cnt - 4'd1 is
+                    // plain 4-bit arithmetic (1..8 -> 0..7); a [2:0] part-select
+                    // would wrap 8 to 0 and index out of range.
+                    rx_shift[rx_bit_cnt - 4'd1] <= rx_pin;
+                end else if (rx_bit_cnt == 4'd9) begin
+                    // Stop bit check
+                    if (rx_pin) begin
+                        rdr       <= rx_shift;
+                        lsr[0]    <= 1'b1;  // data ready
+                    end else begin
+                        lsr[3]    <= 1'b1;  // framing error
+                    end
+                    rx_busy   <= 1'b0;
+                end
+                rx_bit_cnt <= rx_bit_cnt + 1;
+            end
+            // The status clears requested by the bus (single-owner lsr).
+            if (rdr_read_p)
+                lsr[0] <= 1'b0;  // data ready cleared by reading RDR
+            if (lsr_read_p)
+                lsr[3] <= 1'b0;  // framing error cleared by reading LSR
+
+            // ---- bus access ----
+            rdr_read_p <= 1'b0;
+            lsr_read_p <= 1'b0;
             if (valid && we) begin
                 case (addr[4:0])
                     5'h00: begin
@@ -189,13 +191,31 @@ module uart #(
                     default: ;
                 endcase
             end
-            // Clear data-ready when RDR is read
+            // Reading RDR clears the data-ready flag; reading the LSR clears
+            // the framing error.  The flags are consumed by the RX block, so
+            // lsr keeps a single owner.
             if (valid && !we && addr[4:0] == 5'h00)
-                lsr[0] <= 1'b0;
-            // Clear framing error when LSR is read
+                rdr_read_p <= 1'b1;
             if (valid && !we && addr[4:0] == 5'h14)
-                lsr[3] <= 1'b0;
+                lsr_read_p <= 1'b1;
         end
+    end
+
+    // RX synchronizer
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n)
+            rx_sync <= 4'hF;
+        else
+            rx_sync <= {rx_sync[2:0], uart_rx};
+    end
+
+
+    // Interrupt generation
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n)
+            irq <= 1'b0;
+        else
+            irq <= (ier[0] && lsr[0]) || (ier[1] && lsr[5]);
     end
 
     // =========================================================================

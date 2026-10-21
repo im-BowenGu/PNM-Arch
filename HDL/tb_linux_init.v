@@ -26,7 +26,7 @@
 module tb_linux_init;
 
     localparam [31:0] INIT_BASE  = 32'h4000_0000;  // the chip's SRAM window
-    localparam        MEM_WORDS = 8192;              // 32 KB, word addressed
+    localparam        MEM_WORDS = 16384;             // 64 KB, word addressed
     localparam [31:0] TRAP_BASE  = 32'h0000_1000;   // the core's mtvec default
 
     reg clk = 1'b0;
@@ -70,12 +70,15 @@ module tb_linux_init;
 
     // The chip's SoC answers the instruction fetch over a *separate*
     // combinational path (fetch_addr -> ROM) and multiplexes it onto the
-    // data bus, so the core latches the right word even though its data-bus
-    // address is registered one cycle late.  Mirror that here.
+    // data bus, while data accesses are answered from the data-bus address.
+    // Mirror that exactly: a fetch returns the word at fetch_addr, a load
+    // returns the word at the data-bus address.  (The core latches the
+    // instruction in the fetch cycle and the load data in the memory
+    // cycle, both from this one wire.)
     reg [31:0] mem_q;
     always @(*) begin
         mem_q = 32'h0;
-        if (fetch_addr[31:16] == INIT_BASE[31:16])
+        if (u_core.state == 3'd1)                 // S_FETCH
             mem_q = mem[fetch_addr[13:2]];
         else if (bus_addr[31:16] == INIT_BASE[31:16])
             mem_q = mem[bus_addr[13:2]];
@@ -103,7 +106,7 @@ module tb_linux_init;
     // ---- address decode ----------------------------------------------------
     always @(*) begin
         bus_rdata = 32'h0;
-        if (fetch_addr[31:16] == INIT_BASE[31:16] || mem_hit)
+        if (mem_hit || (u_core.state == 3'd1 && fetch_addr[31:16] == INIT_BASE[31:16]))
             bus_rdata = mem_q;
         else if (bus_addr[31:8] == 20'h00100)
             bus_rdata = 32'h0000_006f;   // trap vector: j .
@@ -134,7 +137,10 @@ module tb_linux_init;
     reg [7:0] cap [0:255];
     integer   capn = 0;
     always @(posedge clk) begin
-        if (rst_n && uart_we && (uart_addr[7:2] == 6'd0) && capn < 256) begin
+        // Only characters: a write to the THR while the divisor latch is
+        // selected (LCR[7]) is the baud divisor, not a character.
+        if (rst_n && uart_we && (uart_addr[7:2] == 6'd0) &&
+            !u_uart.lcr[7] && capn < 256) begin
             cap[capn] = uart_wdata[7:0];
             capn = capn + 1;
         end
@@ -184,7 +190,8 @@ module tb_linux_init;
     integer errors = 0;
     reg     done = 1'b0;
     reg [8*80-1:0] got;
-    reg [8*40-1:0] want_banner;
+    reg [8*40-1:0] got0;   // 40 bytes: the banner (37) plus room
+    reg [8*37-1:0] want_banner;  // exactly the banner
 
     initial begin
         want_banner = "fw-os-linux init for orchestrator_sbc";
@@ -193,9 +200,9 @@ module tb_linux_init;
         while (!done) begin
             @(posedge clk);
             cycles = cycles + 1;
-            if (capn >= 40)
+            if (capn >= 80)
                 done = 1'b1;
-            if (cycles > 2_000_000) begin
+            if (cycles > 40_000_000) begin
                 $display("[TB] TIMEOUT after %0d cycles (captured %0d chars)", cycles, capn);
                 errors = errors + 1;
                 done = 1'b1;
@@ -206,13 +213,20 @@ module tb_linux_init;
         for (k = 0; k < capn && k < 60; k = k + 1)
             got = {got[8*79-1:0], cap[k]};
 
+        // the banner is the *first* 37 characters the init emits
+        got0 = "";
+        for (k = 0; k < capn && k < 37; k = k + 1)
+            got0 = {got0[8*39-1:0], cap[k]};
+
         $display("[TB] captured %0d chars in %0d cycles: %0s", capn, cycles, got);
 
-        if (got[8*79-1:0] != want_banner) begin
-            $display("[TB] ERROR: banner mismatch");
-            $display("      want: %0s", want_banner);
-            $display("      got : %0s", got);
-            errors = errors + 1;
+        // byte-wise comparison of the banner
+        for (k = 0; k < 37; k = k + 1) begin
+            if (k >= capn || cap[k] != want_banner[8*37-1-k*8 -: 8]) begin
+                $display("[TB] ERROR: banner byte %0d: got %02x, want %02x",
+                         k, (k < capn) ? cap[k] : 8'hxx, want_banner[8*37-1-k*8 -: 8]);
+                errors = errors + 1;
+            end
         end
 
         if (errors == 0)
