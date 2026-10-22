@@ -6,7 +6,56 @@
 > cache coherency, and a hardware doorbell that fires on byte count, CRC, and
 > destination match.
 
-**TL;DR:** [TLDR.md](TLDR.md) · **Architecture:** [docs/architecture.md](docs/architecture.md) · **Manual:** [docs/usage_manual.md](docs/usage_manual.md)
+## TL;DR
+
+**The problem.** GPU/HBM monoliths cost ~$375/GB (H100-class), are
+capacity-capped by interposer reticle limits, and spend most energy on data
+movement rather than compute.
+
+**The solution.** A distributed spatial Processing-Near-Memory architecture
+that replaces HBM with commodity LPDDR6 CAMM2 modules, each paired with a
+mature-node (14/28 nm) DUV MAC ASIC on a rigid X/Y motherboard grid.
+
+**Key numbers** (512-node reference chassis):
+
+| Metric | Value |
+|--------|-------|
+| Nodes | 512 (8 layers × 8×8 grid) |
+| Aggregate memory | 64 TB |
+| Aggregate bandwidth | ~262 TB/s (512 nodes × ~512 GB/s node-local, 2×64 GB modules) |
+| FP64 throughput | ~197 TFLOPS |
+| Cost per GB | ~$16 (vs ~$375 for HBM) |
+| Chassis power | 8–10 kW |
+| Spine bandwidth | ~2 TB/s per direction |
+
+**How it works.**
+
+1. **Four kinds of hardware:** DRAM modules, MAC ASICs, stateless flit
+   repeaters, and one CPU-less router bridge the host drives.
+2. **Deterministic routing:** a single-spine tree with dimension-order
+   on-board paths; routing is O(1) coordinate arithmetic on the
+   `[Layer ID | Module ID]` header. No runtime scheduling, no cache coherency.
+3. **Doorbell activation:** hardware three-condition fire (byte count, CRC,
+   destination match) — sub-microsecond, with no software interrupt.
+4. **AOT compilation:** a five-stage compiler maps HuggingFace models onto the
+   physical chassis; the output is a static dataflow graph where the address
+   *is* the coordinate and the doorbell *is* the program counter.
+5. **MoE inference:** expert weights stay resident in the DRAM pools; only
+   tokens travel, via wormhole routing (~270 dispatches per token).
+
+**Target workloads:** MoE transformer inference, FP64 stencil computation for
+scientific HPC, and large-scale numerical simulation.
+
+**What is machine-checked.** All transport claims are machine-checked by the
+co-simulation harness against a cycle-exact Verilog model. Six scenarios
+(`sweep`, `vcsweep`, `load`, `hotspot`, `stress`, `replay`) verify byte-exact
+delivery, zero drops, doorbell accounting, kernel correctness, and
+deterministic replay. The compute node and the gating ASIC are bit-exact
+against their software oracles, the gating→fabric→node composition is
+bit-exact per layer, and the firmware's own bus trace is replayed against the
+real gating ASIC. On the real **Gemma-4 26B-A4B** checkpoint the harness's
+pure-Go BF16 forward pass is greedy-token-identical to a Hugging Face
+reference on the tested chat prompts.
 
 ## The paper
 
@@ -36,7 +85,7 @@ Five contributions:
    by a shared dispatch-plan wire format, the model compiler, PCB and
    assembly models, and a reproducible test suite.
 
-## The architecture
+## The architecture in 30 seconds
 
 | | |
 |---|---|
@@ -65,7 +114,8 @@ pcb/                      LibrePCB board designs (interconnect, host bridge,
                           gating ASIC, node)
 implementations/          board netlist assembly (JSON schemas + build script)
 toolchain/  pi_host/      MCU cross-build · Raspberry Pi host drivers
-docs/                     usage manual, architecture summary, profiling guide
+docs/pnm.md               the detailed documentation: architecture, paper, RTL,
+                          harness, commands, boards, real weights
 ```
 
 ## Build and run
@@ -84,21 +134,14 @@ Real checkpoint weights are optional: `./download_model.sh` fetches the gated
 Gemma-4-26B-A4B checkpoint, and `reproduce.sh --real-weights` runs the
 real-slice checks. Nothing in the default suite needs it.
 
-## Links
+## Documentation
 
 | | |
 |---|---|
-| [TL;DR](TLDR.md) | the numbers, in one page |
-| [paper/readme.md](paper/readme.md) | building the paper, verifying the fabric proofs |
-| [paper/TLDR_Paper.md](paper/TLDR_Paper.md) | the architecture brief |
+| [docs/pnm.md](docs/pnm.md) | the detailed documentation: architecture, the paper and its build, the RTL, the harness, every command, the boards, real weights |
+| [docs/pnm.md#2-the-architecture-in-brief](docs/pnm.md#2-the-architecture-in-brief) | the architecture brief |
+| [docs/pnm.md#3-the-paper](docs/pnm.md#3-the-paper) | building the paper and verifying its fabric proofs |
 | [paper/submission/arxiv/](paper/submission/arxiv/) | abstract + self-contained arXiv source |
-| [docs/architecture.md](docs/architecture.md) | the architecture in one screen |
-| [docs/usage_manual.md](docs/usage_manual.md) | every command, option, and workload (including `pnmgate`, the hardware-gated inference) |
-| [docs/profiling.md](docs/profiling.md) | latency model and profiling |
-| [docs/real_weights.md](docs/real_weights.md) | HF-parity results on the real checkpoint |
-| [HDL/README.md](HDL/README.md) | the RTL, the wire format, the compute units |
-| [pcb/README.md](pcb/README.md) | board architecture and wiring |
-| [implementations/README.md](implementations/README.md) | the board-assembly schema |
 
 ## License
 

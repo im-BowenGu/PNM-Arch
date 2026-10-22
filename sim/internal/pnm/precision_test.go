@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-// Precision envelope of the in-process forward pass (docs/real_weights.md):
+// Precision envelope of the in-process forward pass (docs/pnm.md, "Real weights"):
 // the engine accumulates in float32, so these tests bound the rounding error
 // at a sensible reference scale by recomputing the same kernels in float64.
 // The model's own BF16 weights carry ~2^-8 relative quantization, so any

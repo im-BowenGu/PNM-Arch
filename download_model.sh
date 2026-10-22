@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # download_model.sh — fetch a real Gemma 4 26B-A4B checkpoint for the
-# real-weight inference engine (docs/real_weights.md) and for
+# real-weight inference engine (docs/pnm.md, "Real weights") and for
 # `reproduce.sh --real-weights`.
 #
 # Two checkpoints are pinned: the base/pretrained `google/gemma-4-26B-A4B`

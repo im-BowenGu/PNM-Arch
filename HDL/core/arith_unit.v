@@ -902,7 +902,7 @@ module arith_unit #(
                 OP_MAX: s1_minmax_res = s1_both_zero ? {s1_a_sign & s1_b_sign, 31'd0} :
                                         s1_a_nan ? s1_b : s1_b_nan ? s1_a :
                                         (s1_a_gt_b ? s1_a : s1_b);
-                // OP_CMP contract (HDL/README.md:306): (a32 >= b32) ? 1.0 : 0.0.
+                // OP_CMP contract (docs/pnm.md, "The hardware"): (a32 >= b32) ? 1.0 : 0.0.
                 // Equality (a32 == b32) must return 1.0, so use the non-strict test.
                 // Any comparison with a32 NaN is unordered (false) per IEEE 754, so
                 // two identical NaN bit patterns must NOT compare equal.
@@ -1391,7 +1391,7 @@ module arith_unit #(
                     else
                         s2_result <= s1_a_nan ? s1_b : s1_a;
                 end else if (s1_op == OP_CMP) begin
-                    // OP_CMP contract (HDL/README.md:290): (a == b) ? 1.0 : 0.0.
+                    // OP_CMP contract (docs/pnm.md, "The hardware"): (a == b) ? 1.0 : 0.0.
                     // The (s1_a_gt_b || ...) term turned it into ">=" — equality
                     // is the only true condition; larger or smaller must be 0.0.
                     s2_result <= s1_both_zero ? {1'b0, 11'd1023, 52'd0} :

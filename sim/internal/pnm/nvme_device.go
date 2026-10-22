@@ -13,7 +13,7 @@ import (
 // AXI-Lite interface exactly (offsets 0x00-0x3C).
 //
 // The Lustre OSS striping client that previously shared this file is
-// quarantined under archive/ (see archive/README.md).
+// quarantined under archive/ (see docs/pnm.md, "Archived components").
 // ============================================================================
 
 // NVMe command opcodes (must match nvme_ctrl.v localparams).
