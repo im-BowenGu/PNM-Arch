@@ -47,10 +47,14 @@ if [ "$SELF_CHECK" = 1 ]; then
 
     # Repo layout the script anchors on.
     for d in "$ROOT" "$SIM" "$HDL" "$HDL/core" "$ROOT/implementations" \
-             "$ROOT/implementations/boards" "$ROOT/implementations/build" \
-             "$ROOT/paper"; do
+             "$ROOT/implementations/boards" "$ROOT/paper"; do
         [ -d "$d" ] || fail_sc "missing directory: $d"
     done
+
+    # The board build directory is generated output (gitignored), so a fresh
+    # clone does not have it: create it here rather than failing the check.
+    mkdir -p "$ROOT/implementations/build" 2>/dev/null ||
+        fail_sc "cannot create: $ROOT/implementations/build"
 
     # Every path referenced by an iverilog/yosys/gcc/go invocation below.
     for f in \
