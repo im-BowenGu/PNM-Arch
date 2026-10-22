@@ -95,32 +95,26 @@ byte-exact wormhole flit (header, payload, CRC-16, SOP/EOP framing) and that
 the result path and the counters read back. `HDL/tb_host_bmc.v` drives the
 same bridge from a Raspberry Pi model over the SPI adapter.
 
-### Published split repositories
+### Repository layout
 
-This monorepo is the working source of truth. The same content is published
-as six sibling repositories so each component can be cloned on its own:
+This is a single monorepo: one clone holds the manuscript, the RTL, the
+firmware, the co-simulation harness, the board designs and the build system.
+The components are checked against each other in one tree, which is the
+point -- the machine-checked claims in the paper span the RTL, the C
+firmware and the Go harness at once (the firmware's own bus trace is
+replayed against the real gating ASIC; the harness runs the RTL under vvp
+and compares it word for word against a software twin).
 
-| Repo | Contents |
+| Path | Contents |
 |------|----------|
-| [`PNM-HDL`](https://github.com/im-BowenGu/PNM-HDL) | Routing fabric + compute-unit RTL, the compute node, the CPU-less router bridge, `implementations/` board tooling |
-| [`PNM-sim`](https://github.com/im-BowenGu/PNM-sim) | Go co-simulation harness, model compiler, inference client, source-language frontends |
-| [`PNM-fw`](https://github.com/im-BowenGu/PNM-fw) | The host-side C firmware (the dispatch loop the host runs) |
-| [`PNM-PCB`](https://github.com/im-BowenGu/PNM-PCB) | LibrePCB board designs (interconnect, processor, gating ASIC, node) |
-| [`PNM-toolchain`](https://github.com/im-BowenGu/PNM-toolchain) | The host MCU cross-compilation build system |
-| [`PNM-paper`](https://github.com/im-BowenGu/PNM-paper) | Manuscript (`Paper.MD`), build pipeline, submission artifacts |
-
-Re-sync them after changing the monorepo:
-
-```bash
-tools/split_sync.sh            # report what would change (dry run)
-tools/split_sync.sh --apply    # copy the git-tracked files + prune stale ones
-tools/split_sync.sh --apply --commit "message"   # ... and commit in each repo
-```
-
-Only files tracked by git are copied, so generated artifacts can never leak
-into a public repo; each split repo keeps its own `README.md`, `LICENSE` and
-`.gitignore`. The harness resolves its siblings in both layouts, so a
-split checkout runs its own suite: `cd PNM-sim && go run ./cmd/pnmt`.
+| `paper/` | The manuscript (`Paper.MD`), the build pipeline, the submission artifacts and the standalone arXiv bundle |
+| `HDL/` | Verilog-2005: the routing fabric, the compute-node RTL, the per-node gating ASIC, the CPU-less host bridge, and the testbenches |
+| `sim/` | The Go co-simulation harness: model compiler, inference client, source-language front ends, the benchmark and the energy model |
+| `fw/` | The C firmware: the host-side dispatch loop and the embedded management node's firmware |
+| `pcb/` | LibrePCB board designs (interconnect, host bridge, gating ASIC, node) |
+| `implementations/` | Board-assembly tooling: the board schemas and the build script |
+| `toolchain/` | The host MCU cross-compilation build system |
+| `docs/` | The usage manual and the profiling guide |
 
 ## Getting started
 

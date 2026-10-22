@@ -5,15 +5,13 @@ import (
 	"path/filepath"
 )
 
-// SiblingRepo locates a directory that sits next to the harness, in either
-// the monorepo layout or the published split-repo layout:
+// SiblingRepo locates a directory that sits next to the harness:
 //
-//	monorepo:  Paper/sim   ->  Paper/HDL,  Paper/fw
-//	split:     PNM-sim     ->  PNM-HDL,    PNM-fw
+//	Paper/sim   ->  Paper/HDL,  Paper/fw
 //
-// name is the monorepo directory name ("HDL", "fw"). The split repos are
-// tried second, so a monorepo checkout always wins when both exist. The
-// environment overrides PNM_HDL_DIR / PNM_FW_DIR take precedence.
+// name is the directory name ("HDL", "fw"). The environment overrides
+// PNM_HDL_DIR / PNM_FW_DIR take precedence, for a checkout that keeps the
+// components somewhere else.
 func SiblingRepo(name string) string {
 	root := filepath.Dir(SimDir())
 	if v := os.Getenv("PNM_" + upperName(name) + "_DIR"); v != "" {
@@ -22,15 +20,7 @@ func SiblingRepo(name string) string {
 		}
 		return filepath.Join(root, v)
 	}
-	mono := filepath.Join(root, name)
-	if _, err := os.Stat(mono); err == nil {
-		return mono
-	}
-	split := filepath.Join(root, "PNM-"+name)
-	if _, err := os.Stat(split); err == nil {
-		return split
-	}
-	return mono
+	return filepath.Join(root, name)
 }
 
 // upperName turns "HDL" into "HDL" and "fw" into "FW" for the env var name.

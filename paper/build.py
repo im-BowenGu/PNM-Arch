@@ -358,8 +358,9 @@ def stage_arxiv_bundle() -> None:
         "```\n"
         "\n"
         "The open-hardware artifact that backs the paper is published at\n"
-        "https://github.com/im-BowenGu/PNM-Arch (component repositories\n"
-        "`PNM-HDL`, `PNM-sim`, `PNM-fw`, `PNM-PCB`, `PNM-toolchain`).\n"
+        "https://github.com/im-BowenGu/PNM-Arch -- one repository holding the\n"
+        "manuscript, the RTL, the C firmware, the co-simulation harness, the\n"
+        "board designs and the build system.\n"
         + (f"\nAbstract:\n\n{abstract}" if abstract else ""),
         encoding="utf-8")
 
