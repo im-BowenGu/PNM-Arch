@@ -25,8 +25,10 @@ package pnm
 // 256-column router slice) so the whole composition stays inside a cycle
 // budget; every stage is still bit-exact against the software twin, and the
 // ASIC's top-1 must be inside the software router's top-8 at the same width.
+// When PNM_MODEL_DIR is set the chain runs on the real fused checkpoint;
+// otherwise on the deterministic synthetic fixture (comp_model.go).
 //
-// Requires PNM_MODEL_DIR (the real fused checkpoint), iverilog and vvp.
+// Requires iverilog and vvp.
 
 import (
 	"fmt"
@@ -95,24 +97,13 @@ func sliceRouterInput(x []float32, scale []float32) []float32 {
 }
 
 func TestRouterFabricNodeCompositionMultiLayer(t *testing.T) {
-	modelDir := os.Getenv("PNM_MODEL_DIR")
-	if modelDir == "" {
-		t.Skip("PNM_MODEL_DIR not set (needs the real Gemma-4 checkpoint)")
-	}
 	if _, err := exec.LookPath("iverilog"); err != nil {
 		t.Skip("iverilog not found (enter `nix develop`)")
 	}
 	if _, err := exec.LookPath("vvp"); err != nil {
 		t.Skip("vvp not found (enter `nix develop`)")
 	}
-	vocab, err := LoadBPEVocab(modelDir + "/tokenizer.json")
-	if err != nil {
-		t.Skipf("no tokenizer (needs the real checkpoint): %v", err)
-	}
-	g, err := loadRealGemmaModel(modelDir, vocab)
-	if err != nil {
-		t.Fatal(err)
-	}
+	g := loadCompositionModel(t)
 	H := g.cfg.TextConfig.HiddenSize
 	numExp := g.cfg.TextConfig.NumExperts
 	effFull := g.cfg.TextConfig.MoEIntermediateSize

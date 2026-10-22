@@ -17,8 +17,9 @@ cd paper && python3 build.py
 ```
 
 The open-hardware artifact that backs the paper is published at
-https://github.com/im-BowenGu/PNM-Arch (component repositories
-`PNM-HDL`, `PNM-sim`, `PNM-fw`, `PNM-PCB`, `PNM-toolchain`).
+https://github.com/im-BowenGu/PNM-Arch -- one repository holding the
+manuscript, the RTL, the C firmware, the co-simulation harness, the
+board designs and the build system.
 
 Abstract:
 

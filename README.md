@@ -1,436 +1,104 @@
 # Breaking the HBM wall
 
-> An open-source distributed spatial Processing-Near-Memory architecture built
-> from commodity LPDDR6 CAMM2 modules, mature-node DUV MAC ASICs, and a
-> deterministic single-spine wormhole routing fabric.
+> Replace HBM with commodity 192-bit LPDDR6 CAMM2 (~$16/GB, ~24× cheaper per
+> byte) paired with mature-node DUV MAC ASICs on a deterministic single-spine
+> wormhole fabric — 512 nodes, 64 TB, ~262 TB/s, no runtime scheduling, no
+> cache coherency, and a hardware doorbell that fires on byte count, CRC, and
+> destination match.
 
-**Paper:** [*Breaking the HBM wall*](paper/readme.md) · [TL;DR](TLDR.md) · [Architecture brief](paper/TLDR_Paper.md)
+**TL;DR:** [TLDR.md](TLDR.md) · **Architecture:** [docs/architecture.md](docs/architecture.md) · **Manual:** [docs/usage_manual.md](docs/usage_manual.md)
 
-## What this is
+## The paper
 
-This repository is an open-source hardware project: a complete, manufacturable
-design for a distributed PNM machine — from Verilog RTL through PCB assembly
-to firmware and host drivers — built around the architecture described in the
-paper.
+***Breaking the HBM wall*** — a distributed spatial Processing-Near-Memory
+architecture. The manuscript, its build pipeline, and the submission artifacts
+are in [`paper/`](paper/); the abstract and a self-contained arXiv source
+package are in [`paper/submission/arxiv/`](paper/submission/arxiv/).
 
-The paper proves the routing fabric is lossless, deterministic, and correctly
-gated by the doorbell mechanism. This repository contains everything needed to
-build it: the HDL, the PCB designs, the co-simulation harness, the firmware,
-and the host drivers.
+Five contributions:
 
-## The architecture in 30 seconds
+1. **An architecture specification** — the single-spine deterministic wormhole
+   fabric with dimension-order on-board paths, the doorbell activation
+   discipline, and the reference 512-node / 64 TB chassis, with closed-form
+   latency and spine-sizing rules.
+2. **An ahead-of-time compilation pipeline** that lowers HuggingFace
+   safetensors models and typed source-language IRs onto physical coordinates,
+   with capacity-aware expert placement and static dispatch schedules.
+3. **A machine-checking methodology** — a cycle-exact co-simulation of the
+   Verilog fabric whose five oracles check byte conservation, zero misroutes,
+   doorbell accounting against an independent software twin, kernel results
+   against a golden model, and exact closed-form latency.
+4. **An explicit validation-scope discipline** — every bandwidth, power, and
+   cost figure is labeled a projection; every machine-checked claim is
+   enumerated.
+5. **An open artifact** — the Verilog fabric, the compute-unit library, a
+   CPU-less router bridge with a host link, matching Go and C firmware linked
+   by a shared dispatch-plan wire format, the model compiler, PCB and
+   assembly models, and a reproducible test suite.
+
+## The architecture
 
 | | |
 |---|---|
 | **Problem** | GPU/HBM monoliths cost ~$375/GB (H100-class), are capacity-capped by interposer reticle limits, and spend most energy on data movement |
-| **Solution** | Replace HBM with commodity 192-bit LPDDR6 CAMM2 (~$16/GB, ~24× cheaper per byte), each paired with a mature-node DUV MAC ASIC on a rigid X/Y grid |
-| **Reference chassis** | 512 nodes (8 layers × 8×8 grid) · 64 TB · ~262 TB/s aggregate · ~197 TFLOPS FP64 |
+| **Solution** | Commodity 192-bit LPDDR6 CAMM2 + a mature-node DUV MAC ASIC per node, on a rigid X/Y grid |
+| **Reference chassis** | 512 nodes (8 layers × 8×8) · 64 TB · ~262 TB/s aggregate · ~197 TFLOPS FP64 · 8–10 kW |
 | **Hardware** | Four kinds: DRAM modules, MAC ASICs, stateless flit repeaters, one CPU-less router bridge the host drives |
 | **Routing** | Source-routed wormhole, O(1) coordinate arithmetic, deterministic latency, no runtime scheduling |
-| **Gate** | Hardware doorbell: three-condition fire (byte count, CRC, destination match) — sub-microsecond activation, no software interrupt |
+| **Gate** | Hardware doorbell: three-condition fire — sub-microsecond activation, no software interrupt |
+
+The router bridge has **no processor**: the host (a Raspberry Pi over the SPI
+adapter, or any third-party microcontroller) runs the boot sequence, the
+weight upload, and the dispatch loop.
 
 ## Repository layout
 
 ```
-paper/                  ← The paper + its proofs
-  Paper.MD                manuscript source (Markdown, LaTeX-escaped)
-  TLDR_Paper.md           architecture brief
-  build.py                build pipeline → submission/*.docx
-  submission/             generated artifacts (DOCX, PDF, TeX)
-  HDL/                    routing fabric RTL + verification testbenches
-
-HDL/                    ← Full Verilog fabric (RTL + all compute units)
-  core/                   compute primitives (FMA, ALU, MAC, systolic arrays)
-  (plus all routing gates, the host bridge, memory models, PHYs, testbenches)
-
-pcb/                    ← Manufacturable PCB assembly
-  README.md               board architecture (spine, host bridge, gating, NVMe)
-  interconnect_board/     spine pass-through (SEARAY 12G), LXY repeaters, mezzanines
-  host_bridge/            the host bridge board (Pi Bridge SPI / PCIe)
-  gating_asic/            MoE gating ASIC + DRAM + the embedded management node header
-
-sim/                    ← Go co-simulation harness (stdlib only)
-  cmd/pnm/                orchestrator + verification scenarios
-  cmd/pnmc/               program compiler + model compiler + driver CLI
-  cmd/pnmhost/            unified host driver (all workloads)
-  cmd/pnmgate/            hardware-gated inference (real router on the Gating ASIC, vvp)
-  cmd/pnmsrc/             source-language front end (R / Haskell / HLSL)
-  cmd/haskell_pnm/        Haskell → PNM compiler + co-simulation runner
-  cmd/r_pnm/              R → PNM compiler + co-simulation runner
-  cmd/hlsl_pnm/           HLSL → PNM compiler + co-simulation runner
-  internal/pnm/           harness library (topology gen, doorbell, DES, RNG)
-  examples/               test configs (gemma4_test_synthetic, mini_glm_moe)
-
-fw/                       C firmware port for MCU targets
-toolchain/                host MCU cross-build system
-pi_host/                  Raspberry Pi Compute Module host drivers
-
-implementations/        ← Board netlist assembly + schema
-docs/                   ← Usage manual, profiling guide
+paper/                    the manuscript, build pipeline, submission + arXiv bundle
+HDL/                      Verilog-2005 RTL: the fabric, the compute node, the
+                          gating ASIC, the host bridge, memory models, testbenches
+sim/                      Go co-simulation harness (stdlib only): model compiler,
+                          inference client, source-language front ends, benchmarks
+fw/                       C firmware: host-side dispatch, the plan codec, the
+                          embedded management node
+pcb/                      LibrePCB board designs (interconnect, host bridge,
+                          gating ASIC, node)
+implementations/          board netlist assembly (JSON schemas + build script)
+toolchain/  pi_host/      MCU cross-build · Raspberry Pi host drivers
+docs/                     usage manual, architecture summary, profiling guide
 ```
 
-### The host side: who runs the firmware
+## Build and run
 
-The router bridge has **no processor**. The host --- a Raspberry Pi over the
-SPI adapter, or any third-party microcontroller over the same byte-level host
-link --- runs the boot sequence, the weight upload, and the dispatch loop.
-The repository ships that firmware in two forms: a Go reference model (the
-co-simulation's golden implementation) and a C port with static allocation
-only, no `malloc`, and no OS dependency, so the same binary runs on a Pi, on an
-MCU, or on a workstation.
-
-| Piece | Where | What it is |
-|-------|-------|------------|
-| `HDL/pnm_host_bridge.v` | the chip | the router engine, the SRAM and the host register window |
-| `HDL/pi_bridge.v` | the chip | the SPI adapter that turns a Raspberry Pi into the host link |
-| `HDL/pnm_arb.v` | the chip | the register-window arbiter |
-| `fw/pnm_fw.c` | the host | the C port of the dispatch firmware (static allocation) |
-| `sim/internal/pnm/firmware.go` | the host | the Go reference the C port is checked against |
-| `pi_host/` | the host | the Raspberry Pi drivers (C, Go, Rust, Python) |
-| `toolchain/mcu/` | the host | the cross-build system for a third-party RISC-V MCU |
-
-**What is machine-checked.** `HDL/tb_pnm_host_bridge.v` plays the host: it
-writes the routing and payload registers and checks that the chip emits a
-byte-exact wormhole flit (header, payload, CRC-16, SOP/EOP framing) and that
-the result path and the counters read back. `HDL/tb_host_bmc.v` drives the
-same bridge from a Raspberry Pi model over the SPI adapter.
-
-### Repository layout
-
-This is a single monorepo: one clone holds the manuscript, the RTL, the
-firmware, the co-simulation harness, the board designs and the build system.
-The components are checked against each other in one tree, which is the
-point -- the machine-checked claims in the paper span the RTL, the C
-firmware and the Go harness at once (the firmware's own bus trace is
-replayed against the real gating ASIC; the harness runs the RTL under vvp
-and compares it word for word against a software twin).
-
-| Path | Contents |
-|------|----------|
-| `paper/` | The manuscript (`Paper.MD`), the build pipeline, the submission artifacts and the standalone arXiv bundle |
-| `HDL/` | Verilog-2005: the routing fabric, the compute-node RTL, the per-node gating ASIC, the CPU-less host bridge, and the testbenches |
-| `sim/` | The Go co-simulation harness: model compiler, inference client, source-language front ends, the benchmark and the energy model |
-| `fw/` | The C firmware: the host-side dispatch loop and the embedded management node's firmware |
-| `pcb/` | LibrePCB board designs (interconnect, host bridge, gating ASIC, node) |
-| `implementations/` | Board-assembly tooling: the board schemas and the build script |
-| `toolchain/` | The host MCU cross-compilation build system |
-| `docs/` | The usage manual and the profiling guide |
-
-## Getting started
-
-Requires [Nix](https://nixos.org) with flake support (`nix develop`).
+Requires [Nix](https://nixos.org) with flake support.
 
 ```bash
-nix develop                  # enter environment (iverilog, go, pdflatex, pandoc)
+nix develop                                    # iverilog, go, pdflatex, pandoc
+cd sim && go run ./cmd/pnmt                    # the whole test suite
+cd sim && go run ./cmd/pnm                     # fabric co-simulation (48 nodes)
+bash reproduce.sh                              # every step, end to end
+python3 paper/build.py                         # the paper (docx, pdf, arXiv bundle)
 ```
 
-| What you want | Where to go |
-|---------------|-------------|
-| Build the paper | [`paper/readme.md`](paper/readme.md) |
-| Verify fabric proofs (paper) | [`paper/readme.md`](paper/readme.md#verifying-the-fabric-paper-proofs) |
-| Run co-simulation | [Simulation](#simulation) below |
-| Run HPC workloads | [Simulation → HPC workloads](#hpc-workloads) below |
-| Build hardware | [Build system](#build-system) below |
-
-## Simulation
-
-The co-simulation harness compiles a Go stimulus program into Verilog
-testbenches, runs them through `iverilog`/`vvp` in parallel slices, then
-verifies byte-exact delivery against a golden model. Every scenario
-checks all five properties the paper proves.
-
-### Co-simulation (6 scenarios at any chassis scale)
-
-```bash
-cd sim
-go run ./cmd/pnm                  # 3×4×4 = 48 nodes, all 6 scenarios
-go run ./cmd/pnm -l 8 -x 8 -y 8  # 512-node reference chassis
-```
-
-Scenarios: `sweep` (exact closed-form latency), `vcsweep` (all VC classes),
-`load` (500 flits, lossless), `hotspot` (MoE hot expert), `stress` (3%
-corrupt CRC the doorbell must reject), `replay` (bit-identical determinism).
-
-### Unified host driver (`pnmhost`)
-
-A single entry point for all PNM workloads — scenarios, HPC benchmarks,
-programs, model compilation, and LLM inference — with timestamped logging
-and structured result export:
-
-```bash
-go run ./cmd/pnmhost/ scenario sweep load stress -output results/
-go run ./cmd/pnmhost/ workload matvec -l 4 -x 4 -y 4 -frag 32
-go run ./cmd/pnmhost/ program examples/bias_add.pnm
-go run ./cmd/pnmhost/ model examples/gemma4_test_synthetic -o results/
-go run ./cmd/pnmhost/ inference examples/gemma4_test_synthetic "Hello" -max-tokens 16
-```
-
-See [`docs/usage_manual.md`](docs/usage_manual.md#unified-host-driver)
-for full command reference and all options.
-
-### Real-weight inference (Gemma 4 26B-A4B)
-
-The harness runs the **actual Gemma 4 26B-A4B checkpoint** — a pure-Go BF16
-forward pass with bf16 store emulation, no torch/transformers — and is
-greedy-token-identical to a Hugging Face / vLLM reference on the tested chat
-prompts:
-
-```bash
-HF_TOKEN=hf_xxx ./download_model.sh                 # gated, ~52 GB, SHA-256 verified
-cd sim && go run ./cmd/pnmhost inference "$PNM_MODEL_DIR" \
-    "What is the capital of Germany" -max-tokens 32
-# -> real-weights forward: "The capital of Germany is Berlin.<turn|>"   (stops on <turn|>)
-```
-
-The downloader is also wired into `./reproduce.sh --real-weights`. See
-[`docs/real_weights.md`](docs/real_weights.md) for the HF parity results
-(Germany and France chat token-for-token through the stop), the benchmark, and
-the RTL proofs of concept — a real router-weight tile executed on the BF16 FMA
-systolic array under `vvp` bit-exact, and the full RTL decoder block
-(attention, dense MLP, MoE top-2) bit-exact against a BF16 reference on real
-layer-0 slices.
-
-### Node compute ASIC (`HDL/core/node.v`)
-
-`node.v` is the compute node of the node network: one MoE expert pass
-(gate/up → swiglu → down) on the same BF16 fused-FMA datapath as the router.
-Its `CU_TYPE` parameter selects the embedded numeric ASIC behind a shared
-accumulate interface, so the one source builds as BF16 / FP16 / FP32 / FP64 /
-INT8 / INT4 / FP4 / MXFP4 nodes. Bit-exact validation
-(`HDL/core/node_reference_test.py`, `--cu N`) covers BF16 and INT8 against
-exact oracles, plus a real layer-0 expert; the format-specific boards live in
-`implementations/boards/node_{bf16,fp32,int8,fp4}.json`.
-
-### Hardware-gated inference (`pnmgate`)
-
-`pnmgate` routes selected MoE layers through the **RTL Gating ASIC**
-(`HDL/core/gating_asic.v`) running under `vvp`: it loads the layer's real
-`router.proj.weight` rows into the ASIC's on-chip RAM over the register bus,
-runs the gating network (all 128 expert logits + top-k, BF16 fused-FMA)
-on the ASIC, feeds the ASIC logits back into the Go engine's softmax/MoE, and
-runs the rest of the forward pass on the CPU over the real weights:
-
-```bash
-cd sim && go run ./cmd/pnmgate -model "$PNM_MODEL_DIR" -layers 0 -width 256 \
-    "What is the capital of Germany"
-# -> answer: "The capital of Germany is Berlin.<turn|>"   (same as the software engine)
-```
-
-`-width` sets the projection width loaded into the ASIC (256 = the paper's
-gating-SRAM tile; `-width 2816` = full hidden). `-layers 0,7,14` gates several
-layers, `-prefill-last=false` gates every prompt position. Needs `iverilog`/`vvp`
-(`nix develop`) and `./reproduce.sh --real-weights` exercises it end-to-end.
-
-Add `-network` to dispatch the ASIC's selected experts over the **node-network
-fabric RTL** (`HDL/`: `hfr`/`flit_gate`/`xy_turn`/`node_eject`/...): each
-top-k expert becomes a routed flit on the X/Y grid and `RunOne` proves
-byte-exact delivery to the expert node (and per-node kernel correctness) before
-the expert math runs on the CPU:
-
-```bash
-cd sim && go run ./cmd/pnmgate -model "$PNM_MODEL_DIR" -layers 0 -width 256 \
-    -network "Hello"
-# -> asic L0 top-k experts: [109 103 51 41 1 79 4 56]
-# -> network: 8 packets, 8 doorbell activations, 304 DMA bytes, latency 40/41/43 cyc
-# -> network: PASS — byte-exact to the expert nodes
-```
-
-`-net-bx/-net-by` set the chassis grid, `-net-layers` the chassis depth
-(default: cover the gated layers), `-net-replays 2` checks determinism. Expert
-`e` of layer `l` maps to node `(l, e mod bx, (e/bx) mod by)`.
-
-Note on checkpoints: `/data/gemma4_dl/complete` is the **base/pretrained**
-`google/gemma-4-26B-A4B` — it completes/echoes and never reasons, so for
-instruction-following runs point `-model` at the bf16 instruction-tuned model
-built from the FP8 export (`/data/ai/models/gemma-4-26b-a4b-it-bf16-fused`,
-converted with `tools/dequant_fp8.py` + `tools/fuse_experts.py`). The IT model
-opens its `thought` channel on its own (first token is `<|channel>`), so its
-`generation_config` (`do_sample, temperature 1.0, top_k 64, top_p 0.95`) is
-what governs output; use `-temp 0.7` for a serving-style answer and `-think` to
-see the reasoning trace.
-
-`./compare_vllm.sh` runs this engine and the official vLLM stack (the FP8 IT
-checkpoint) in parallel on the same prompt, chat template and sampling params —
-on the IT weights both sides produce essentially the same reasoning
-(`<|channel>thought\n* Topic 1: Dataflow Architecture.…`, first 13 tokens
-identical, a near-tie fork that reconverges).
-
-### Source-language compilation
-
-A subset of Haskell, R, and HLSL compiles to PNM dispatch instructions
-on the chassis: Haskell and R through an FP64 IR, HLSL through an FP32
-ALU IR that is lowered to the same `f64_*` kernels for dispatch.
-
-`pnmsrc` is the client-side front end for all three languages (the
-language comes from `-lang` or the file extension):
-
-```bash
-cd sim
-go run ./cmd/pnmsrc examples/hello.hs -l 2 -x 2 -y 2 -run -inputs x=4,y=7
-go run ./cmd/pnmsrc examples/hello.R -l 2 -x 2 -y 2 -run -inputs x=4,y=7
-go run ./cmd/pnmsrc examples/hello.hlsl -l 2 -x 2 -y 2 -run -inputs x=4,y=7
-```
-
-The per-language binaries `haskell_pnm`, `r_pnm` and `hlsl_pnm` are thin
-wrappers over the same front end, so the three languages cannot drift apart.
-
-Each operation (add, mul, fma, ...) maps to a node running an `f64_*`
-kernel, with operands packed in the FP64 payload format in token
-payloads. HLSL's internal IR targets the FP32 ALU and is lowered to
-`f64_*` kernels for dispatch compatibility; Haskell and R compile
-through the FP64 IR directly.
-See [`docs/usage_manual.md`](docs/usage_manual.md#haskell-to-pnm-compilation)
-for the full syntax reference and three-column comparison table.
-
-### HPC workloads
-
-Five built-in HPC benchmarks exercise different routing patterns:
-
-| Workload | Routing pattern | Description |
-|----------|----------------|-------------|
-| `jacobi5` | Intra-layer X→Y dimension-order | 5-point Jacobi stencil, one grid point per node |
-| `matvec` | Spine descent (cross-layer) | Matrix-vector product, row-per-node weight-stationary |
-| `reduction` | Reverse-path merge (egress→Y→X→spine) | Merge tree collecting partial sums |
-| `broadcast` | Spine descent + X→Y fan-out | Weight distribution from root to every node |
-| `nbody` | All paths saturated (worst case) | O(N²) all-pairs interaction, limited to 64 nodes |
-
-```bash
-go run ./cmd/pnmc workload jacobi5 -l 1 -x 4 -y 4 -run
-go run ./cmd/pnmc workload matvec -l 4 -x 4 -y 4 -frag 16 -run
-go run ./cmd/pnmc workload reduction -l 4 -x 4 -y 4 -frag 32 -run
-go run ./cmd/pnmc workload broadcast -l 4 -x 4 -y 4 -frag 64 -run
-go run ./cmd/pnmc workload nbody -l 4 -x 2 -y 2 -frag 8 -run
-```
-
-Or via the unified driver:
-```bash
-go run ./cmd/pnmhost/ workload matvec -l 4 -x 4 -y 4 -frag 32
-```
-
-### Data output and logging
-
-All simulation tools support structured output (CSV/JSON) and timestamped
-logging. Add `--output <dir>` to any command:
-
-```bash
-go run ./cmd/pnm --output results/                              # scenario CSV/JSON
-go run ./cmd/pnmc run-driver examples/gemma4_test_synthetic -o results/   # dispatch CSV
-go run ./cmd/pnmhost/ scenario sweep -output results/ -log results/run.log
-```
-
-See [`docs/usage_manual.md`](docs/usage_manual.md#data-output-and-logging)
-for the full list of output files and their schemas.
-
-### HDL testbenches
-
-The paper-verification subset lives in [`paper/HDL/`](paper/HDL/).
-The full test suite (30+ testbenches) lives in [`HDL/`](HDL/):
-
-```bash
-cd HDL
-# See HDL/README.md for the full list
-```
-
-## Build system
-
-The build pipeline turns Verilog modules into a complete, simulable board
-assembly, and the PCB tools turn that into physical hardware.
-
-### RTL assembly (`implementations/`)
-
-JSON schemas describe a board: which silicon sits where, which traces join
-them, how clock gating and reset synchronization are wired. The builder
-validates every connection against the actual Verilog port lists, then emits
-a wrapper, testbench, and filelist.
-
-```bash
-python3 implementations/build_asm.py implementations/boards/node_board.json
-python3 implementations/build_asm.py implementations/boards/node_board.json --lint    # verilator only
-python3 implementations/build_asm.py implementations/boards/node_board.json --no-sim  # emit only
-
-# node compute variants (same node.v, different CU_TYPE/WIDTH)
-python3 implementations/build_asm.py implementations/boards/node_bf16.json
-python3 implementations/build_asm.py implementations/boards/node_int8.json
-```
-
-See [`implementations/schema.md`](implementations/schema.md) for the
-`pnm-assembly/v1` format and [`implementations/README.md`](implementations/README.md)
-for the full reference.
-
-### PCB design (`pcb/`)
-
-Four boards, all LibrePCB (open-source EDA), 4-layer stackup:
-
-| Board | What it is | Generator |
-|-------|-----------|-----------|
-| `interconnect_board` | Spine fabric: SEARAY 12G pass-through taps (one byte-wide lane each), LXY repeaters, HFR pipe stages | `gen_schematic.py` (fixed variant; `gen_topology.py` explores parameterized layouts) |
-| `host_bridge` | Host bridge: the CPU-less PNM router bridge + Pi Bridge (SPI) / PCIe + M.2 NVMe | manual placement |
-| `gating_asic` | MoE gating + DRAM (LPCAMM2 socket or soldered LPDDR5) + the embedded management node mezzanine | manual placement |
-| `pnm_node` | Compute node: MAC ASIC (LGA-830) + LPCAMM2 socket | manual placement |
-
-```bash
-python3 pcb/interconnect_board/gen_schematic.py
-```
-
-Open any `.lpp` in LibrePCB to place footprints, route, run DRC, and
-export Gerber + drill + BOM. See [`pcb/README.md`](pcb/README.md) for
-board architecture and wiring.
-
-### Firmware
-
-The firmware is the host's, not the chip's:
-
-| Piece | Target | ISA | Output |
-|-------|--------|-----|--------|
-| `fw/pnm_fw.c` | the dispatch loop (host side) | portable C11 | the C port of the Go reference firmware |
-| `toolchain/mcu/` | a third-party RISC-V MCU acting as the host | RV32I | `firmware.bin` |
-| `sim/internal/pnm/firmware.go` | the Go reference model | Go | the golden implementation the C port is checked against |
-
-Build the MCU firmware with `make` in `toolchain/mcu/`. See
-[`docs/usage_manual.md`](docs/usage_manual.md) for details.
-
-### Boot sequence
-
-```
-host firmware → POST discovery → routing tables → weights → MoE gating → dispatch
-```
-
-The host firmware discovers the POST chain, loads the routing tables and the
-MoE expert maps through the bridge's register window, then dispatches
-workloads into the fabric. The same firmware runs on a Raspberry Pi (over the
-SPI adapter), on a third-party MCU, or in the co-simulation.
-
-## Manufacturable design
-
-Everything outside `paper/` is the production design:
-
-| Directory | What it contains | License |
-|-----------|-----------------|---------|
-| `HDL/` | Full Verilog-2005 fabric: routing gates, compute units (BF16/FP16/FP32/FP64 FMA, FP32 ALU, INT8/INT4/FP4/MXFP4 MAC + systolic arrays, weight dequant), the CPU-less router bridge, memory controllers, PHYs, testbenches | CERN-OHL-S v2 |
-| `pcb/` | PCB assembly: interconnect board (SEARAY 12G spine taps; ≈2 TB/s aggregate across 128 parallel lanes per the paper's spine sizing rule), host bridge board (Pi Bridge SPI / PCIe), gating ASIC board (MoE + DRAM + the embedded management node header) | CERN-OHL-S v2 |
-| `sim/` | Go co-simulation, model compiler (HuggingFace → PNM), inference client, firmware (Go), source-language compilers (R/Haskell/HLSL) | AGPL-3.0 |
-| `fw/` | C firmware port for MCU targets (ARM Cortex-M/R, RISC-V) | AGPL-3.0 |
-| `toolchain/` | MCU/SoC cross-compilation build systems | AGPL-3.0 |
-| `pi_host/` | Raspberry Pi Compute Module host drivers (Python/Go/Rust/C) | AGPL-3.0 |
-| `implementations/` | Board netlist assembly, build scripts, schema | AGPL-3.0 |
-| `docs/` | Usage manual, profiling guide | AGPL-3.0 |
-
-The host bridge board supports two host attaches selected by solder jumpers:
-- **Pi Bridge** — SPI slave for Raspberry Pi CM0-CM4 host access
-- **PCIe** — Gen5 x16 for a workstation or server host
-
-The bridge die itself has no processor: the host runs the boot sequence, the
-weight upload and the dispatch loop.
-
-The gating board carries the MoE gating ASIC with DRAM options:
-- **LPCAMM2 socket** (default) — field-replaceable, up to 64 GB
-- **Soldered LPDDR5** — compact, lower cost
-
-and a mezzanine for the **embedded management node** (an MCU or a Pi Compute
-Module). With that mezzanine populated the board manages its own gating ASIC
-and reaches the memory behind it locally; with it empty the host manages the
-gating ASIC over the fabric. Same silicon either way — a `MGMT_SEL` strap
-picks the manager (see `pcb/README.md`, "Two management modes").
+Real checkpoint weights are optional: `./download_model.sh` fetches the gated
+Gemma-4-26B-A4B checkpoint, and `reproduce.sh --real-weights` runs the
+real-slice checks. Nothing in the default suite needs it.
+
+## Links
+
+| | |
+|---|---|
+| [TL;DR](TLDR.md) | the numbers, in one page |
+| [paper/readme.md](paper/readme.md) | building the paper, verifying the fabric proofs |
+| [paper/TLDR_Paper.md](paper/TLDR_Paper.md) | the architecture brief |
+| [paper/submission/arxiv/](paper/submission/arxiv/) | abstract + self-contained arXiv source |
+| [docs/architecture.md](docs/architecture.md) | the architecture in one screen |
+| [docs/usage_manual.md](docs/usage_manual.md) | every command, option, and workload (including `pnmgate`, the hardware-gated inference) |
+| [docs/profiling.md](docs/profiling.md) | latency model and profiling |
+| [docs/real_weights.md](docs/real_weights.md) | HF-parity results on the real checkpoint |
+| [HDL/README.md](HDL/README.md) | the RTL, the wire format, the compute units |
+| [pcb/README.md](pcb/README.md) | board architecture and wiring |
+| [implementations/README.md](implementations/README.md) | the board-assembly schema |
 
 ## License
 
@@ -439,5 +107,5 @@ Three-way split, see [LICENSE](LICENSE):
 | Scope | License |
 |-------|---------|
 | `paper/` (manuscript, build pipeline, submission) | CC BY-SA 4.0 |
-| `HDL/`, `paper/HDL/`, `pcb/` (Verilog RTL, PCB designs) | CERN-OHL-S v2 |
-| Everything else (`sim/`, `implementations/`, `docs/`, toolchains) | AGPL-3.0-or-later |
+| `HDL/`, `pcb/` (Verilog RTL, PCB designs) | CERN-OHL-S v2 |
+| Everything else (`sim/`, `fw/`, `docs/`, toolchains) | AGPL-3.0-or-later |

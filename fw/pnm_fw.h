@@ -3,8 +3,8 @@
  *
  * This runs as microcode on the router chip's embedded processor.
  * It manages the boot sequence (POST discovery, routing table load,
- * weight upload, MoE gating load) and runtime inference dispatch
- * (dense path, MoE gating, top-K expert selection, KV cache).
+ * weight upload, MoE gating load) and then executes the dispatch plan
+ * the host compiler produced (see plan.h) — the device never re-plans.
  *
  * Supports: bf16_fma, fp16_fma, fp32_fma, fp64_fma, fp32_alu,
  *           int8_mac, bf16_mac_array, fp16_mac_array,
@@ -210,23 +210,6 @@ typedef struct {
     int num_layers;           /* physical spine layers                   */
     int model_layers_per_physical; /* model layers per physical layer    */
     int num_hidden_layers;    /* actual model layers (0 = unknown, use mpl*num_layers) */
-
-    /* Flash attention config (mirrors Go DefaultFlashAttnConfig) */
-    int flash_attn_enabled;   /* 1 = tiled flash attention (default)     */
-    int flash_tile_size_kv;   /* KV tile size for flash attention        */
-    int seq_pos[PNM_MAX_MODEL_LAYERS]; /* per-model-layer sequence position (mirrors Go SeqPositions[ml]) */
-
-    /* Per-model-layer sliding window (mirrors Go layerIsSliding): 0 = full
-     * attention (window_start = -1), > 0 = sliding-window size for that model
-     * layer.  Populated from the model's per-layer attention type; layers not
-     * configured default to full attention. */
-    int sliding_window[PNM_MAX_MODEL_LAYERS];
-
-    /* GQA configuration (mirrors Go KVCache.ConfigureGQA / DispatchRecord):
-     * 0 = unknown/disabled, in which case repeat_kv is 0 on all records. */
-    int num_attention_heads;
-    int num_kv_heads;
-    int head_dim;
 } firmware_t;
 
 /* ── Dispatch Record ───────────────────────────────────────────────── */
@@ -264,10 +247,9 @@ int  fw_boot_routing_table(firmware_t *fw);
 int  fw_boot_weight_upload(firmware_t *fw);
 int  fw_boot_moe_load(firmware_t *fw);
 
-/* Inference dispatch — plans one token through all layers */
-int  fw_plan_inference(firmware_t *fw, const uint8_t *token,
-                       int token_len, dispatch_record_t *records,
-                       int max_records, int *num_records);
+/* Inference dispatch — the plan is compiled on the host (sim/internal/pnm/
+ * plan.go) and received as bytes; decode with fw_plan_decode (plan.h), apply
+ * with fw_plan_apply, and validate with fw_verify_dispatch below. */
 
 /* Verification */
 int  fw_verify_weight_upload(firmware_t *fw);

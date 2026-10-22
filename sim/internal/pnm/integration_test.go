@@ -1,6 +1,7 @@
 package pnm
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"os/exec"
@@ -399,82 +400,96 @@ func TestIntegration_CBootPhases(t *testing.T) {
 	}
 }
 
-// TestIntegration_CMoeGating verifies the C firmware's deterministic top-k
-// MoE gating (select_topk in pnm_fw.c) matches the Go reference selectTopExperts
-// bit-for-bit for several (token, layer) inputs.
-func TestIntegration_CMoeGating(t *testing.T) {
+// TestIntegration_CPlanWire checks the dispatch plan as data: the Go planner
+// is the single source of the plan, the C firmware decodes it, validates it
+// against its own verifier, and re-encodes it byte-identically.  If the Go
+// and C wire formats ever diverged, this fails -- the two sides can no
+// longer silently disagree on what a dispatch means.
+func TestIntegration_CPlanWire(t *testing.T) {
 	fwDir := SiblingRepo("fw")
-	if _, err := os.Stat(filepath.Join(fwDir, "test_moe_gating.c")); os.IsNotExist(err) {
-		t.Skip("fw/test_moe_gating.c not found")
+	if _, err := os.Stat(filepath.Join(fwDir, "test_plan_wire.c")); os.IsNotExist(err) {
+		t.Skip("fw/test_plan_wire.c not found")
 	}
 	gcc := gccPath()
 	if gcc == "" {
 		t.Skip("gcc not found in PATH")
 	}
 
-	bin := filepath.Join(os.TempDir(), "test_moe_gating_c")
+	bin := filepath.Join(os.TempDir(), "test_plan_wire_c")
 	if runtime.GOOS == "windows" {
 		bin += ".exe"
 	}
 
 	cmd := exec.Command(gcc, "-Wall", "-Wextra", "-std=c11",
-		"-o", bin, "test_moe_gating.c", "pnm_fw.c")
+		"-o", bin, "test_plan_wire.c", "plan.c", "pnm_fw.c")
 	cmd.Dir = fwDir
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		t.Fatalf("test_moe_gating.c compile failed: %v\nOutput: %s", err, out)
+		t.Fatalf("test_plan_wire.c compile failed: %v\nOutput: %s", err, out)
 	}
 
-	cmd = exec.Command(bin)
+	// A real per-token plan from the Go planner, encoded to the wire form.
+	drv := newTestDriver(t, Dims{Layers: 4, Bx: 4, By: 4})
+	fw := bootFirmware(t, drv)
+	records, err := fw.PlanInference([]byte("the quick brown fox"))
+	if err != nil {
+		t.Fatalf("PlanInference: %v", err)
+	}
+	hdr := fw.PlanHeader()
+	planBytes, err := EncodePlan(hdr, records)
+	if err != nil {
+		t.Fatalf("EncodePlan: %v", err)
+	}
+
+	planPath := filepath.Join(os.TempDir(), "pnm_plan_wire.bin")
+	rePath := filepath.Join(os.TempDir(), "pnm_plan_wire_re.bin")
+	if err := os.WriteFile(planPath, planBytes, 0o644); err != nil {
+		t.Fatalf("write plan: %v", err)
+	}
+	os.Remove(rePath)
+
+	cmd = exec.Command(bin, planPath, rePath)
 	cmd.Dir = fwDir
 	out, err = cmd.CombinedOutput()
 	if err != nil {
-		t.Fatalf("test_moe_gating run failed: %v\nOutput: %s", err, out)
+		t.Errorf("the C firmware failed on the plan: %v\nOutput: %s", err, out)
 	}
-	if !strings.Contains(string(out), "RESULT: ALL PASS") {
-		t.Fatalf("test_moe_gating did not self-pass:\n%s", out)
+	if !strings.Contains(string(out), "PLAN WIRE TEST PASSED") {
+		t.Errorf("the C firmware did not accept the plan:\n%s", out)
 	}
 
-	const numExperts = 16
-	const topK = 16
-	lines := strings.Split(string(out), "\n")
-	for _, line := range lines {
-		if !strings.HasPrefix(line, "TOKEN") {
-			continue
-		}
-		parts := strings.Fields(line)
-		if len(parts) < 4 || parts[0] != "TOKEN" || parts[2] != "SEL" {
-			t.Errorf("malformed moe gating line %q", line)
-			continue
-		}
-		tok := parts[1]
-		got := make([]int, 0, topK)
-		for _, s := range parts[3:] {
-			var e int
-			if _, err := fmt.Sscanf(s, "%d", &e); err != nil {
-				t.Errorf("bad expert token %q: %v", s, err)
-				continue
-			}
-			got = append(got, e)
-		}
+	// The C's decode -> re-encode round trip must reproduce the Go
+	// encoder's bytes exactly.
+	reBytes, err := os.ReadFile(rePath)
+	if err != nil {
+		t.Fatalf("read re-encoded plan: %v", err)
+	}
+	if !bytes.Equal(reBytes, planBytes) {
+		t.Errorf("the C re-encoded plan differs from the Go encoding")
+	}
 
-		// The C test builds a contiguous 0..numExperts-1 population, so the
-		// expected Go result must score the same population by its global indices.
-		population := make([]int, numExperts)
-		for i := range population {
-			population[i] = i
-		}
-		expected := selectTopExperts([]byte(tok), 0, population, topK)
-		if len(got) != len(expected) {
-			t.Errorf("token %q: got %d experts, expected %d", tok, len(got), len(expected))
-			continue
-		}
-		for i := range expected {
-			if got[i] != expected[i] {
-				t.Errorf("token %q: C[%d]=%d, Go=%d (C ranks %v, Go ranks %v)",
-					tok, i, got[i], expected[i], got, expected)
-				break
-			}
+	// And the wire round trip must preserve every carried record field.
+	hdr2, recs2, err := DecodePlan(planBytes)
+	if err != nil {
+		t.Fatalf("DecodePlan: %v", err)
+	}
+	if hdr2 != hdr {
+		t.Errorf("decoded header %+v differs from %+v", hdr2, hdr)
+	}
+	if len(recs2) != len(records) {
+		t.Fatalf("decoded %d records, expected %d", len(recs2), len(records))
+	}
+	for i := range records {
+		a, b := records[i], recs2[i]
+		if a.Layer != b.Layer || a.Phase != b.Phase || a.TargetNode != b.TargetNode ||
+			a.ExpertIdx != b.ExpertIdx || a.FlitBytes != b.FlitBytes ||
+			a.KVAction != b.KVAction || a.CUType != b.CUType ||
+			a.FlashTileQ != b.FlashTileQ || a.FlashTileKV != b.FlashTileKV ||
+			a.FlashNumTiles != b.FlashNumTiles || a.WindowStart != b.WindowStart ||
+			a.WindowEnd != b.WindowEnd || a.GroupSize != b.GroupSize ||
+			a.RepeatKV != b.RepeatKV {
+			t.Errorf("record %d differs across the wire: %+v vs %+v", i, a, b)
+			break
 		}
 	}
 }

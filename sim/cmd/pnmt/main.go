@@ -343,8 +343,6 @@ func (r *runner) goTests() {
 		{"rng", "TestPyRand"},
 		{"des_closed_form", "TestDESClosedForm"},
 		{"pipe_encode_decode", "TestFlitMessage"},
-		{"pipe_named_pipe", "TestNamedPipe"},
-		{"pipe_circuit_link", "TestCircuitLink"},
 		{"virtual_units", "Test(Consume|KEcho|KSum|KAccum|KDot|NewVirtualUnit|Decode)"},
 		{"driver", "Test(DriverFirmware|RouterBitmaps|ComputeUnit)"},
 		{"run_flit", "TestFlit_"},
@@ -384,6 +382,13 @@ func (r *runner) cTests() {
 			return "", 1
 		}
 		return r.run(r.t.gcc, pnm.SiblingRepo("fw"), "-Wall", "-Wextra", "-std=c11", "-DPNM_MCU", "-c", "pnm_fw.c", "-o", "/dev/null")
+	})
+
+	r.runTest(cat, "fw_compile_plan", func() (string, int) {
+		if r.t.gcc == "" {
+			return "", 1
+		}
+		return r.run(r.t.gcc, pnm.SiblingRepo("fw"), "-Wall", "-Wextra", "-std=c11", "-I.", "-c", "plan.c", "-o", "/dev/null")
 	})
 
 	// Source-language firmware ports (R / Haskell / HLSL) plus the NVMe twin:

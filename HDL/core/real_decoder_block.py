@@ -27,6 +27,7 @@ import argparse
 import json
 import math
 import os
+import random
 import struct
 import subprocess
 import sys
@@ -34,7 +35,7 @@ from fractions import Fraction
 
 from bf16_fp_ref import (op_mul as mul, op_add as add, op_sub as sub,
                          op_div as div, op_exp as exp, op_rsqrt as rsqrt,
-                         round_bf16)
+                         round_bf16, rand_bf16)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -340,6 +341,46 @@ def embed_rows(model, idx, name, rows, cols, N):
     return out
 
 
+# ---- synthetic fixture ------------------------------------------------------
+
+# NOTE: the --synthetic mode is a *detector*, not a passing check.  Random
+# stimulus in every magnitude window (PNM_SYN_LO/HI, default -16..-4)
+# diverges from the RTL in a handful of dims (a few ULPs, occasionally a sign
+# flip) even though the real layer-0 slices pass bit-exact — so the decoder
+# datapath has a regime-dependent divergence the checkpoint's value
+# distribution never triggers.  Isolating it needs per-stage windows in
+# tb_gemma_decoder_block.v; until then, run the synthetic mode with
+# --no-run only, or to hunt the bug.
+
+def synthetic_weights(rng, lo=-16, hi=-4):
+    """The same homunculus slices as load_weights, from deterministic noise
+    instead of the checkpoint: class-1 normals with the exponent in
+    [PNM_SYN_LO, PNM_SYN_HI] (default [-16, -4]), small enough that the
+    single-block datapath stays inside the validated BF16 regime.  The
+    per-expert scale and the layer scalar are 1.0 (their real-checkpoint
+    values)."""
+    lo = int(os.environ.get("PNM_SYN_LO", lo)); hi = int(os.environ.get("PNM_SYN_HI", hi))
+    r = lambda: rand_bf16(rng, lo, hi)
+    V = {}
+    for k in ("N1", "N2", "QN", "KN", "PRE1", "PF1", "PRE2", "PF2", "PFF", "RSCA"):
+        V[k] = [r() for _ in range(N)]
+    for k, rows, cols in (("Q", N, N), ("K", N, N), ("V", N, N), ("O", N, N),
+                          ("GATE", FFD, N), ("UP", FFD, N), ("DOWN", N, FFD)):
+        V[k] = [[r() for _ in range(cols)] for _ in range(rows)]
+    V["RPROJ"] = [[r() for _ in range(N)] for _ in range(E)]
+    V["PES"] = [round_bf16(Fraction(1)) for _ in range(E)]
+    V["LSCA"] = round_bf16(Fraction(1))
+    gu = [[[r() for _ in range(N)] for _ in range(2 * EFF)] for _ in range(E)]
+    dw = [[[r() for _ in range(EFF)] for _ in range(N)] for _ in range(E)]
+    return V, gu, dw
+
+
+def synthetic_erows(rng):
+    """Five deterministic pseudo-embedding rows standing in for the vocab rows."""
+    return {tok: [rand_bf16(rng, -16, -4) for _ in range(N)]
+            for tok in KEY_TOKENS + [QUERY_TOKEN]}
+
+
 # ---- shared mutable state (consts filled in main) ---------------------------
 
 C_INVN = C_INVHD = C_INVSQRTN = C_EPS = C_GELU_A = C_GELU_B = None
@@ -447,6 +488,8 @@ def main():
     ap.add_argument("--model", default=os.environ.get("PNM_MODEL_DIR", "/data/gemma4_dl/complete"))
     ap.add_argument("--out", default="/tmp/pnm_decoder_block")
     ap.add_argument("--no-run", action="store_true")
+    ap.add_argument("--synthetic", action="store_true",
+                    help="use the deterministic synthetic fixture instead of a checkpoint")
     args = ap.parse_args()
 
     global W_N1, W_N2, W_QN, W_KN, W_PA, W_Q, W_K, W_V, W_O
@@ -455,10 +498,15 @@ def main():
     global C_INVN, C_INVHD, C_INVSQRTN, C_EPS, C_GELU_A, C_GELU_B
     global C_HALF, C_ONE, C_TWO
 
-    V, gu, dw = load_weights(args.model)
-    idx = load_index(args.model)
-    erows = embed_rows(args.model, idx, "model.language_model.embed_tokens.weight",
-                       KEY_TOKENS + [QUERY_TOKEN], 2816, N)
+    if args.synthetic:
+        rng = random.Random(0xDB1C)
+        V, gu, dw = synthetic_weights(rng)
+        erows = synthetic_erows(rng)
+    else:
+        V, gu, dw = load_weights(args.model)
+        idx = load_index(args.model)
+        erows = embed_rows(args.model, idx, "model.language_model.embed_tokens.weight",
+                           KEY_TOKENS + [QUERY_TOKEN], 2816, N)
 
     W_N1, W_N2, W_QN, W_KN = V["N1"], V["N2"], V["QN"], V["KN"]
     W_Q, W_K, W_V, W_O = V["Q"], V["K"], V["V"], V["O"]
@@ -497,7 +545,7 @@ def main():
     emit_hex(os.path.join(args.out, "dblock_x.hex"), x)
     emit_hex(os.path.join(args.out, "dblock_out.hex"), g)
 
-    print("model     :", args.model)
+    print("model     :", "synthetic fixture" if args.synthetic else args.model)
     print("config    : N=%d NH=%d HD=%d FFD=%d E=%d EFF=%d CACHE=%d POSQ=%d"
           % (N, NH, HD, FFD, E, EFF, CACHE, POSQ))
     print("weights   : layer0 real slices; wmem words=%d" % len(wmem_l))

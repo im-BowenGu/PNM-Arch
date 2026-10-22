@@ -16,14 +16,16 @@ package pnm
 //                     (bf16_oracle.go) bit-for-bit.
 //
 // The same real BF16 words flow through all three legs, so this is the
-// gating -> transport -> compute composition proof on real weights that the
-// standalone RTL testbenches each establish in isolation.
+// gating -> transport -> compute composition proof that the standalone RTL
+// testbenches each establish in isolation.  When PNM_MODEL_DIR is set the
+// chain runs on the real fused checkpoint; otherwise it runs on the
+// deterministic synthetic fixture (comp_model.go) — the chain is identical,
+// only the stimulus differs, so this proof is part of the always-on suite.
 //
-// Requires PNM_MODEL_DIR (real checkpoint) and iverilog/vvp (nix develop).
+// Requires iverilog/vvp (nix develop).
 
 import (
 	"math"
-	"os"
 	"os/exec"
 	"sort"
 	"testing"
@@ -38,24 +40,13 @@ const (
 )
 
 func TestRouterFabricNodeComposition(t *testing.T) {
-	modelDir := os.Getenv("PNM_MODEL_DIR")
-	if modelDir == "" {
-		t.Skip("PNM_MODEL_DIR not set (needs the real Gemma-4 checkpoint)")
-	}
 	if _, err := exec.LookPath("iverilog"); err != nil {
 		t.Skip("iverilog not found (enter `nix develop`)")
 	}
 	if _, err := exec.LookPath("vvp"); err != nil {
 		t.Skip("vvp not found (enter `nix develop`)")
 	}
-	vocab, err := LoadBPEVocab(modelDir + "/tokenizer.json")
-	if err != nil {
-		t.Skipf("no tokenizer (needs the real checkpoint): %v", err)
-	}
-	g, err := loadRealGemmaModel(modelDir, vocab)
-	if err != nil {
-		t.Fatal(err)
-	}
+	g := loadCompositionModel(t)
 	H := g.cfg.TextConfig.HiddenSize
 	numExp := g.cfg.TextConfig.NumExperts
 	effFull := g.cfg.TextConfig.MoEIntermediateSize

@@ -675,6 +675,52 @@ go run ./cmd/hlsl_pnm examples/hello.hlsl -l 2 -x 2 -y 2 -run -inputs x=4,y=7
 | `f64_neg` | `[a:8B]` | `-a` (8 bytes) |
 | `f64_cmp` | `[a:8B, b:8B, op]` | `1.0/0.0` for `a OP b` (8 bytes; `OP` in `==,!=,<,>,<=,>=`, NaN compares unordered) |
 
+## Hardware-gated inference (`cmd/pnmgate`)
+
+`pnmgate` runs the MoE gating decision on the **RTL Gating ASIC**
+(`HDL/core/gating_asic.v`) under `vvp` instead of in software: it loads a
+layer's real `router.proj.weight` rows into the ASIC's on-chip RAM over the
+register bus, runs the gating network (all expert logits plus top-k, BF16
+fused-FMA) on the ASIC, feeds the ASIC's logits back into the engine's
+softmax and MoE path, and finishes the forward pass on the CPU.
+
+```bash
+cd sim && go run ./cmd/pnmgate -model "$PNM_MODEL_DIR" -layers 0 -width 256 \
+    "What is the capital of Germany"
+# -> answer: "The capital of Germany is Berlin.<turn|>"   (same as the software engine)
+```
+
+| Flag | Meaning |
+|------|---------|
+| `-model` | the checkpoint directory (real weights) |
+| `-layers` | model layers to gate, e.g. `0` or `0,7,14` |
+| `-width` | the projection width loaded into the ASIC (256 = the paper's gating-SRAM tile; 2816 = full hidden) |
+| `-max-tokens` | tokens to generate (0 = run until the stop token) |
+| `-prefill-last` | gate only the final prefill position (default true) |
+| `-think` | print the model's reasoning trace separately from the answer |
+| `-network` | dispatch the ASIC's selected experts over the node-network fabric RTL |
+| `-net-bx`, `-net-by` | the chassis grid (default 4×4) |
+| `-net-layers` | chassis depth (default: cover the gated layers) |
+| `-net-seed` | deterministic seed for the node resident weights |
+| `-net-replays` | repeat the fabric run to check determinism |
+| `-run-dir` | scratch directory for the ASIC's I/O files |
+| `-keep`, `-v` | keep the scratch files / verbose ASIC logging |
+
+With `-network`, each top-k expert becomes a routed flit on the X/Y grid and
+`RunOne` proves byte-exact delivery to the expert node before the expert math
+runs on the CPU:
+
+```bash
+cd sim && go run ./cmd/pnmgate -model "$PNM_MODEL_DIR" -layers 0 -width 256 \
+    -network "Hello"
+# -> asic L0 top-k experts: [109 103 51 41 1 79 4 56]
+# -> network: 8 packets, 8 doorbell activations, 304 DMA bytes, latency 40/41/43 cyc
+# -> network: PASS — byte-exact to the expert nodes
+```
+
+Expert `e` of layer `l` maps to node `(l, e mod bx, (e/bx) mod by)`.
+`reproduce.sh --real-weights` exercises this end to end.
+
 ## Workload classification
 
 ### Small chassis (an MCU host)
